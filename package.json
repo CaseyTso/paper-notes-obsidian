@@ -1,0 +1,25 @@
+{
+  "name": "paper-notes-obsidian",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Independent Obsidian plugin for the paper-notes literature system (desktop only)",
+  "main": "main.js",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "build": "node esbuild.config.mjs production",
+    "verify": "npm run typecheck && npm test && npm run build"
+  },
+  "devDependencies": {
+    "@types/node": "24.10.0",
+    "esbuild": "0.28.1",
+    "obsidian": "1.13.1",
+    "typescript": "5.9.3",
+    "vitest": "4.1.10"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "license": "MIT"
+}

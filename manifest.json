@@ -1,0 +1,9 @@
+{
+  "id": "paper-notes",
+  "name": "Paper Notes",
+  "version": "1.0.0",
+  "minAppVersion": "1.4.0",
+  "description": "Literature library, citation picker, and focused Pandoc export for the paper-notes literature system (desktop only).",
+  "author": "CaseyTso",
+  "isDesktopOnly": true
+}
