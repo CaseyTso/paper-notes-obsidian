@@ -13,9 +13,27 @@
  * here ever writes back to the vault; metrics are UI data only.
  */
 
-import { ItemView, WorkspaceLeaf } from "obsidian";
+import { ItemView, WorkspaceLeaf, type TFile } from "obsidian";
 
 import type { InvalidRecord, PaperRecord } from "../types/paper";
+import type { PaperNotesSettings } from "../settings";
+import { CliClient } from "../services/cli-client";
+import {
+  ItemActions,
+  assetPathOf,
+  buildDeletePreview,
+  nextReadingStatus,
+  renderPlanLines,
+  resolveOpenTarget,
+  type ActionOutcome,
+  type CreateItemInput,
+  type OpenAssetKind,
+} from "../services/item-actions";
+// Modal classes are loaded lazily (see `loadModalClasses`): the plugin
+// scaffold smoke suite mocks `obsidian` with only Plugin/ItemView/
+// WorkspaceLeaf, so the static import graph must not reach the modals'
+// runtime `Modal`/`Notice` dependencies.
+import type { CreateItemCallbacks } from "../modals/create-item-modal";
 import {
   buildLibraryItems,
   formatColumnValue,
@@ -37,6 +55,9 @@ import { buildPaperDetail } from "../components/paper-detail";
 
 export const VIEW_TYPE_PAPER_NOTES = "paper-notes-open-library";
 
+/** Plugin id from manifest.json; the view reads the CLI bridge off it. */
+const PLUGIN_ID = "paper-notes";
+
 export interface LibraryViewSource {
   /** Canonical, validated paper records from the in-memory index. */
   getRecords(): PaperRecord[];
@@ -50,6 +71,13 @@ export interface LibraryViewSource {
   getMetrics?(paperId: string): PaperMetrics | undefined;
 }
 
+interface ModalClasses {
+  CreateItemModal: typeof import("../modals/create-item-modal").CreateItemModal;
+  ConfirmationModal: typeof import("../modals/confirmation-modal").ConfirmationModal;
+  TextPromptModal: typeof import("../modals/confirmation-modal").TextPromptModal;
+  DeleteItemModal: typeof import("../modals/delete-item-modal").DeleteItemModal;
+}
+
 export class PaperNotesLibraryView extends ItemView {
   private searchQuery = "";
   private filters: LibraryFilters = { ...EMPTY_LIBRARY_FILTERS };
@@ -58,6 +86,11 @@ export class PaperNotesLibraryView extends ItemView {
   private open = false;
   private tableHost: HTMLElement | null = null;
   private detailHost: HTMLElement | null = null;
+  /** Lazily resolved CLI-backed item actions (Task 25). */
+  private itemActions: ItemActions | undefined;
+  private actionsResolved = false;
+  /** Lazily loaded modal classes (kept off the static import graph). */
+  private modalClasses: ModalClasses | undefined;
 
   constructor(leaf: WorkspaceLeaf, private readonly source: LibraryViewSource) {
     super(leaf);
@@ -121,6 +154,11 @@ export class PaperNotesLibraryView extends ItemView {
       this.filters = { ...EMPTY_LIBRARY_FILTERS };
       this.render();
     });
+    const create = toolbar.createEl("button", {
+      cls: "paper-notes-library-create",
+      text: "Create item",
+    });
+    create.addEventListener("click", () => void this.runCreate());
 
     this.renderFilterBar(container);
 
@@ -410,6 +448,339 @@ export class PaperNotesLibraryView extends ItemView {
       const row = table.createEl("tr");
       row.createEl("th", { text: field.label });
       row.createEl("td", { text: field.value });
+    }
+    this.renderDetailActions(this.detailHost, selected);
+  }
+
+  /**
+   * Resolve the CLI-backed action provider once. The plugin instance is
+   * read off the app plugin registry (main.ts wires the bridge); the
+   * absolute vault root comes from the vault adapter. Without either the
+   * library stays read-only — there is no direct-write fallback.
+   */
+  private getActions(): ItemActions | undefined {
+    if (this.actionsResolved) {
+      return this.itemActions;
+    }
+    this.actionsResolved = true;
+    // The obsidian types do not expose the plugin registry or the
+    // adapter base path; both are stable desktop runtime APIs.
+    const registry = (this.app as unknown as {
+      plugins?: { plugins?: Record<string, unknown> };
+    }).plugins;
+    const plugin = registry?.plugins?.[PLUGIN_ID] as
+      | { getCliClient?(): CliClient | undefined; settings?: PaperNotesSettings }
+      | undefined;
+    const client = plugin?.getCliClient?.();
+    const adapter = this.app.vault?.adapter as { getBasePath?(): string } | undefined;
+    const vaultRoot =
+      typeof adapter?.getBasePath === "function" ? adapter.getBasePath() : undefined;
+    this.itemActions =
+      client === undefined || vaultRoot === undefined
+        ? undefined
+        : new ItemActions({ client, vaultRoot });
+    return this.itemActions;
+  }
+
+  /** Lazily load the modal classes (kept off the static import graph). */
+  private async loadModalClasses(): Promise<ModalClasses> {
+    if (this.modalClasses === undefined) {
+      const create = await import("../modals/create-item-modal");
+      const confirmation = await import("../modals/confirmation-modal");
+      const del = await import("../modals/delete-item-modal");
+      this.modalClasses = {
+        CreateItemModal: create.CreateItemModal,
+        ConfirmationModal: confirmation.ConfirmationModal,
+        TextPromptModal: confirmation.TextPromptModal,
+        DeleteItemModal: del.DeleteItemModal,
+      };
+    }
+    return this.modalClasses;
+  }
+
+  /** Surface a user notice; resolves obsidian lazily (smoke-safe graph). */
+  private notify(message: string): void {
+    void import("obsidian").then(({ Notice }) => new Notice(message));
+  }
+
+  /** Human message for any outcome (errors surface CLI diagnostics). */
+  private outcomeMessage(outcome: ActionOutcome): string {
+    return outcome.status === "error"
+      ? outcome.message
+      : "The operation is still pending confirmation.";
+  }
+
+  private async runCreate(): Promise<void> {
+    const actions = this.getActions();
+    if (actions === undefined) {
+      this.notify("paper-notes CLI unavailable; the library is read-only.");
+      return;
+    }
+    const { CreateItemModal } = await this.loadModalClasses();
+    const callbacks: CreateItemCallbacks = {
+      create: (input: CreateItemInput) => actions.create(input),
+      confirm: (input: CreateItemInput, confirmed: Record<string, unknown>) =>
+        actions.confirmCreate(input, confirmed),
+      notify: (message: string) => this.notify(message),
+    };
+    new CreateItemModal(this.app, callbacks).open();
+  }
+
+  /** Open main/PDF/MinerU/Figure/cards assets (design spec §9.5). */
+  private openAsset(kind: OpenAssetKind, item: LibraryItem): void {
+    const target =
+      kind === "cards"
+        ? resolveOpenTarget(
+            kind,
+            item.path,
+            this.source.listDirectory(assetPathOf("cards", item.path)),
+          )
+        : resolveOpenTarget(kind, item.path);
+    if (target === undefined) {
+      return;
+    }
+    const file = this.app.vault.getAbstractFileByPath(target.path);
+    if (file === null || typeof file !== "object" || !("path" in file)) {
+      return;
+    }
+    void this.app.workspace.getLeaf(false)?.openFile(file as TFile);
+  }
+
+  private renderDetailActions(host: HTMLElement, item: LibraryItem): void {
+    const actions = this.getActions();
+    const bar = host.createDiv({ cls: "paper-notes-library-actions" });
+    if (actions === undefined) {
+      bar.createEl("span", {
+        cls: "paper-notes-library-actions-hint",
+        text: "paper-notes CLI unavailable — the library is read-only.",
+      });
+      return;
+    }
+    const open = (kind: OpenAssetKind, label: string, enabled: boolean): void => {
+      const button = bar.createEl("button", { text: label });
+      if (!enabled) {
+        button.disabled = true;
+      }
+      button.addEventListener("click", () => this.openAsset(kind, item));
+    };
+    open("main", "Open main", true);
+    open("pdf", "Open PDF", item.artifacts.pdf);
+    open("minerU", "Open MinerU", item.artifacts.minerU);
+    open("figure", "Open Figure", item.artifacts.figure);
+    open(
+      "cards",
+      "Open cards",
+      resolveOpenTarget(
+        "cards",
+        item.path,
+        this.source.listDirectory(assetPathOf("cards", item.path)),
+      ) !== undefined,
+    );
+    // Invalid-metadata rows have no canonical key to mutate.
+    if (item.invalid !== undefined) {
+      return;
+    }
+    const status = bar.createEl("button", {
+      text: `Reading: ${item.readingStatus ?? "unread"} → ${nextReadingStatus(item.readingStatus)}`,
+    });
+    status.addEventListener("click", () => void this.cycleReadingStatus(item));
+    const attach = bar.createEl("button", { text: "Attach PDF" });
+    attach.addEventListener("click", () => void this.startAttach(item));
+    const rename = bar.createEl("button", { text: "Rename key" });
+    rename.addEventListener("click", () => void this.startRename(item));
+    const remove = bar.createEl("button", { text: "Delete" });
+    remove.addClass("mod-warning");
+    remove.addEventListener("click", () => this.startDelete(item));
+  }
+
+  /** Reading-status shortcuts route through `item update` (spec §9.5). */
+  private async cycleReadingStatus(item: LibraryItem): Promise<void> {
+    const actions = this.getActions();
+    if (actions === undefined || item.invalid !== undefined) {
+      return;
+    }
+    const next = nextReadingStatus(item.readingStatus);
+    const outcome = await actions.updateReadingStatus(item.key, next);
+    if (outcome.status === "success") {
+      this.notify(`Reading status → ${next}`);
+      this.refresh();
+    } else {
+      this.notify(this.outcomeMessage(outcome));
+    }
+  }
+
+  private async startAttach(item: LibraryItem): Promise<void> {
+    const actions = this.getActions();
+    if (actions === undefined || item.invalid !== undefined) {
+      return;
+    }
+    const { TextPromptModal } = await this.loadModalClasses();
+    new TextPromptModal(
+      this.app,
+      {
+        title: "Attach PDF",
+        placeholder: "/absolute/path/to/paper.pdf",
+        confirmLabel: "Attach",
+      },
+      {
+        confirm: (value: string) => {
+          const path = value.trim();
+          if (path.length > 0) {
+            void this.attachPdf(actions, item.key, path);
+          }
+        },
+      },
+    ).open();
+  }
+
+  private async attachPdf(
+    actions: ItemActions,
+    key: string,
+    path: string,
+  ): Promise<void> {
+    const outcome = await actions.attachPdf(key, path);
+    if (outcome.status === "needs_confirmation") {
+      const token = outcome.token;
+      const { ConfirmationModal } = await this.loadModalClasses();
+      new ConfirmationModal(
+        this.app,
+        {
+          title: "Confirm PDF attachment",
+          lines: renderPlanLines(outcome.envelope.data.plan),
+        },
+        () => void this.confirmAttach(actions, key, path, token),
+      ).open();
+      return;
+    }
+    if (outcome.status === "success") {
+      this.notify("PDF attached.");
+      this.refresh();
+    } else {
+      this.notify(this.outcomeMessage(outcome));
+    }
+  }
+
+  private async confirmAttach(
+    actions: ItemActions,
+    key: string,
+    path: string,
+    token: string,
+  ): Promise<void> {
+    const outcome = await actions.confirmAttach(key, path, token);
+    if (outcome.status === "success") {
+      this.notify("PDF attached.");
+      this.refresh();
+    } else {
+      this.notify(this.outcomeMessage(outcome));
+    }
+  }
+
+  private async startRename(item: LibraryItem): Promise<void> {
+    const actions = this.getActions();
+    if (actions === undefined || item.invalid !== undefined) {
+      return;
+    }
+    const { TextPromptModal } = await this.loadModalClasses();
+    new TextPromptModal(
+      this.app,
+      {
+        title: "Rename citation key",
+        placeholder: "new-citation-key",
+        initial: item.key,
+        confirmLabel: "Preview",
+      },
+      {
+        confirm: (value: string) => {
+          const newKey = value.trim();
+          if (newKey.length === 0 || newKey === item.key) {
+            return;
+          }
+          void this.renameKey(actions, item.key, newKey);
+        },
+      },
+    ).open();
+  }
+
+  /** Rename always previews (`--dry-run`) before any confirm (spec §8.2). */
+  private async renameKey(
+    actions: ItemActions,
+    key: string,
+    newKey: string,
+  ): Promise<void> {
+    const outcome = await actions.previewRenameKey(key, newKey);
+    if (outcome.status === "needs_confirmation") {
+      const token = outcome.token;
+      const { ConfirmationModal } = await this.loadModalClasses();
+      new ConfirmationModal(
+        this.app,
+        {
+          title: `Rename ${key} → ${newKey}`,
+          lines: renderPlanLines(outcome.envelope.data.plan),
+        },
+        () => void this.confirmRename(actions, key, newKey, token),
+      ).open();
+      return;
+    }
+    this.notify(outcome.status === "success" ? "Key renamed." : this.outcomeMessage(outcome));
+  }
+
+  private async confirmRename(
+    actions: ItemActions,
+    key: string,
+    newKey: string,
+    token: string,
+  ): Promise<void> {
+    const outcome = await actions.confirmRenameKey(key, newKey, token);
+    if (outcome.status === "success") {
+      this.notify("Key renamed.");
+      this.refresh();
+    } else {
+      this.notify(this.outcomeMessage(outcome));
+    }
+  }
+
+  private startDelete(item: LibraryItem): void {
+    const actions = this.getActions();
+    if (actions === undefined || item.invalid !== undefined) {
+      return;
+    }
+    void this.deletePreview(actions, item.key);
+  }
+
+  /** Deletion shows count/size/backlinks and requires the exact key (§8.3). */
+  private async deletePreview(
+    actions: ItemActions,
+    key: string,
+  ): Promise<void> {
+    const outcome = await actions.previewDelete(key);
+    if (outcome.status !== "needs_confirmation") {
+      this.notify(this.outcomeMessage(outcome));
+      return;
+    }
+    const preview = buildDeletePreview(outcome.envelope.data);
+    if (preview.key.length === 0) {
+      this.notify("Cannot plan deletion: missing citation key.");
+      return;
+    }
+    const token = outcome.token;
+    const { DeleteItemModal } = await this.loadModalClasses();
+    new DeleteItemModal(this.app, preview, {
+      confirm: () => this.confirmDelete(actions, key, token),
+      notify: (message: string) => this.notify(message),
+    }).open();
+  }
+
+  private async confirmDelete(
+    actions: ItemActions,
+    key: string,
+    token: string,
+  ): Promise<void> {
+    const outcome = await actions.confirmDelete(key, key, token);
+    if (outcome.status === "success") {
+      this.notify("Paper deleted.");
+      this.refresh();
+    } else {
+      this.notify(this.outcomeMessage(outcome));
     }
   }
 }
