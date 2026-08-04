@@ -1,7 +1,5 @@
 import {
-  ItemView,
   Plugin,
-  WorkspaceLeaf,
   type MetadataCache,
   type TFile,
   type Vault,
@@ -20,8 +18,14 @@ import {
   normalizeSettings,
   type PaperNotesSettings,
 } from "./settings";
+import {
+  PaperNotesLibraryView,
+  VIEW_TYPE_PAPER_NOTES,
+  type LibraryViewSource,
+} from "./views/literature-library-view";
 
-export const VIEW_TYPE_PAPER_NOTES = "paper-notes-open-library";
+export { VIEW_TYPE_PAPER_NOTES };
+
 export const OPEN_LIBRARY_COMMAND = "paper-notes-open-library";
 
 /**
@@ -63,35 +67,6 @@ class ObsidianVaultAdapter implements LiteratureVaultAdapter {
   }
 }
 
-class PaperNotesLibraryView extends ItemView {
-  constructor(leaf: WorkspaceLeaf) {
-    super(leaf);
-  }
-
-  getViewType(): string {
-    return VIEW_TYPE_PAPER_NOTES;
-  }
-
-  getDisplayText(): string {
-    return "Paper Notes Library";
-  }
-
-  getIcon(): string {
-    return "library";
-  }
-
-  async onOpen(): Promise<void> {
-    this.containerEl.empty();
-    this.containerEl.createEl("div", {
-      text: "Paper Notes library (scaffold).",
-    });
-  }
-
-  async onClose(): Promise<void> {
-    this.containerEl.empty();
-  }
-}
-
 export default class PaperNotesPlugin extends Plugin {
   isDesktopOnly = true;
 
@@ -101,12 +76,17 @@ export default class PaperNotesPlugin extends Plugin {
   private cliReadOnlyMode = true;
 
   private libraryIndex: LibraryIndex | undefined;
+  private vaultAdapter: ObsidianVaultAdapter | undefined;
+  private libraryView: PaperNotesLibraryView | null = null;
 
   async onload(): Promise<void> {
-    this.registerView(
-      VIEW_TYPE_PAPER_NOTES,
-      (leaf) => new PaperNotesLibraryView(leaf),
-    );
+    this.registerView(VIEW_TYPE_PAPER_NOTES, (leaf) => {
+      this.libraryView = new PaperNotesLibraryView(
+        leaf,
+        this.createLibraryViewSource(),
+      );
+      return this.libraryView;
+    });
     this.addCommand({
       id: OPEN_LIBRARY_COMMAND,
       name: "Open literature library",
@@ -153,12 +133,51 @@ export default class PaperNotesPlugin extends Plugin {
     if (vault === undefined || metadataCache === undefined) {
       return;
     }
+    this.vaultAdapter = new ObsidianVaultAdapter(vault, metadataCache);
     this.libraryIndex = new LibraryIndex(
-      new ObsidianVaultAdapter(vault, metadataCache),
+      this.vaultAdapter,
       this.settings.literatureRoot,
     );
     this.libraryIndex.scanAll();
     this.registerVaultEvents(vault);
+  }
+
+  /**
+   * Read-only data source for the library view: index records, raw
+   * frontmatter (reading status), paper-directory basenames (artifact
+   * availability) and — once Task 26 lands — volatile EasyScholar metrics.
+   * No callback here can write anything.
+   */
+  private createLibraryViewSource(): LibraryViewSource {
+    const vault = this.app.vault;
+    return {
+      getRecords: () => this.libraryIndex?.getRecords() ?? [],
+      getInvalidRecords: () => this.libraryIndex?.getInvalidRecords() ?? [],
+      getFrontmatter: (path) => this.vaultAdapter?.getFrontmatter(path),
+      listDirectory: (dir) => {
+        if (vault === undefined) {
+          return [];
+        }
+        const folder = vault.getAbstractFileByPath(dir);
+        if (
+          folder === null ||
+          typeof folder !== "object" ||
+          !("children" in folder)
+        ) {
+          return [];
+        }
+        const children = (folder as { children?: Array<{ name?: unknown }> })
+          .children;
+        if (children === undefined) {
+          return [];
+        }
+        return children.map((child) =>
+          typeof child.name === "string" ? child.name : "",
+        );
+      },
+      // EasyScholar metrics arrive with Task 26; until then there are none.
+      getMetrics: () => undefined,
+    };
   }
 
   private registerVaultEvents(vault: Vault): void {
@@ -193,6 +212,7 @@ export default class PaperNotesPlugin extends Plugin {
     oldPath?: string,
   ): void {
     this.libraryIndex?.handleVaultEvent(event, path, oldPath);
+    this.libraryView?.refresh();
   }
 
   private activateLibraryView(): void {

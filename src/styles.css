@@ -1,1 +1,163 @@
-/* Paper Notes plugin styles (scaffold). */
+/* Paper Notes plugin styles (Task 24 Literature Library view). */
+
+.paper-notes-library {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
+}
+
+.paper-notes-library-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--background-modifier-border);
+}
+
+.paper-notes-library-search {
+  flex: 1;
+  min-width: 160px;
+}
+
+.paper-notes-library-clear {
+  white-space: nowrap;
+}
+
+.paper-notes-library-filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--background-modifier-border);
+  font-size: var(--font-ui-small);
+}
+
+.paper-notes-library-filter-heading {
+  font-weight: var(--font-semibold);
+  margin-right: 2px;
+}
+
+.paper-notes-library-filter {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.paper-notes-library-filter label {
+  color: var(--text-muted);
+}
+
+.paper-notes-library-filter input[type="text"],
+.paper-notes-library-filter input[type="number"] {
+  width: 90px;
+}
+
+.paper-notes-library-filter select {
+  max-width: 110px;
+}
+
+.paper-notes-library-split {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+
+.paper-notes-library-table-host {
+  flex: 1;
+  min-width: 0;
+  overflow: auto;
+}
+
+.paper-notes-library-detail-host {
+  width: 320px;
+  flex: none;
+  overflow: auto;
+  padding: 10px 12px;
+  border-left: 1px solid var(--background-modifier-border);
+}
+
+.paper-notes-library-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--font-ui-small);
+}
+
+.paper-notes-library-table th {
+  position: sticky;
+  top: 0;
+  background: var(--background-primary);
+  border-bottom: 1px solid var(--background-modifier-border);
+  text-align: left;
+  padding: 4px 8px;
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+}
+
+.paper-notes-library-table th.sorted-asc::after {
+  content: " ▲";
+  color: var(--text-accent);
+}
+
+.paper-notes-library-table th.sorted-desc::after {
+  content: " ▼";
+  color: var(--text-accent);
+}
+
+.paper-notes-library-table td {
+  padding: 3px 8px;
+  border-bottom: 1px solid var(--background-modifier-border);
+  vertical-align: top;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 0;
+}
+
+.paper-notes-library-table tbody tr {
+  cursor: pointer;
+}
+
+.paper-notes-library-table tbody tr:hover {
+  background: var(--background-modifier-hover);
+}
+
+.paper-notes-library-table tbody tr.selected {
+  background: var(--background-modifier-active);
+}
+
+.paper-notes-library-table tbody tr.paper-notes-library-invalid td {
+  color: var(--text-error);
+  font-style: italic;
+}
+
+.paper-notes-library-empty {
+  color: var(--text-muted);
+  padding: 12px;
+}
+
+.paper-notes-library-detail-title {
+  margin-top: 0;
+  font-size: var(--font-ui-medium);
+}
+
+.paper-notes-library-detail th {
+  text-align: left;
+  vertical-align: top;
+  color: var(--text-muted);
+  font-weight: var(--font-medium);
+  padding: 2px 10px 2px 0;
+  white-space: nowrap;
+}
+
+.paper-notes-library-detail td {
+  padding: 2px 0;
+}
+
+.paper-notes-library-diagnostics {
+  color: var(--text-error);
+  font-size: var(--font-ui-small);
+  margin-bottom: 8px;
+}
