@@ -9,15 +9,32 @@
  *
  * Data flows in through `LibraryViewSource` (provided by main.ts): index
  * records, raw frontmatter (reading status), the paper-directory listing
- * (artifact availability) and an optional volatile metrics provider. Nothing
- * here ever writes back to the vault; metrics are UI data only.
+ * (artifact availability) and an optional volatile metrics provider. The
+ * view additionally resolves the plugin bridge lazily (Task 25 actions,
+ * Task 26 metrics cache) and wires the EasyScholar badge cache into the
+ * table. Nothing here ever writes back to the vault; metrics are UI data
+ * only and every CLI call is the read-only `metrics query`.
  */
 
 import { ItemView, WorkspaceLeaf, type TFile } from "obsidian";
 
 import type { InvalidRecord, PaperRecord } from "../types/paper";
-import type { PaperNotesSettings } from "../settings";
+import {
+  DEFAULT_SETTINGS,
+  metricsEnabledOf,
+  type PaperNotesSettings,
+} from "../settings";
 import { CliClient } from "../services/cli-client";
+import {
+  MetricsCache,
+  type CachedMetricsEntry,
+  type RefreshResult,
+} from "../services/metrics-cache";
+import {
+  metricBadgeStateOf,
+  renderMetricBadge,
+  type MetricKind,
+} from "../components/metric-cell";
 import {
   ItemActions,
   assetPathOf,
@@ -58,6 +75,31 @@ export const VIEW_TYPE_PAPER_NOTES = "paper-notes-open-library";
 /** Plugin id from manifest.json; the view reads the CLI bridge off it. */
 const PLUGIN_ID = "paper-notes";
 
+/** Command ids registered by the view (main.ts is frozen; Task 26). */
+const REFRESH_JOURNAL_COMMAND = "paper-notes-refresh-journal-metrics";
+const REFRESH_ALL_COMMAND = "paper-notes-refresh-all-metrics";
+
+/** Map the four metric columns onto their badge kinds. */
+const METRIC_COLUMN_KINDS: Partial<Record<LibraryColumnId, MetricKind>> = {
+  cas: "cas",
+  jcr: "jcr",
+  if: "if",
+  jci: "jci",
+};
+
+/** Plugin-side bridge the view resolves lazily from the app registry. */
+interface PluginBridge {
+  client: CliClient | undefined;
+  settings: PaperNotesSettings;
+  loadData?: () => Promise<unknown>;
+  saveData?: (data: unknown) => Promise<void>;
+  addCommand?: (command: {
+    id: string;
+    name: string;
+    callback: () => void;
+  }) => void;
+}
+
 export interface LibraryViewSource {
   /** Canonical, validated paper records from the in-memory index. */
   getRecords(): PaperRecord[];
@@ -89,6 +131,11 @@ export class PaperNotesLibraryView extends ItemView {
   /** Lazily resolved CLI-backed item actions (Task 25). */
   private itemActions: ItemActions | undefined;
   private actionsResolved = false;
+  /** Lazily resolved EasyScholar metric cache (Task 26). */
+  private metricsCache: MetricsCache | undefined;
+  private metricsResolved = false;
+  /** paperId -> record map rebuilt per query (metrics lookups by id). */
+  private recordsById = new Map<string, PaperRecord>();
   /** Lazily loaded modal classes (kept off the static import graph). */
   private modalClasses: ModalClasses | undefined;
 
@@ -111,6 +158,9 @@ export class PaperNotesLibraryView extends ItemView {
   async onOpen(): Promise<void> {
     this.open = true;
     this.render();
+    // Background refresh of missing/expired journal metrics (deduplicated
+    // inside the cache; the first render already showed cached values).
+    void this.refreshAllExpired();
   }
 
   async onClose(): Promise<void> {
@@ -337,15 +387,19 @@ export class PaperNotesLibraryView extends ItemView {
   }
 
   private queryItems(): LibraryItem[] {
-    const items = buildLibraryItems(
-      this.source.getRecords(),
-      this.source.getInvalidRecords(),
-      {
-        frontmatter: (path) => this.source.getFrontmatter(path),
-        listDirectory: (dir) => this.source.listDirectory(dir),
-        metrics: (paperId) => this.source.getMetrics?.(paperId),
+    const records = this.source.getRecords();
+    this.recordsById = new Map(records.map((record) => [record.paperId, record]));
+    const cache = this.getMetricsCache();
+    const items = buildLibraryItems(records, this.source.getInvalidRecords(), {
+      frontmatter: (path) => this.source.getFrontmatter(path),
+      listDirectory: (dir) => this.source.listDirectory(dir),
+      metrics: (paperId) => {
+        const record = this.recordsById.get(paperId);
+        const cached =
+          record !== undefined ? cache?.getEntryFor(record) : undefined;
+        return cached?.metrics ?? this.source.getMetrics?.(paperId);
       },
-    );
+    });
     const searched = searchLibraryItems(items, this.searchQuery);
     const filtered = applyLibraryFilters(searched, this.filters);
     return sortLibraryItems(filtered, this.sort);
@@ -395,7 +449,21 @@ export class PaperNotesLibraryView extends ItemView {
         row.addClass("paper-notes-library-invalid");
       }
       for (const column of columns) {
-        row.createEl("td", { text: formatColumnValue(item, column.id) });
+        const kind = METRIC_COLUMN_KINDS[column.id];
+        if (kind === undefined) {
+          row.createEl("td", { text: formatColumnValue(item, column.id) });
+          continue;
+        }
+        const cell = row.createEl("td");
+        const badge = metricBadgeStateOf(
+          kind,
+          this.metricEntryOf(item),
+          Date.now(),
+          this.metricTtlDays(),
+        );
+        if (badge !== undefined) {
+          renderMetricBadge(cell, badge);
+        }
       }
       row.addEventListener("click", () => {
         this.selectedPath = item.path;
@@ -453,6 +521,50 @@ export class PaperNotesLibraryView extends ItemView {
   }
 
   /**
+   * Resolve the plugin-side bridge (CLI client, live settings, data.json
+   * persistence and command registration) off the app plugin registry.
+   * Returns undefined when the plugin is not registered; the library then
+   * stays read-only and badge-free — there is no direct-write fallback.
+   */
+  private resolvePluginBridge(): PluginBridge | undefined {
+    // The obsidian types do not expose the plugin registry; the registry
+    // is a stable desktop runtime API.
+    const registry = (this.app as unknown as {
+      plugins?: { plugins?: Record<string, unknown> };
+    }).plugins;
+    const plugin = registry?.plugins?.[PLUGIN_ID] as
+      | {
+          getCliClient?(): CliClient | undefined;
+          settings?: PaperNotesSettings;
+          loadData?(): Promise<unknown>;
+          saveData?(data: unknown): Promise<void>;
+          addCommand?(command: {
+            id: string;
+            name: string;
+            callback: () => void;
+          }): void;
+        }
+      | undefined;
+    if (plugin === undefined) {
+      return undefined;
+    }
+    const loadData = plugin.loadData;
+    const saveData = plugin.saveData;
+    const addCommand = plugin.addCommand;
+    return {
+      client: plugin.getCliClient?.(),
+      settings: plugin.settings ?? DEFAULT_SETTINGS,
+      loadData: loadData !== undefined ? () => loadData() : undefined,
+      saveData:
+        saveData !== undefined ? (data: unknown) => saveData(data) : undefined,
+      addCommand:
+        addCommand !== undefined
+          ? (command) => addCommand(command)
+          : undefined,
+    };
+  }
+
+  /**
    * Resolve the CLI-backed action provider once. The plugin instance is
    * read off the app plugin registry (main.ts wires the bridge); the
    * absolute vault root comes from the vault adapter. Without either the
@@ -463,23 +575,147 @@ export class PaperNotesLibraryView extends ItemView {
       return this.itemActions;
     }
     this.actionsResolved = true;
-    // The obsidian types do not expose the plugin registry or the
-    // adapter base path; both are stable desktop runtime APIs.
-    const registry = (this.app as unknown as {
-      plugins?: { plugins?: Record<string, unknown> };
-    }).plugins;
-    const plugin = registry?.plugins?.[PLUGIN_ID] as
-      | { getCliClient?(): CliClient | undefined; settings?: PaperNotesSettings }
-      | undefined;
-    const client = plugin?.getCliClient?.();
+    const bridge = this.resolvePluginBridge();
     const adapter = this.app.vault?.adapter as { getBasePath?(): string } | undefined;
     const vaultRoot =
       typeof adapter?.getBasePath === "function" ? adapter.getBasePath() : undefined;
     this.itemActions =
-      client === undefined || vaultRoot === undefined
+      bridge?.client === undefined || vaultRoot === undefined
         ? undefined
-        : new ItemActions({ client, vaultRoot });
+        : new ItemActions({ client: bridge.client, vaultRoot });
     return this.itemActions;
+  }
+
+  /**
+   * Resolve the EasyScholar metric cache once. The cache persists through
+   * the plugin's `data.json` under its own `metricsCache` namespace, so
+   * settings survive untouched; every CLI call is the read-only
+   * `metrics query`. Without the bridge the view stays badge-free.
+   */
+  private getMetricsCache(): MetricsCache | undefined {
+    if (this.metricsResolved) {
+      return this.metricsCache;
+    }
+    this.metricsResolved = true;
+    const bridge = this.resolvePluginBridge();
+    if (
+      bridge === undefined ||
+      bridge.client === undefined ||
+      bridge.loadData === undefined ||
+      bridge.saveData === undefined
+    ) {
+      return undefined;
+    }
+    const bridgeLoad = bridge.loadData;
+    const bridgeSave = bridge.saveData;
+    const cache = new MetricsCache({
+      client: bridge.client,
+      ttlDays: () => bridge.settings.metricTtlDays,
+      enabled: () => metricsEnabledOf(bridge.settings),
+      load: async () => {
+        const data = await bridgeLoad();
+        return typeof data === "object" && data !== null
+          ? (data as Record<string, unknown>).metricsCache
+          : undefined;
+      },
+      save: async (payload: unknown) => {
+        const current = (await bridgeLoad().catch(() => undefined)) ?? {};
+        const merged =
+          typeof current === "object" && current !== null
+            ? { ...(current as Record<string, unknown>), metricsCache: payload }
+            : { metricsCache: payload };
+        await bridgeSave(merged);
+      },
+    });
+    this.metricsCache = cache;
+    void cache.initialize().then(() => {
+      // Persisted badges become visible as soon as they are parsed.
+      if (this.open) {
+        this.render();
+      }
+    });
+    this.registerMetricsCommands();
+    return cache;
+  }
+
+  /** Register the two refresh commands (design §10.3) on the plugin. */
+  private registerMetricsCommands(): void {
+    const bridge = this.resolvePluginBridge();
+    if (bridge?.addCommand === undefined) {
+      return;
+    }
+    bridge.addCommand({
+      id: REFRESH_JOURNAL_COMMAND,
+      name: "Refresh metrics for the current journal",
+      callback: () => void this.refreshCurrentJournal(),
+    });
+    bridge.addCommand({
+      id: REFRESH_ALL_COMMAND,
+      name: "Refresh all expired metrics",
+      callback: () => void this.refreshAllExpired(),
+    });
+  }
+
+  /** Human summary of one refresh attempt (surface via Notice). */
+  private metricsNotice(result: RefreshResult): string {
+    switch (result.status) {
+      case "refreshed":
+        return "Journal metrics refreshed.";
+      case "backoff":
+        return "Metrics refresh is on backoff (previous attempt failed).";
+      case "failed":
+        return "Metrics refresh failed; cached values were kept.";
+      default:
+        return "Nothing to refresh for this paper.";
+    }
+  }
+
+  /** Command: refresh metrics for the currently selected paper's journal. */
+  private async refreshCurrentJournal(): Promise<void> {
+    const cache = this.getMetricsCache();
+    if (cache === undefined) {
+      this.notify("paper-notes CLI unavailable; metrics cannot refresh.");
+      return;
+    }
+    const item = this.queryItems().find(
+      (candidate) => candidate.path === this.selectedPath,
+    );
+    if (item?.record === undefined) {
+      this.notify("Select a paper to refresh its journal metrics.");
+      return;
+    }
+    const result = await cache.refresh(item.record);
+    if (this.open) {
+      this.render();
+    }
+    this.notify(this.metricsNotice(result));
+  }
+
+  /** Background/command refresh of every missing or expired journal. */
+  private async refreshAllExpired(): Promise<void> {
+    const cache = this.getMetricsCache();
+    if (cache === undefined) {
+      return;
+    }
+    await cache.refreshExpired(this.source.getRecords());
+    if (this.open) {
+      this.render();
+    }
+  }
+
+  /** Cache entry behind one display row (badges), if any. */
+  private metricEntryOf(item: LibraryItem): CachedMetricsEntry | undefined {
+    const cache = this.metricsCache;
+    if (cache === undefined || item.record === undefined) {
+      return undefined;
+    }
+    return cache.getEntryFor(item.record);
+  }
+
+  /** Effective metric TTL from the live plugin settings. */
+  private metricTtlDays(): number {
+    const bridge = this.resolvePluginBridge();
+    return bridge?.settings.metricTtlDays ?? DEFAULT_SETTINGS.metricTtlDays;
   }
 
   /** Lazily load the modal classes (kept off the static import graph). */

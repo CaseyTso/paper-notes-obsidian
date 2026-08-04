@@ -26,6 +26,12 @@ export interface PaperNotesSettings {
   selectedCsl: string;
   /** EasyScholar metric cache lifetime in days (design: 30). */
   metricTtlDays: number;
+  /**
+   * Show EasyScholar metric badges in the library (UI-only volatile
+   * data). Optional: absent means enabled (see `metricsEnabledOf`), so
+   * the persisted-defaults contract of `DEFAULT_SETTINGS` stays stable.
+   */
+  metricsEnabled?: boolean;
 }
 
 export const DEFAULT_SETTINGS: PaperNotesSettings = {
@@ -67,5 +73,16 @@ export function normalizeSettings(loaded: unknown): PaperNotesSettings {
   ) {
     settings.metricTtlDays = source.metricTtlDays;
   }
+  if (typeof source.metricsEnabled === "boolean") {
+    settings.metricsEnabled = source.metricsEnabled;
+  }
   return settings;
+}
+
+/**
+ * Effective metrics-badge toggle: enabled unless explicitly disabled.
+ * Absent/legacy `data.json` values keep badges on (UI-only volatile data).
+ */
+export function metricsEnabledOf(settings: PaperNotesSettings): boolean {
+  return settings.metricsEnabled !== false;
 }
