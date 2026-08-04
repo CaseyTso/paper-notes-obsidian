@@ -22,7 +22,11 @@ export interface PaperNotesSettings {
   pdfEngine: string;
   /** Reference DOCX used for export styling (empty when unset). */
   referenceDocx: string;
-  /** Globally selected CSL style (empty when unset). */
+  /**
+   * Globally selected CSL style (Task 28): the style's file name inside
+   * the vault-level `.paper-notes/csl/` directory (empty when unset).
+   * CSL configuration is vault configuration, never paper metadata.
+   */
   selectedCsl: string;
   /** EasyScholar metric cache lifetime in days (design: 30). */
   metricTtlDays: number;
@@ -44,6 +48,13 @@ export const DEFAULT_SETTINGS: PaperNotesSettings = {
   selectedCsl: "",
   metricTtlDays: 30,
 };
+
+/**
+ * Vault-relative directory holding user-imported, validated CSL styles
+ * (design spec §13). CSL styles are vault configuration assets, not
+ * generated bibliographic data.
+ */
+export const CSL_STYLE_DIR = ".paper-notes/csl";
 
 const STRING_FIELDS = [
   "cliPath",
