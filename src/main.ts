@@ -18,6 +18,13 @@ import {
   normalizeSettings,
   type PaperNotesSettings,
 } from "./settings";
+import { createCitationPickerModal } from "./modals/citation-picker-modal";
+import {
+  insertCitation,
+  searchCitationCandidates,
+  type CitationEditorPort,
+} from "./services/citation-inserter";
+import type { PaperRecord } from "./types/paper";
 import {
   PaperNotesLibraryView,
   VIEW_TYPE_PAPER_NOTES,
@@ -27,6 +34,9 @@ import {
 export { VIEW_TYPE_PAPER_NOTES };
 
 export const OPEN_LIBRARY_COMMAND = "paper-notes-open-library";
+
+/** Command id for the keyboard citation picker (Task 27). */
+export const INSERT_CITATION_COMMAND = "paper-notes-insert-citation";
 
 /**
  * Read-only Obsidian vault adapter for the in-memory index (Task 23).
@@ -91,6 +101,16 @@ export default class PaperNotesPlugin extends Plugin {
       id: OPEN_LIBRARY_COMMAND,
       name: "Open literature library",
       callback: () => this.activateLibraryView(),
+    });
+    // Command-driven citation picker (Task 27): no hardcoded default
+    // hotkey, and no editor-typing interception — typing `@` never
+    // auto-activates the picker.
+    this.addCommand({
+      id: INSERT_CITATION_COMMAND,
+      name: "Insert citation",
+      callback: () => {
+        void this.openCitationPicker();
+      },
     });
     await this.initializeCliBridge();
     this.initializeLibraryIndex();
@@ -226,5 +246,32 @@ export default class PaperNotesPlugin extends Plugin {
       leaf.setViewState({ type: VIEW_TYPE_PAPER_NOTES, active: true });
     }
     void workspace.revealLeaf(leaf);
+  }
+
+  /**
+   * Open the keyboard citation picker against the active Markdown editor
+   * and the current index records. The editor is accessed structurally
+   * through `workspace.activeEditor` so no additional obsidian runtime
+   * value imports enter the static graph. No-op when no editor is active
+   * (visual/UX polish is deferred to Task 33 Gate D).
+   */
+  private async openCitationPicker(): Promise<void> {
+    const workspace = this.app.workspace as {
+      activeEditor?: { editor?: CitationEditorPort | null } | null;
+    };
+    const editor = workspace.activeEditor?.editor;
+    if (editor === undefined || editor === null) {
+      return;
+    }
+    const records = this.libraryIndex?.getRecords() ?? [];
+    try {
+      const modal = await createCitationPickerModal(this.app, {
+        search: (query: string) => searchCitationCandidates(records, query),
+        onPick: (selected: PaperRecord[]) => insertCitation(editor, selected),
+      });
+      modal.open();
+    } catch {
+      // Modal unavailable in a headless context; the command is a no-op.
+    }
   }
 }
