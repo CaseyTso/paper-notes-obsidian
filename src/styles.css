@@ -202,3 +202,71 @@
 .paper-notes-library-cards-row:hover {
   background: var(--background-modifier-hover);
 }
+
+/* Citation picker modal (Task 27; Repair: Task 27 R9 — the picker rendered
+   with zero styling, so the toggled `is-selected` rows were invisible).
+   Full layout for the command-driven multi-select modal. */
+.paper-notes-citation-input {
+  width: 100%;
+  margin-bottom: 8px;
+}
+
+.paper-notes-citation-results {
+  max-height: 320px;
+  overflow-y: auto;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 6px;
+}
+
+.paper-notes-citation-row {
+  padding: 6px 10px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: var(--font-ui-small);
+  color: var(--text-normal);
+}
+
+.paper-notes-citation-row:hover {
+  background: var(--background-modifier-hover);
+}
+
+.paper-notes-citation-row.is-selected {
+  background: var(--background-modifier-active);
+  box-shadow: inset 3px 0 0 var(--interactive-accent);
+}
+
+.paper-notes-citation-row.is-selected::after {
+  content: " ✓";
+  color: var(--interactive-accent);
+  float: right;
+}
+
+.paper-notes-citation-selection-summary {
+  margin-top: 8px;
+  padding: 6px 10px;
+  border-top: 1px solid var(--background-modifier-border);
+  font-size: var(--font-ui-small);
+  color: var(--text-muted);
+}
+
+.paper-notes-citation-selection-count {
+  font-weight: var(--font-semibold);
+  color: var(--text-normal);
+}
+
+.paper-notes-citation-selection-keys {
+  margin-top: 2px;
+  word-break: break-all;
+}
+
+.paper-notes-citation-selection-empty {
+  font-style: italic;
+}
+
+/* Shared modal footer actions (citation picker, CSL manager, exports…). */
+.paper-notes-modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 12px;
+}

@@ -53,6 +53,7 @@ export function createCitationPickerModal(
   class CitationPickerModal extends Modal {
     private inputEl!: HTMLInputElement;
     private resultsEl!: HTMLElement;
+    private summaryEl!: HTMLElement;
     private results: PaperRecord[] = [];
     private selected: PaperRecord[] = [];
 
@@ -77,6 +78,13 @@ export function createCitationPickerModal(
       this.resultsEl = this.contentEl.createDiv({
         cls: "paper-notes-citation-results",
       });
+      // Persistent selection summary (Repair: Task 27 R9): the picked
+      // count and citation keys stay visible above the action buttons so
+      // the user can confirm the multi-selection before inserting, even
+      // when the current search filters selected rows out of the list.
+      this.summaryEl = this.contentEl.createDiv({
+        cls: "paper-notes-citation-selection-summary",
+      });
       this.renderActions();
       this.refresh();
     }
@@ -98,6 +106,27 @@ export function createCitationPickerModal(
         }
         row.addEventListener("click", () => this.toggle(record));
       }
+      this.renderSummary();
+    }
+
+    /** Keep the "已选 N 篇 + keys" strip in sync with the selection. */
+    private renderSummary(): void {
+      this.summaryEl.empty();
+      if (this.selected.length === 0) {
+        this.summaryEl.createDiv({
+          cls: "paper-notes-citation-selection-empty",
+          text: "尚未选择",
+        });
+        return;
+      }
+      this.summaryEl.createDiv({
+        cls: "paper-notes-citation-selection-count",
+        text: `已选 ${this.selected.length} 篇`,
+      });
+      const keys = this.summaryEl.createDiv({
+        cls: "paper-notes-citation-selection-keys",
+      });
+      keys.setText(this.selected.map((record) => record.key).join(", "));
     }
 
     private toggle(record: PaperRecord): void {

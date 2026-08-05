@@ -15,6 +15,12 @@
  * - Insertion at the editor cursor / replacing the active selection.
  * - Alias search inserts the record's current key.
  * - `paper_id` is never part of search or of inserted prose.
+ * - Selection feedback (Repair: Task 27 R9): toggled rows carry the
+ *   `is-selected` class and the modal renders a persistent selection
+ *   summary ("已选 N 篇" + keys, or "尚未选择" when empty) that stays
+ *   correct even when the current search filters selected rows out.
+ * - styles.css carries the citation modal layout and selected/hover styles
+ *   (text assertion on the shipped stylesheet).
  *
  * The modal is exercised through a fake DOM (the `obsidian` runtime mock
  * provides `Modal` plus minimal `createEl`/`createDiv` nodes); no real
@@ -22,6 +28,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { readFileSync } from "node:fs";
 
 import { MarkdownView, type App, type PluginManifest } from "obsidian";
 
@@ -66,16 +73,25 @@ vi.mock("obsidian", () => {
   function makeFakeEl(): FakeEl {
     const children: FakeEl[] = [];
     const listeners: Record<string, Array<(event?: unknown) => void>> = {};
+    const classes: string[] = [];
     const el: FakeEl = {
       textContent: "",
       value: "",
       cls: "",
+      classes,
       children,
       listeners,
       setText(text: string): void {
         el.textContent = text;
       },
-      addClass(_cls: string): void {},
+      addClass(cls: string): void {
+        if (!classes.includes(cls)) {
+          classes.push(cls);
+        }
+      },
+      hasClass(cls: string): boolean {
+        return classes.includes(cls);
+      },
       empty(): void {
         children.length = 0;
       },
@@ -184,10 +200,12 @@ interface FakeEl {
   textContent: string;
   value: string;
   cls: string;
+  classes: string[];
   children: FakeEl[];
   listeners: Record<string, Array<(event?: unknown) => void>>;
   setText(text: string): void;
   addClass(cls: string): void;
+  hasClass(cls: string): boolean;
   empty(): void;
   createDiv(options?: { cls?: string; text?: string }): FakeEl;
   createEl(
@@ -693,6 +711,20 @@ describe("citation picker modal", () => {
     return button;
   }
 
+  function summaryEl(modal: { contentEl: HTMLElement }): FakeEl {
+    const summary = (modal.contentEl as unknown as FakeEl).children.find(
+      (child) => child.cls === "paper-notes-citation-selection-summary",
+    );
+    if (summary === undefined) {
+      throw new Error("citation selection summary not rendered");
+    }
+    return summary;
+  }
+
+  function summaryChild(summary: FakeEl, cls: string): FakeEl | undefined {
+    return summary.children.find((child) => child.cls === cls);
+  }
+
   it("renders one labelled row per search result", async () => {
     const modal = await openPicker(() => {});
     inputEl(modal).value = "crispr";
@@ -763,5 +795,130 @@ describe("citation picker modal", () => {
     insertButton(modal).listeners["click"]?.forEach((handler) => handler());
 
     expect(onPick).not.toHaveBeenCalled();
+  });
+
+  it("adds and removes the is-selected class as rows are toggled", async () => {
+    const modal = await openPicker(() => {});
+    expect(rows(modal)).toHaveLength(2);
+    expect(rows(modal)[0].hasClass("is-selected")).toBe(false);
+
+    rows(modal)[0].listeners["click"]?.forEach((handler) => handler());
+    expect(rows(modal)[0].hasClass("is-selected")).toBe(true);
+    expect(rows(modal)[1].hasClass("is-selected")).toBe(false);
+
+    rows(modal)[0].listeners["click"]?.forEach((handler) => handler());
+    expect(rows(modal)[0].hasClass("is-selected")).toBe(false);
+  });
+
+  it("keeps the is-selected class when the search query changes", async () => {
+    const modal = await openPicker(() => {});
+    // Select the CRISPR record, then filter down to it via the query: the
+    // surviving row must still render as selected (re-render reads the
+    // selection, not a transient click).
+    rows(modal)[1].listeners["click"]?.forEach((handler) => handler());
+    inputEl(modal).value = "crispr";
+    inputEl(modal).listeners["input"]?.forEach((handler) => handler());
+    expect(rows(modal)).toHaveLength(1);
+    expect(rows(modal)[0].hasClass("is-selected")).toBe(true);
+  });
+
+  it("shows 尚未选择 in the summary before anything is picked", async () => {
+    const modal = await openPicker(() => {});
+    const summary = summaryEl(modal);
+    expect(summaryChild(summary, "paper-notes-citation-selection-empty"))
+      .toBeDefined();
+    expect(
+      summaryChild(summary, "paper-notes-citation-selection-empty")
+        ?.textContent,
+    ).toBe("尚未选择");
+    expect(summaryChild(summary, "paper-notes-citation-selection-count"))
+      .toBeUndefined();
+  });
+
+  it("renders 已选 N 篇 with the citation keys as rows are picked", async () => {
+    const modal = await openPicker(() => {});
+    const summary = summaryEl(modal);
+
+    rows(modal)[1].listeners["click"]?.forEach((handler) => handler());
+    expect(
+      summaryChild(summary, "paper-notes-citation-selection-count")
+        ?.textContent,
+    ).toBe("已选 1 篇");
+    expect(
+      summaryChild(summary, "paper-notes-citation-selection-keys")
+        ?.textContent,
+    ).toBe("li2023");
+
+    rows(modal)[0].listeners["click"]?.forEach((handler) => handler());
+    expect(
+      summaryChild(summary, "paper-notes-citation-selection-count")
+        ?.textContent,
+    ).toBe("已选 2 篇");
+    expect(
+      summaryChild(summary, "paper-notes-citation-selection-keys")
+        ?.textContent,
+    ).toBe("li2023, key");
+  });
+
+  it("clears back to 尚未选择 when the last selection is toggled off", async () => {
+    const modal = await openPicker(() => {});
+    const summary = summaryEl(modal);
+    rows(modal)[0].listeners["click"]?.forEach((handler) => handler());
+    rows(modal)[0].listeners["click"]?.forEach((handler) => handler());
+    expect(
+      summaryChild(summary, "paper-notes-citation-selection-empty")
+        ?.textContent,
+    ).toBe("尚未选择");
+    expect(summaryChild(summary, "paper-notes-citation-selection-count"))
+      .toBeUndefined();
+  });
+
+  it("keeps selected keys visible in the summary when the query filters them out", async () => {
+    const modal = await openPicker(() => {});
+    rows(modal)[1].listeners["click"]?.forEach((handler) => handler()); // li2023
+    inputEl(modal).value = "landmark";
+    inputEl(modal).listeners["input"]?.forEach((handler) => handler());
+    // The selected row is no longer in the result list…
+    expect(rows(modal)).toHaveLength(1);
+    expect(rows(modal)[0].textContent).toContain("landmark");
+    // …but the persistent summary still names it before insertion.
+    expect(
+      summaryChild(summaryEl(modal), "paper-notes-citation-selection-count")
+        ?.textContent,
+    ).toBe("已选 1 篇");
+    expect(
+      summaryChild(summaryEl(modal), "paper-notes-citation-selection-keys")
+        ?.textContent,
+    ).toBe("li2023");
+  });
+});
+
+describe("citation picker styles (Repair: Task 27 R9)", () => {
+  // The source stylesheet is the contract: the build copies it verbatim to
+  // the root `styles.css` artifact, which `npm test` would otherwise read
+  // stale (the build runs after the tests).
+  const css = readFileSync(new URL("../src/styles.css", import.meta.url), "utf8");
+
+  it("defines every citation modal layout class used by the picker", () => {
+    for (const selector of [
+      ".paper-notes-citation-input",
+      ".paper-notes-citation-results",
+      ".paper-notes-citation-row",
+      ".paper-notes-citation-row:hover",
+      ".paper-notes-citation-row.is-selected",
+      ".paper-notes-citation-selection-summary",
+      ".paper-notes-modal-actions",
+    ]) {
+      expect(css).toContain(selector);
+    }
+  });
+
+  it("makes the selected state visually distinct (highlight plus marker)", () => {
+    // Background highlight on the selected row.
+    expect(css).toMatch(
+      /\.paper-notes-citation-row\.is-selected\s*\{[^}]*background/s,
+    );
+    // Checkmark marker (or equivalent left indicator bar) on selected rows.
+    expect(css).toMatch(/content:\s*" ✓"/);
   });
 });
