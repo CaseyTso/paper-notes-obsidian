@@ -58,6 +58,14 @@ export const EXPORT_DOCX_COMMAND = "paper-notes-export-docx";
 export const EXPORT_PDF_COMMAND = "paper-notes-export-pdf";
 
 /**
+ * Debounce window for the metadata-cache readiness rescan (Gate D R2).
+ * Obsidian fires a burst of `resolved` events while it builds the cache at
+ * startup; collapsing them into one trailing scan keeps the rescan idempotent
+ * and cheap.
+ */
+export const METADATA_RESCAN_DEBOUNCE_MS = 300;
+
+/**
  * Read-only Obsidian vault adapter for the in-memory index (Task 23).
  * Frontmatter comes from the metadata cache (already-parsed YAML); full-text
  * reads use `cachedRead` so on-disk I/O stays cached. Never writes notes.
@@ -111,6 +119,9 @@ export default class PaperNotesPlugin extends Plugin {
   /** Abort controllers of in-flight Pandoc exports, cancelled on unload. */
   private runningExports = new Set<AbortController>();
 
+  /** Pending metadata-cache readiness rescan (Gate D R2), cancelled on unload. */
+  private metadataRescanTimer: ReturnType<typeof setTimeout> | undefined;
+
   async onload(): Promise<void> {
     this.registerView(VIEW_TYPE_PAPER_NOTES, (leaf) => {
       this.libraryView = new PaperNotesLibraryView(
@@ -155,6 +166,10 @@ export default class PaperNotesPlugin extends Plugin {
   }
 
   async onunload(): Promise<void> {
+    if (this.metadataRescanTimer !== undefined) {
+      clearTimeout(this.metadataRescanTimer);
+      this.metadataRescanTimer = undefined;
+    }
     for (const controller of this.runningExports) {
       controller.abort();
     }
@@ -205,6 +220,50 @@ export default class PaperNotesPlugin extends Plugin {
     );
     this.libraryIndex.scanAll();
     this.registerVaultEvents(vault);
+    this.registerMetadataCacheRescan(metadataCache);
+  }
+
+  /**
+   * Obsidian builds the metadata cache asynchronously: at plugin load
+   * `getFileCache()` commonly returns undefined, so the initial `scanAll()`
+   * marks every canonical note `missing_frontmatter` (Gate D R2). The
+   * `resolved` event fires once the whole cache is built (and again each
+   * time files are modified afterwards); on each fire we schedule a
+   * debounced idempotent rescan and refresh any library view that may
+   * already be open. Unregistered on unload via `registerEvent`; a pending
+   * debounce is cancelled in `onunload`.
+   */
+  private registerMetadataCacheRescan(metadataCache: MetadataCache): void {
+    if (
+      typeof metadataCache.on !== "function" ||
+      typeof this.registerEvent !== "function"
+    ) {
+      return;
+    }
+    this.registerEvent(
+      metadataCache.on("resolved", () => this.scheduleMetadataRescan()),
+    );
+  }
+
+  /**
+   * Debounced rescan gate: the cache-build-finished signal can only fix
+   * pending invalidity, so a healthy index (no invalid records) skips the
+   * rescan. A burst of signals (e.g. a modification batch re-resolving many
+   * files) collapses into one trailing scan.
+   */
+  private scheduleMetadataRescan(): void {
+    const index = this.libraryIndex;
+    if (index === undefined || index.getInvalidRecords().length === 0) {
+      return;
+    }
+    if (this.metadataRescanTimer !== undefined) {
+      clearTimeout(this.metadataRescanTimer);
+    }
+    this.metadataRescanTimer = setTimeout(() => {
+      this.metadataRescanTimer = undefined;
+      this.libraryIndex?.scanAll();
+      this.libraryView?.refresh();
+    }, METADATA_RESCAN_DEBOUNCE_MS);
   }
 
   /**

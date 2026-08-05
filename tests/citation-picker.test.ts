@@ -220,7 +220,10 @@ function makeApp(): App {
   };
   const app = {
     vault,
-    metadataCache: { getFileCache: () => undefined },
+    metadataCache: {
+      getFileCache: () => undefined,
+      on: (): { name: string } => ({ name: "resolved" }),
+    },
     workspace: {
       getLeavesOfType: () => [],
       getRightLeaf: () => null,
@@ -277,7 +280,7 @@ describe("paper-notes-insert-citation command registration", () => {
     expect(command.hotkeys).toBeUndefined();
   });
 
-  it("registers only vault events, never an editor-typing/@ interceptor", async () => {
+  it("registers only vault events plus the metadata-cache resolved listener, never an editor-typing/@ interceptor", async () => {
     const plugin = makePlugin(makeApp());
     await plugin.onload();
 
@@ -286,6 +289,7 @@ describe("paper-notes-insert-citation command registration", () => {
       "modify",
       "delete",
       "rename",
+      "resolved",
     ]);
     expect(
       state.registeredEvents.some((name) => name.includes("editor")),
