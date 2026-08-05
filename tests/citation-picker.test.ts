@@ -381,6 +381,25 @@ describe("searchCitationCandidates", () => {
       .toEqual(["key"]);
   });
 
+  it("matches multi-word queries by token AND when tokens are scattered", () => {
+    // "landmark" (title) and "medicine" (journal) never appear contiguously.
+    expect(
+      searchCitationCandidates(records, "landmark medicine").map((r) => r.key),
+    ).toEqual(["key"]);
+    // Consecutive spaces produce no empty tokens; mixed case stays
+    // case-insensitive.
+    expect(
+      searchCitationCandidates(records, "  LANDMARK   medicine ").map(
+        (r) => r.key,
+      ),
+    ).toEqual(["key"]);
+  });
+
+  it("does not match multi-word queries that miss any token", () => {
+    expect(searchCitationCandidates(records, "landmark missing")).toEqual([]);
+    expect(searchCitationCandidates(records, "missing medicine")).toEqual([]);
+  });
+
   it("matches the DOI", () => {
     expect(
       searchCitationCandidates(records, "10.1016/j.cell.2023.00000").map(

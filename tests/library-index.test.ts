@@ -636,6 +636,60 @@ describe("search", () => {
     expect(index.search("ZHANG")).toHaveLength(1);
   });
 
+  it("matches multi-word queries by token AND when tokens are scattered", () => {
+    const { index } = twoPaperIndex();
+    // "alpha" (title/abstract) and "text" (abstract) never appear contiguously.
+    expect(index.search("alpha text").map((r) => r.key)).toEqual(["alpha2024"]);
+    // "signaling" (title) and "reports" (journal) are scattered within beta2023.
+    expect(index.search("signaling reports").map((r) => r.key)).toEqual([
+      "beta2023",
+    ]);
+  });
+
+  it("does not match multi-word queries that miss any token", () => {
+    const { index } = twoPaperIndex();
+    expect(index.search("alpha missing")).toHaveLength(0);
+    expect(index.search("missing reports")).toHaveLength(0);
+  });
+
+  it("ignores consecutive-space empty tokens and keeps single-token behavior", () => {
+    const { index } = twoPaperIndex();
+    expect(index.search("alpha   text").map((r) => r.key)).toEqual([
+      "alpha2024",
+    ]);
+    expect(index.search("  alpha  ").map((r) => r.key)).toEqual(["alpha2024"]);
+    expect(index.search("signaling").map((r) => r.key)).toEqual(["beta2023"]);
+  });
+
+  it("keeps multi-word matching case-insensitive", () => {
+    const { index } = twoPaperIndex();
+    expect(index.search("ALPHA TEXT").map((r) => r.key)).toEqual(["alpha2024"]);
+    expect(index.search("SIGNALING Reports").map((r) => r.key)).toEqual([
+      "beta2023",
+    ]);
+  });
+
+  it("matches hyphenated and plural variants through per-token substrings (Gate D)", () => {
+    const vault = new FakeVault();
+    vault.add(
+      `${ROOT}/gamma2022/gamma2022.md`,
+      makeFrontmatter({
+        citation_key: "gamma2022",
+        paper_id: "9f9d0d1a-2a2b-3c3c-4d4d-5e5e5e5e5e5e",
+        title: "Gene-expression programs define tumor states",
+        abstract: "Programs of gene expression control cell identity.",
+      }),
+    );
+    const index = new LibraryIndex(vault, ROOT);
+    index.scanAll();
+    // The contiguous phrase "gene expression program" never occurs (the
+    // title is hyphenated, the abstract separates "programs" and
+    // "expression"), but every token does -> Gate D case hits.
+    expect(index.search("gene expression program").map((r) => r.key)).toEqual([
+      "gamma2022",
+    ]);
+  });
+
   it("returns all records for an empty query in scan order", () => {
     const { index } = twoPaperIndex();
     expect(index.search("").map((r) => r.key)).toEqual([
@@ -702,6 +756,60 @@ describe("explicit full-text search", () => {
     expect(vault.readCalls).toEqual([
       `${ROOT}/alpha2024/minerUmd_alpha2024.md`,
       `${ROOT}/beta2023/minerUmd_beta2023.md`,
+    ]);
+  });
+
+  it("matches multi-word queries in MinerU content by token AND", async () => {
+    const vault = new FakeVault();
+    vault.add(
+      `${ROOT}/alpha2024/alpha2024.md`,
+      makeFrontmatter({ abstract: "" }),
+    );
+    vault.add(
+      `${ROOT}/beta2023/beta2023.md`,
+      makeFrontmatter({
+        citation_key: "beta2023",
+        paper_id: UUID_B,
+        title: "Beta",
+        abstract: "",
+      }),
+    );
+    vault.addContent(
+      `${ROOT}/alpha2024/minerUmd_alpha2024.md`,
+      "Gene-expression programs in the tumor microenvironment.",
+    );
+    vault.addContent(
+      `${ROOT}/beta2023/minerUmd_beta2023.md`,
+      "No matching content here.",
+    );
+    const index = new LibraryIndex(vault, ROOT);
+    index.scanAll();
+
+    // "gene expression program" never appears contiguously in the MinerU
+    // prose (hyphenated "gene-expression", plural "programs"), but every
+    // token does -> token AND hits.
+    const results = await index.searchFullText("gene expression program");
+    expect(results.map((r) => r.key)).toEqual(["alpha2024"]);
+  });
+
+  it("does not match full-text multi-word queries missing any token", async () => {
+    const vault = new FakeVault();
+    vault.add(
+      `${ROOT}/alpha2024/alpha2024.md`,
+      makeFrontmatter({ abstract: "" }),
+    );
+    vault.addContent(
+      `${ROOT}/alpha2024/minerUmd_alpha2024.md`,
+      "Gene-expression programs in the tumor microenvironment.",
+    );
+    const index = new LibraryIndex(vault, ROOT);
+    index.scanAll();
+
+    await expect(
+      index.searchFullText("gene expression missing"),
+    ).resolves.toEqual([]);
+    expect(vault.readCalls).toEqual([
+      `${ROOT}/alpha2024/minerUmd_alpha2024.md`,
     ]);
   });
 

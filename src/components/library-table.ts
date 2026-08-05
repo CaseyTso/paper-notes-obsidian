@@ -13,6 +13,7 @@
  */
 
 import type { PaperRecord } from "../types/paper";
+import { matchesAllTokens, tokenizeQuery } from "../services/search-tokens";
 
 /** Approved reading-status vocabulary (design spec §6.1). */
 export type ReadingStatus = "unread" | "reading" | "read";
@@ -287,11 +288,13 @@ export function searchLibraryItems(
   items: LibraryItem[],
   query: string,
 ): LibraryItem[] {
-  const normalized = query.trim().toLowerCase();
-  if (normalized.length === 0) {
+  const tokens = tokenizeQuery(query);
+  if (tokens.length === 0) {
     return items;
   }
-  return items.filter((item) => searchTextOf(item).includes(normalized));
+  return items.filter((item) =>
+    matchesAllTokens(searchTextOf(item), tokens),
+  );
 }
 
 export interface LibrarySort {

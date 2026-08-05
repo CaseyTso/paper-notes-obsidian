@@ -18,6 +18,7 @@
  *   per the Obsidian editor contract).
  */
 import type { PaperRecord } from "../types/paper";
+import { matchesAllTokens, tokenizeQuery } from "./search-tokens";
 
 /** Minimal editor surface needed to insert citations. */
 export interface CitationEditorPort {
@@ -33,12 +34,12 @@ export function searchCitationCandidates(
   records: PaperRecord[],
   query: string,
 ): PaperRecord[] {
-  const normalized = query.trim().toLowerCase();
-  if (normalized.length === 0) {
+  const tokens = tokenizeQuery(query);
+  if (tokens.length === 0) {
     return records;
   }
   return records.filter((record) =>
-    citationSearchText(record).includes(normalized),
+    matchesAllTokens(citationSearchText(record), tokens),
   );
 }
 

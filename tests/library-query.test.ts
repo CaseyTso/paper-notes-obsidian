@@ -355,6 +355,22 @@ describe("searchLibraryItems", () => {
     expect(searchLibraryItems([item], "  ALPHA CELLS ")).toHaveLength(1);
   });
 
+  it("matches multi-word queries by token AND when tokens are scattered", () => {
+    const [item] = buildLibraryItems([makeRecord()], [], buildOptions());
+    // "pancreas" (title) and "abstract" (abstract) never appear contiguously.
+    expect(searchLibraryItems([item], "pancreas abstract")).toHaveLength(1);
+    // Consecutive spaces produce no empty tokens.
+    expect(searchLibraryItems([item], "pancreas   abstract")).toHaveLength(1);
+    // Mixed case stays case-insensitive.
+    expect(searchLibraryItems([item], "PANCREAS Abstract")).toHaveLength(1);
+  });
+
+  it("does not match multi-word queries that miss any token", () => {
+    const [item] = buildLibraryItems([makeRecord()], [], buildOptions());
+    expect(searchLibraryItems([item], "pancreas missing")).toHaveLength(0);
+    expect(searchLibraryItems([item], "missing abstract")).toHaveLength(0);
+  });
+
   it("returns everything for empty/whitespace queries and nothing on a miss", () => {
     const items = fixtureItems();
     expect(searchLibraryItems(items, "")).toHaveLength(3);

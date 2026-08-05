@@ -30,6 +30,7 @@ import type {
   ReadOnlyError,
 } from "../types/paper";
 import { PAPER_SCHEMA_VERSION } from "../types/paper";
+import { matchesAllTokens, tokenizeQuery } from "./search-tokens";
 
 /** Read-only contract over the Obsidian vault (implemented in main.ts). */
 export interface LiteratureVaultAdapter {
@@ -334,14 +335,20 @@ export class LibraryIndex {
   /**
    * Default search: title, authors, journal, year, identifiers, citation
    * key, aliases and abstract. MinerU full text is never read here.
+   *
+   * Multi-word queries match by token AND: every whitespace-separated
+   * token must appear in the record's searchable text (tokens may be
+   * scattered across fields). Empty tokens from consecutive whitespace are
+   * ignored; a single-token query behaves exactly like the previous
+   * whole-phrase substring match.
    */
   search(query: string): PaperRecord[] {
-    const normalized = query.trim().toLowerCase();
+    const tokens = tokenizeQuery(query);
     const matched =
-      normalized.length === 0
+      tokens.length === 0
         ? this.records
         : this.records.filter((record) =>
-            searchText(record).includes(normalized),
+            matchesAllTokens(searchText(record), tokens),
           );
     return matched.map(cloneRecord);
   }
@@ -358,8 +365,8 @@ export class LibraryIndex {
     options: FullTextSearchOptions = {},
   ): Promise<PaperRecord[]> {
     const { signal } = options;
-    const normalized = query.trim().toLowerCase();
-    if (normalized.length === 0) {
+    const tokens = tokenizeQuery(query);
+    if (tokens.length === 0) {
       return this.records.map(cloneRecord);
     }
     const matched: PaperRecord[] = [];
@@ -367,7 +374,7 @@ export class LibraryIndex {
       if (signal?.aborted) {
         throw new SearchCancelledError();
       }
-      if (searchText(record).includes(normalized)) {
+      if (matchesAllTokens(searchText(record), tokens)) {
         matched.push(record);
         continue;
       }
@@ -383,7 +390,7 @@ export class LibraryIndex {
       if (signal?.aborted) {
         throw new SearchCancelledError();
       }
-      if (content.toLowerCase().includes(normalized)) {
+      if (matchesAllTokens(content.toLowerCase(), tokens)) {
         matched.push(record);
       }
     }
