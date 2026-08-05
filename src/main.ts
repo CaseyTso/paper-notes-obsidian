@@ -388,7 +388,7 @@ export default class PaperNotesPlugin extends Plugin {
     }
     const records = this.libraryIndex?.getRecords() ?? [];
     try {
-      const modal = await createCitationPickerModal(this.app, {
+      const modal = createCitationPickerModal(this.app, {
         search: (query: string) => searchCitationCandidates(records, query),
         onPick: (selected: PaperRecord[]) => insertCitation(editor, selected),
       });
@@ -496,7 +496,7 @@ export default class PaperNotesPlugin extends Plugin {
           : "Reference DOCX: Pandoc default";
 
     try {
-      const modal = await createExportConfirmationModal(
+      const modal = createExportConfirmationModal(
         this.app,
         {
           format,

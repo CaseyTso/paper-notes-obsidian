@@ -8,11 +8,12 @@
  * with open / show-in-Finder actions, failure with stderr, blocked with
  * unknown keys, or cancelled) is rendered inline.
  *
- * `Modal` is only imported inside `createExportConfirmationModal` so the
- * plugin's static import graph stays obsidian-value free for the shared
- * test mock (same pattern as the CSL style modal).
+ * `Modal` is imported statically (Repair: Gate D R8): a dynamic
+ * `import("obsidian")` survives esbuild's CJS bundle and fails at runtime,
+ * because Obsidian injects the `obsidian` module via `require`, not the
+ * ESM loader. The shared test mock provides `Modal`.
  */
-import type { App } from "obsidian";
+import { Modal, type App } from "obsidian";
 
 import type {
   ExportFormat,
@@ -53,14 +54,12 @@ export interface ExportConfirmationHandle {
   contentEl: HTMLElement;
 }
 
-/** Create the export confirmation modal. `Modal` is imported dynamically. */
-export async function createExportConfirmationModal(
+/** Create the export confirmation modal (Repair: Gate D R8 — `Modal` statically imported). */
+export function createExportConfirmationModal(
   app: App,
   props: ExportConfirmationProps,
   callbacks: ExportConfirmationCallbacks,
-): Promise<ExportConfirmationHandle> {
-  const { Modal } = await import("obsidian");
-
+): ExportConfirmationHandle {
   class ExportConfirmationModal extends Modal {
     private statusEl!: HTMLElement;
     private actionsEl!: HTMLElement;

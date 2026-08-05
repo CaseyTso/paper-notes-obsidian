@@ -5,16 +5,16 @@
  * the imported styles (title/id/file), marks the current global default,
  * lets the user import a local `.csl` file and switch the default.
  *
- * The modal is intentionally kept off the static import graph: `Modal` is
- * only imported inside `createCslStyleModal`, so the plugin's static graph
- * stays obsidian-value free for the shared test mock (same pattern as the
- * citation picker modal).
+ * The modal imports `Modal` statically (Repair: Gate D R8): a dynamic
+ * `import("obsidian")` survives esbuild's CJS bundle and fails at runtime,
+ * because Obsidian injects the `obsidian` module via `require`, not the
+ * ESM loader. The shared test mock provides `Modal`.
  *
  * File picking is delegated to the caller through `pickCslFile` so the
  * DOM-specific part lives where Obsidian APIs are available; everything
  * this file does is plain element wiring over injected callbacks.
  */
-import type { App } from "obsidian";
+import { Modal, type App } from "obsidian";
 
 import type {
   CslImportResult,
@@ -44,15 +44,14 @@ export interface CslStyleModalHandle {
 }
 
 /**
- * Create the CSL style manager modal. `Modal` is imported dynamically so
- * the static import graph never reaches the `obsidian` runtime module.
+ * Create the CSL style manager modal (Repair: Gate D R8 — `Modal`
+ * statically imported; dynamic `import("obsidian")` fails in the CJS
+ * bundle).
  */
-export async function createCslStyleModal(
+export function createCslStyleModal(
   app: App,
   callbacks: CslStyleModalCallbacks,
-): Promise<CslStyleModalHandle> {
-  const { Modal } = await import("obsidian");
-
+): CslStyleModalHandle {
   class CslStyleModal extends Modal {
     private styles: CslStyleMeta[] = [];
     private listEl!: HTMLElement;

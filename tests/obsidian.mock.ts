@@ -49,3 +49,24 @@ export class ItemView {
 export class WorkspaceLeaf {
   setViewState = (): void => {};
 }
+
+export class Modal {
+  app: unknown;
+  titleEl = { setText: () => {} };
+  contentEl = {
+    empty: () => {},
+    createDiv: () => ({}),
+    createEl: () => ({}),
+  };
+
+  constructor(app: unknown) {
+    this.app = app;
+  }
+
+  open(): void {}
+  close(): void {}
+}
+
+export class Notice {
+  constructor(_message: string) {}
+}

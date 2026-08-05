@@ -655,7 +655,7 @@ describe("citation picker modal", () => {
 
   async function openPicker(onPick: (selected: PaperRecord[]) => void) {
     const app = makeApp();
-    const modal = await createCitationPickerModal(app, {
+    const modal = createCitationPickerModal(app, {
       search: (query) => searchCitationCandidates(records, query),
       onPick,
     });
@@ -715,7 +715,7 @@ describe("citation picker modal", () => {
     const onPick = vi.fn((selected: PaperRecord[]) => {
       insertCitation(editor, selected);
     });
-    const modal = await createCitationPickerModal(app, {
+    const modal = createCitationPickerModal(app, {
       search: (query) => searchCitationCandidates(records, query),
       onPick,
     });

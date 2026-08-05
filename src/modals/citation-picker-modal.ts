@@ -1,11 +1,11 @@
 /**
  * Keyboard citation picker modal (Task 27).
  *
- * Command-driven, multi-select picker for Pandoc citations. The modal is
- * intentionally kept off the static import graph: `Modal` is only imported
- * inside `createCitationPickerModal`, so the plugin's static graph stays
- * obsidian-value free for the shared test mock (same pattern as the
- * library view's lazy modal loading).
+ * Command-driven, multi-select picker for Pandoc citations. `Modal` is
+ * imported statically (Repair: Gate D R8): a dynamic `import("obsidian")`
+ * survives esbuild's CJS bundle and fails at runtime, because Obsidian
+ * injects the `obsidian` module via `require`, not the ESM loader. The
+ * shared test mock provides `Modal`, so the static import stays testable.
  *
  * Interaction model:
  * - Typing in the search input filters the candidate records (title,
@@ -21,7 +21,7 @@
  * `src/services/citation-inserter.ts`; this file is a thin Obsidian
  * wrapper.
  */
-import type { App } from "obsidian";
+import { Modal, type App } from "obsidian";
 
 import type { PaperRecord } from "../types/paper";
 import {
@@ -43,15 +43,13 @@ export interface CitationPickerHandle {
 }
 
 /**
- * Create the picker modal. `Modal` is imported dynamically so the static
- * import graph never reaches the `obsidian` runtime module.
+ * Create the picker modal (Repair: Gate D R8 — `Modal` statically
+ * imported; dynamic `import("obsidian")` fails in the CJS bundle).
  */
-export async function createCitationPickerModal(
+export function createCitationPickerModal(
   app: App,
   callbacks: CitationPickerCallbacks,
-): Promise<CitationPickerHandle> {
-  const { Modal } = await import("obsidian");
-
+): CitationPickerHandle {
   class CitationPickerModal extends Modal {
     private inputEl!: HTMLInputElement;
     private resultsEl!: HTMLElement;

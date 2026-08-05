@@ -89,7 +89,16 @@ vi.mock("obsidian", () => {
     setViewState = (): void => {};
   }
 
-  return { Plugin, ItemView, WorkspaceLeaf };
+  class Modal {
+    open(): void {}
+    close(): void {}
+  }
+
+  class Notice {
+    constructor(_message: string) {}
+  }
+
+  return { Plugin, ItemView, WorkspaceLeaf, Modal, Notice };
 });
 
 function validFrontmatter(): Record<string, unknown> {

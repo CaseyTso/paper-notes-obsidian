@@ -483,23 +483,32 @@ function makeFakeEl(): FakeEl {
   return el;
 }
 
-class FakeModal {
-  titleEl: FakeEl;
-  contentEl: FakeEl;
-  app: unknown;
+/**
+ * The mock factory is evaluated as soon as the static `import { Modal }`
+ * in the modal source runs — before the top-level `class` declarations
+ * below. `FakeModal` must therefore be created via `vi.hoisted`
+ * (Repair: Gate D R8 static-import follow-up).
+ */
+const FakeModal = vi.hoisted(() => {
+  class FakeModal {
+    titleEl: FakeEl;
+    contentEl: FakeEl;
+    app: unknown;
 
-  constructor(app: unknown) {
-    this.app = app;
-    this.titleEl = makeFakeEl();
-    this.contentEl = makeFakeEl();
+    constructor(app: unknown) {
+      this.app = app;
+      this.titleEl = makeFakeEl();
+      this.contentEl = makeFakeEl();
+    }
+
+    open(): void {
+      (this as unknown as { onOpen?: () => void }).onOpen?.();
+    }
+
+    close(): void {}
   }
-
-  open(): void {
-    (this as unknown as { onOpen?: () => void }).onOpen?.();
-  }
-
-  close(): void {}
-}
+  return FakeModal;
+});
 
 vi.mock("obsidian", () => ({ Modal: FakeModal }));
 
@@ -573,7 +582,7 @@ describe("csl style modal wiring (fake DOM)", () => {
 
   it("renders imported styles and marks the current default", async () => {
     const { callbacks } = makeModalCallbacks();
-    const handle = await createCslStyleModal({} as App, callbacks);
+    const handle = createCslStyleModal({} as App, callbacks);
 
     handle.open();
     await vi.waitFor(() => {
@@ -589,7 +598,7 @@ describe("csl style modal wiring (fake DOM)", () => {
 
   it("setting a default calls back with the row's file and re-renders", async () => {
     const { callbacks, setDefault, defaultFile } = makeModalCallbacks();
-    const handle = await createCslStyleModal({} as App, callbacks);
+    const handle = createCslStyleModal({} as App, callbacks);
 
     handle.open();
     await vi.waitFor(() => {
@@ -620,7 +629,7 @@ describe("csl style modal wiring (fake DOM)", () => {
         id: AMA_STYLE_ID,
       },
     });
-    const handle = await createCslStyleModal({} as App, callbacks);
+    const handle = createCslStyleModal({} as App, callbacks);
 
     handle.open();
     await vi.waitFor(() => {
@@ -647,7 +656,7 @@ describe("csl style modal wiring (fake DOM)", () => {
         id: AMA_STYLE_ID,
       },
     });
-    const handle = await createCslStyleModal({} as App, callbacks);
+    const handle = createCslStyleModal({} as App, callbacks);
 
     handle.open();
     await vi.waitFor(() => {
@@ -666,7 +675,7 @@ describe("csl style modal wiring (fake DOM)", () => {
     importStyle.mockRejectedValue(
       new CslStyleError("malformed_xml", "Malformed XML."),
     );
-    const handle = await createCslStyleModal({} as App, callbacks);
+    const handle = createCslStyleModal({} as App, callbacks);
 
     handle.open();
     await vi.waitFor(() => {
@@ -682,7 +691,7 @@ describe("csl style modal wiring (fake DOM)", () => {
   it("does nothing when the file pick is cancelled", async () => {
     const { callbacks, pickCslFile, importStyle } = makeModalCallbacks();
     pickCslFile.mockResolvedValue(null);
-    const handle = await createCslStyleModal({} as App, callbacks);
+    const handle = createCslStyleModal({} as App, callbacks);
 
     handle.open();
     await vi.waitFor(() => {

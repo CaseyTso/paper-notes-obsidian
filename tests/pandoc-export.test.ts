@@ -1039,23 +1039,32 @@ function makeFakeEl(): FakeEl {
   return el;
 }
 
-class FakeModal {
-  titleEl: FakeEl;
-  contentEl: FakeEl;
-  app: unknown;
+/**
+ * The mock factory is evaluated as soon as the static `import { Modal }`
+ * in the modal source runs — before the top-level `class` declarations
+ * below. `FakeModal` must therefore be created via `vi.hoisted`
+ * (Repair: Gate D R8 static-import follow-up).
+ */
+const FakeModal = vi.hoisted(() => {
+  class FakeModal {
+    titleEl: FakeEl;
+    contentEl: FakeEl;
+    app: unknown;
 
-  constructor(app: unknown) {
-    this.app = app;
-    this.titleEl = makeFakeEl();
-    this.contentEl = makeFakeEl();
+    constructor(app: unknown) {
+      this.app = app;
+      this.titleEl = makeFakeEl();
+      this.contentEl = makeFakeEl();
+    }
+
+    open(): void {
+      (this as unknown as { onOpen?: () => void }).onOpen?.();
+    }
+
+    close(): void {}
   }
-
-  open(): void {
-    (this as unknown as { onOpen?: () => void }).onOpen?.();
-  }
-
-  close(): void {}
-}
+  return FakeModal;
+});
 
 vi.mock("obsidian", () => ({ Modal: FakeModal }));
 
@@ -1135,7 +1144,7 @@ describe("export confirmation modal wiring (fake DOM)", () => {
 
   it("renders the target path, CSL title, engine line and an overwrite warning", async () => {
     const props = makeModalProps({ targetExists: true });
-    const handle = await createExportConfirmationModal({} as App, props, {
+    const handle = createExportConfirmationModal({} as App, props, {
       start: vi.fn(),
     });
 
@@ -1155,7 +1164,7 @@ describe("export confirmation modal wiring (fake DOM)", () => {
   });
 
   it("hides the overwrite warning when the target does not exist", async () => {
-    const handle = await createExportConfirmationModal(
+    const handle = createExportConfirmationModal(
       {} as App,
       makeModalProps({ targetExists: false }),
       { start: vi.fn() },
@@ -1175,7 +1184,7 @@ describe("export confirmation modal wiring (fake DOM)", () => {
       reveal: ReturnType<typeof vi.fn>;
     };
     const { callbacks, start } = makeModalCallbacks();
-    const handle = await createExportConfirmationModal({} as App, props, callbacks);
+    const handle = createExportConfirmationModal({} as App, props, callbacks);
 
     handle.open();
     click(buttonOf(actionsOf(handle), "Export"));
@@ -1202,7 +1211,7 @@ describe("export confirmation modal wiring (fake DOM)", () => {
         result: Promise.resolve(FAILED_RESULT),
       })),
     });
-    const handle = await createExportConfirmationModal(
+    const handle = createExportConfirmationModal(
       {} as App,
       makeModalProps(),
       callbacks,
@@ -1232,7 +1241,7 @@ describe("export confirmation modal wiring (fake DOM)", () => {
         } satisfies ExportRunResult),
       })),
     });
-    const handle = await createExportConfirmationModal(
+    const handle = createExportConfirmationModal(
       {} as App,
       makeModalProps(),
       callbacks,
@@ -1249,7 +1258,7 @@ describe("export confirmation modal wiring (fake DOM)", () => {
   it("pre-run Cancel closes without starting the export", async () => {
     const props = makeModalProps();
     const { callbacks, start } = makeModalCallbacks();
-    const handle = await createExportConfirmationModal({} as App, props, callbacks);
+    const handle = createExportConfirmationModal({} as App, props, callbacks);
 
     handle.open();
     click(buttonOf(actionsOf(handle), "Cancel"));
@@ -1267,7 +1276,7 @@ describe("export confirmation modal wiring (fake DOM)", () => {
     const { callbacks } = makeModalCallbacks({
       start: vi.fn(() => ({ abort, result })),
     });
-    const handle = await createExportConfirmationModal(
+    const handle = createExportConfirmationModal(
       {} as App,
       makeModalProps(),
       callbacks,

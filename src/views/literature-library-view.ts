@@ -16,7 +16,7 @@
  * only and every CLI call is the read-only `metrics query`.
  */
 
-import { ItemView, WorkspaceLeaf, type TFile } from "obsidian";
+import { ItemView, Notice, WorkspaceLeaf, type TFile } from "obsidian";
 
 import type { InvalidRecord, PaperRecord } from "../types/paper";
 import {
@@ -48,9 +48,11 @@ import {
   type OpenTarget,
 } from "../services/item-actions";
 // Modal classes are loaded lazily (see `loadModalClasses`): the plugin
-// scaffold smoke suite mocks `obsidian` with only Plugin/ItemView/
-// WorkspaceLeaf, so the static import graph must not reach the modals'
-// runtime `Modal`/`Notice` dependencies.
+// scaffold smoke suite mocks `obsidian` with Plugin/ItemView/WorkspaceLeaf
+// plus Modal/Notice, so the static import graph must not construct the
+// modals' classes at import time. `Notice` is imported statically
+// (Repair: Gate D R8 — dynamic `import("obsidian")` fails in the CJS
+// bundle; the smoke mock provides `Notice`).
 import type { CreateItemCallbacks } from "../modals/create-item-modal";
 import {
   buildLibraryItems,
@@ -903,9 +905,9 @@ export class PaperNotesLibraryView extends ItemView {
     return this.modalClasses;
   }
 
-  /** Surface a user notice; resolves obsidian lazily (smoke-safe graph). */
+  /** Surface a user notice (Repair: Gate D R8 — static `Notice` import). */
   private notify(message: string): void {
-    void import("obsidian").then(({ Notice }) => new Notice(message));
+    new Notice(message);
   }
 
   /** Human message for any outcome (errors surface CLI diagnostics). */

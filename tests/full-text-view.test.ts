@@ -36,6 +36,7 @@ const ROOT = "05 Literature";
 
 const state = vi.hoisted(() => ({
   app: {} as Record<string, unknown>,
+  notices: [] as string[],
 }));
 
 vi.mock("obsidian", () => {
@@ -112,7 +113,9 @@ vi.mock("obsidian", () => {
   class WorkspaceLeaf {}
 
   class Notice {
-    constructor(_message: string) {}
+    constructor(message: string) {
+      state.notices.push(message);
+    }
   }
 
   return { ItemView, WorkspaceLeaf, Notice };
@@ -528,5 +531,30 @@ describe("on-demand MinerU full-text search in the library view", () => {
     expect(
       tableRowsOf(view.containerEl as unknown as ElLike),
     ).toHaveLength(1);
+  });
+});
+
+describe("notify path (Repair: Gate D R8 — static Notice import)", () => {
+  beforeEach(() => {
+    state.app = {};
+    state.notices.length = 0;
+  });
+
+  it("surfaces a visible Notice when the CLI-backed actions are unavailable", async () => {
+    // The view source has no plugin bridge, so `getActions()` resolves to
+    // undefined and the create action must fall back to a Notice instead of
+    // silently no-oping. `notify()` uses the statically imported `Notice`
+    // (a dynamic `import("obsidian")` would fail in the CJS bundle).
+    const view = await openView(makeSource([xiaRecord]));
+    const create = findByClass(
+      view.containerEl as unknown as ElLike,
+      "paper-notes-library-create",
+    )[0];
+    expect(create).toBeDefined();
+    create.listeners["click"]?.(undefined);
+
+    expect(state.notices).toContain(
+      "paper-notes CLI unavailable; the library is read-only.",
+    );
   });
 });
