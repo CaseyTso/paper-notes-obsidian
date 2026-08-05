@@ -125,7 +125,7 @@ export class PaperNotesLibraryView extends ItemView {
   private filters: LibraryFilters = { ...EMPTY_LIBRARY_FILTERS };
   private sort: LibrarySort = { columnId: "year", direction: "desc" };
   private selectedPath: string | undefined;
-  private open = false;
+  private isOpen = false;
   private tableHost: HTMLElement | null = null;
   private detailHost: HTMLElement | null = null;
   /** Lazily resolved CLI-backed item actions (Task 25). */
@@ -156,7 +156,7 @@ export class PaperNotesLibraryView extends ItemView {
   }
 
   async onOpen(): Promise<void> {
-    this.open = true;
+    this.isOpen = true;
     this.render();
     // Background refresh of missing/expired journal metrics (deduplicated
     // inside the cache; the first render already showed cached values).
@@ -164,7 +164,7 @@ export class PaperNotesLibraryView extends ItemView {
   }
 
   async onClose(): Promise<void> {
-    this.open = false;
+    this.isOpen = false;
     this.tableHost = null;
     this.detailHost = null;
     this.containerEl.empty();
@@ -172,7 +172,7 @@ export class PaperNotesLibraryView extends ItemView {
 
   /** Re-render after vault events; a no-op while the view is closed. */
   refresh(): void {
-    if (this.open) {
+    if (this.isOpen) {
       this.render();
     }
   }
@@ -630,7 +630,7 @@ export class PaperNotesLibraryView extends ItemView {
     this.metricsCache = cache;
     void cache.initialize().then(() => {
       // Persisted badges become visible as soon as they are parsed.
-      if (this.open) {
+      if (this.isOpen) {
         this.render();
       }
     });
@@ -685,7 +685,7 @@ export class PaperNotesLibraryView extends ItemView {
       return;
     }
     const result = await cache.refresh(item.record);
-    if (this.open) {
+    if (this.isOpen) {
       this.render();
     }
     this.notify(this.metricsNotice(result));
@@ -698,7 +698,7 @@ export class PaperNotesLibraryView extends ItemView {
       return;
     }
     await cache.refreshExpired(this.source.getRecords());
-    if (this.open) {
+    if (this.isOpen) {
       this.render();
     }
   }
