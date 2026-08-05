@@ -369,21 +369,39 @@ export interface ExportArgsConfig {
 }
 
 /**
+ * True when the configured PDF engine is typst. Detected from the basename
+ * (Repair R10) so absolute paths stay out of the source; the basename of
+ * `/opt/homebrew/bin/typst` is `typst`, while a directory containing the
+ * word never matches (`/opt/typst-bundles/weasyprint` is not typst).
+ */
+export function isTypstEngine(pdfEngine: string): boolean {
+  return basename(pdfEngine).toLowerCase().includes("typst");
+}
+
+/**
  * Build the `spawn()` argument array for Pandoc. Every value is its own
  * array element — never split on spaces, never concatenated into a shell
  * string. The binary itself is *not* included: it is passed separately as
  * `spawn()`'s `command` argument (embedding it here would duplicate the
  * path and make Pandoc treat its own binary as the first input file). The
  * Lua filter precedes `--citeproc` so alias rewriting happens first.
+ *
+ * PDF + typst engine (Repair R10): pandoc 3.8's `--pdf-engine=typst`
+ * template path is broken ("font fallback list must not be empty"), so the
+ * engine flag is dropped and pandoc emits typst *source* (`--to typst`,
+ * output `<temp>.typ`) instead; the typst binary compiles it afterwards
+ * (see `runTypstTwoStepExport`). Non-typst engines keep the original
+ * single-step path with `--pdf-engine`.
  */
 export function buildExportArgs(config: ExportArgsConfig): string[] {
+  const typstTwoStep = config.format === "pdf" && isTypstEngine(config.pdfEngine);
   const args = [
     "--from",
     "markdown",
     "--to",
-    config.format,
+    typstTwoStep ? "typst" : config.format,
     "-o",
-    config.tempOutputPath,
+    typstTwoStep ? `${config.tempOutputPath}.typ` : config.tempOutputPath,
     "--lua-filter",
     config.aliasFilterPath,
     "--citeproc",
@@ -395,7 +413,7 @@ export function buildExportArgs(config: ExportArgsConfig): string[] {
   if (config.format === "docx" && config.referenceDocx.length > 0) {
     args.push("--reference-doc", config.referenceDocx);
   }
-  if (config.format === "pdf" && config.pdfEngine.length > 0) {
+  if (config.format === "pdf" && config.pdfEngine.length > 0 && !typstTwoStep) {
     args.push("--pdf-engine", config.pdfEngine);
   }
   args.push(config.markdownPath);
@@ -490,9 +508,11 @@ export interface RunPandocOptions {
 }
 
 /**
- * Write the generated assets, spawn pandoc with the argv array, capture
- * exit/stdout/stderr, promote the temp target on exit 0 only, and clean the
- * temp output on any other outcome. Cancel kills the child with SIGTERM.
+ * Write the generated assets and run the export. PDF with the typst engine
+ * takes the two-step path (pandoc → typst source, typst → PDF); every other
+ * format/engine keeps the original single-step pandoc spawn. Capture
+ * exit/stdout/stderr, promote the temp target on success only, and clean
+ * the temp output on any other outcome. Cancel kills the child with SIGTERM.
  */
 export async function runPandocExport(
   options: RunPandocOptions,
@@ -502,19 +522,44 @@ export async function runPandocExport(
   await ports.fs.writeText(config.bibliographyPath, options.libraryJson);
   await ports.fs.writeText(config.aliasFilterPath, options.aliasFilterLua);
 
-  return await new Promise<ExportRunResult>((resolve) => {
-    const cwd = dirname(config.markdownPath);
+  if (config.format === "pdf" && isTypstEngine(config.pdfEngine)) {
+    return await runTypstTwoStepExport(options, ports);
+  }
+  return await runPandocSingleStep(options, ports);
+}
+
+type SpawnStatus = "success" | "failed" | "cancelled";
+
+interface SpawnOutcome {
+  status: SpawnStatus;
+  exitCode: number | null;
+  stdout: string;
+  stderr: string;
+}
+
+/**
+ * Spawn one child, capture stdout/stderr, resolve on close with the exit
+ * code, and resolve cancelled (killing the child with SIGTERM) on abort.
+ * Shared by the single-step pandoc path and both steps of the typst path.
+ */
+function spawnCollect(
+  ports: ExportPorts,
+  command: string,
+  args: string[],
+  cwd: string,
+  signal: AbortSignal | undefined,
+): Promise<SpawnOutcome> {
+  return new Promise<SpawnOutcome>((resolve) => {
     let stdout = "";
     let stderr = "";
     let settled = false;
 
     let child: PandocProcess;
     try {
-      child = ports.runner(config.pandocPath, buildExportArgs(config), { cwd });
+      child = ports.runner(command, args, { cwd });
     } catch (error) {
       resolve({
         status: "failed",
-        outputPath: config.outputPath,
         exitCode: null,
         stdout: "",
         stderr: error instanceof Error ? error.message : String(error),
@@ -522,55 +567,27 @@ export async function runPandocExport(
       return;
     }
 
-    const finish = (status: ExportStatus, exitCode: number | null): void => {
+    const finish = (status: SpawnStatus, exitCode: number | null): void => {
       if (settled) {
         return;
       }
       settled = true;
-      if (options.signal) {
-        options.signal.removeEventListener("abort", onAbort);
+      if (signal) {
+        signal.removeEventListener("abort", onAbort);
       }
-      void (async () => {
-        try {
-          if (status === "success") {
-            await ports.fs.rename(config.tempOutputPath, config.outputPath);
-            resolve({
-              status: "success",
-              targetPath: config.outputPath,
-              outputPath: config.outputPath,
-              exitCode: 0,
-              stdout,
-              stderr,
-            });
-          } else {
-            await ports.fs.unlink(config.tempOutputPath).catch(() => {});
-            resolve({ status, outputPath: config.outputPath, exitCode, stdout, stderr });
-          }
-        } catch (error) {
-          await ports.fs.unlink(config.tempOutputPath).catch(() => {});
-          resolve({
-            status: "failed",
-            outputPath: config.outputPath,
-            exitCode: exitCode ?? null,
-            stdout,
-            stderr:
-              stderr +
-              (error instanceof Error ? `\n${error.message}` : `\n${String(error)}`),
-          });
-        }
-      })();
+      resolve({ status, exitCode, stdout, stderr });
     };
 
     const onAbort = (): void => {
       child.kill("SIGTERM");
       finish("cancelled", null);
     };
-    if (options.signal) {
-      if (options.signal.aborted) {
+    if (signal) {
+      if (signal.aborted) {
         onAbort();
         return;
       }
-      options.signal.addEventListener("abort", onAbort, { once: true });
+      signal.addEventListener("abort", onAbort, { once: true });
     }
 
     child.stdout?.on("data", (chunk: Buffer) => {
@@ -587,6 +604,146 @@ export async function runPandocExport(
       finish(code === 0 ? "success" : "failed", code);
     });
   });
+}
+
+/**
+ * Original single-step pandoc run: spawn once, promote the temp target on
+ * exit 0 only; any other outcome preserves the previous artifact, surfaces
+ * stderr and cleans the temp output.
+ */
+async function runPandocSingleStep(
+  options: RunPandocOptions,
+  ports: ExportPorts,
+): Promise<ExportRunResult> {
+  const { config } = options;
+  const outcome = await spawnCollect(
+    ports,
+    config.pandocPath,
+    buildExportArgs(config),
+    dirname(config.markdownPath),
+    options.signal,
+  );
+  if (outcome.status === "success") {
+    try {
+      await ports.fs.rename(config.tempOutputPath, config.outputPath);
+    } catch (error) {
+      await ports.fs.unlink(config.tempOutputPath).catch(() => {});
+      return {
+        status: "failed",
+        outputPath: config.outputPath,
+        exitCode: outcome.exitCode ?? null,
+        stdout: outcome.stdout,
+        stderr:
+          outcome.stderr +
+          (error instanceof Error ? `\n${error.message}` : `\n${String(error)}`),
+      };
+    }
+    return {
+      status: "success",
+      targetPath: config.outputPath,
+      outputPath: config.outputPath,
+      exitCode: 0,
+      stdout: outcome.stdout,
+      stderr: outcome.stderr,
+    };
+  }
+  await ports.fs.unlink(config.tempOutputPath).catch(() => {});
+  return {
+    status: outcome.status,
+    outputPath: config.outputPath,
+    exitCode: outcome.exitCode,
+    stdout: outcome.stdout,
+    stderr: outcome.stderr,
+  };
+}
+
+/**
+ * Two-step PDF export for the typst engine (Repair R10). pandoc emits typst
+ * source (citeproc has already resolved the citations into the source), then
+ * the configured typst binary compiles it to the final temp PDF. This
+ * bypasses pandoc 3.8's broken `--pdf-engine=typst` template ("font
+ * fallback list must not be empty"). Both steps must exit 0 before the PDF
+ * is atomically promoted; any other outcome preserves the previous
+ * artifact, surfaces stderr and cleans the temp source/PDF. Cancel during
+ * either step kills the running child with SIGTERM.
+ *
+ * typst CLI contract (verified against typst 0.15.1): the `compile`
+ * subcommand is mandatory and the output is a positional argument —
+ * `typst compile <input> <output>`. Neither the subcommand-less `typst
+ * <input> -o <output>` nor `typst compile <input> -o <output>` forms are
+ * accepted on 0.15 (the latter rejects `-o` as unexpected).
+ */
+async function runTypstTwoStepExport(
+  options: RunPandocOptions,
+  ports: ExportPorts,
+): Promise<ExportRunResult> {
+  const { config } = options;
+  const cwd = dirname(config.markdownPath);
+  const typSourcePath = `${config.tempOutputPath}.typ`;
+  const typPdfPath = `${config.tempOutputPath}.pdf`;
+
+  const step1 = await spawnCollect(
+    ports,
+    config.pandocPath,
+    buildExportArgs(config),
+    cwd,
+    options.signal,
+  );
+  if (step1.status !== "success") {
+    await ports.fs.unlink(typSourcePath).catch(() => {});
+    return {
+      status: step1.status,
+      outputPath: config.outputPath,
+      exitCode: step1.exitCode,
+      stdout: step1.stdout,
+      stderr: step1.stderr,
+    };
+  }
+
+  const step2 = await spawnCollect(
+    ports,
+    config.pdfEngine,
+    ["compile", typSourcePath, typPdfPath],
+    cwd,
+    options.signal,
+  );
+  if (step2.status !== "success") {
+    await ports.fs.unlink(typSourcePath).catch(() => {});
+    await ports.fs.unlink(typPdfPath).catch(() => {});
+    return {
+      status: step2.status,
+      outputPath: config.outputPath,
+      exitCode: step2.exitCode,
+      stdout: step1.stdout + step2.stdout,
+      stderr: step1.stderr + step2.stderr,
+    };
+  }
+
+  try {
+    await ports.fs.rename(typPdfPath, config.outputPath);
+  } catch (error) {
+    await ports.fs.unlink(typSourcePath).catch(() => {});
+    await ports.fs.unlink(typPdfPath).catch(() => {});
+    return {
+      status: "failed",
+      outputPath: config.outputPath,
+      exitCode: 0,
+      stdout: step1.stdout + step2.stdout,
+      stderr:
+        step1.stderr +
+        step2.stderr +
+        (error instanceof Error ? `\n${error.message}` : `\n${String(error)}`),
+    };
+  }
+  await ports.fs.unlink(typSourcePath).catch(() => {});
+  return {
+    status: "success",
+    targetPath: config.outputPath,
+    outputPath: config.outputPath,
+    exitCode: 0,
+    stdout: step1.stdout + step2.stdout,
+    stderr: step1.stderr + step2.stderr,
+  };
 }
 
 export interface PandocExportJob {

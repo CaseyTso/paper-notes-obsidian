@@ -40,6 +40,7 @@ import {
   exportSuccessActions,
   exportTargetPath,
   generateCslJson,
+  isTypstEngine,
   runPandocExport,
   tempOutputFor,
   unknownCitationKeys,
@@ -112,6 +113,16 @@ const PDF_ARGS_CONFIG: ExportArgsConfig = {
   outputPath: "/exports/manuscript file.pdf",
   referenceDocx: "",
   pdfEngine: "/opt/engines/weasyprint",
+};
+
+/** PDF job whose engine is typst — takes the two-step path (Repair R10). */
+const TYPST_ARGS_CONFIG: ExportArgsConfig = {
+  ...DOCX_ARGS_CONFIG,
+  format: "pdf",
+  tempOutputPath: "/exports/.manuscript file.pdf.abc123.tmp",
+  outputPath: "/exports/manuscript file.pdf",
+  referenceDocx: "",
+  pdfEngine: "/opt/homebrew/bin/typst",
 };
 
 // ---------------------------------------------------------------------------
@@ -453,6 +464,31 @@ describe("tempOutputFor", () => {
 });
 
 // ---------------------------------------------------------------------------
+// isTypstEngine (two-step PDF detection, Repair R10)
+// ---------------------------------------------------------------------------
+
+describe("isTypstEngine", () => {
+  it("detects the typst engine by basename (absolute path)", () => {
+    expect(isTypstEngine("/opt/homebrew/bin/typst")).toBe(true);
+  });
+
+  it("detects a bare name and case variants", () => {
+    expect(isTypstEngine("typst")).toBe(true);
+    expect(isTypstEngine("Typst")).toBe(true);
+  });
+
+  it("rejects non-typst engines and empty values", () => {
+    expect(isTypstEngine("/opt/engines/weasyprint")).toBe(false);
+    expect(isTypstEngine("xelatex")).toBe(false);
+    expect(isTypstEngine("")).toBe(false);
+  });
+
+  it("keys on the basename only, never the directory", () => {
+    expect(isTypstEngine("/opt/typst-bundles/weasyprint")).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // buildExportArgs
 // ---------------------------------------------------------------------------
 
@@ -499,6 +535,30 @@ describe("buildExportArgs", () => {
     expect(args).toContain("/opt/engines/weasyprint");
     expect(args).not.toContain("--reference-doc");
     expect(args[args.indexOf("--to") + 1]).toBe("pdf");
+  });
+
+  it("typst: targets typst source, drops --pdf-engine (two-step R10)", () => {
+    const args = buildExportArgs(TYPST_ARGS_CONFIG);
+    expect(args[args.indexOf("--to") + 1]).toBe("typst");
+    expect(args[args.indexOf("-o") + 1]).toBe(
+      `${TYPST_ARGS_CONFIG.tempOutputPath}.typ`,
+    );
+    expect(args).not.toContain("--pdf-engine");
+    expect(args).not.toContain("/opt/homebrew/bin/typst");
+  });
+
+  it("typst: keeps lua filter/citeproc/csl/bibliography arguments", () => {
+    const args = buildExportArgs(TYPST_ARGS_CONFIG);
+    expect(args.indexOf("--citeproc")).toBeGreaterThan(
+      args.indexOf("--lua-filter"),
+    );
+    expect(args[args.indexOf("--csl") + 1]).toBe(
+      "/vault dir/.paper-notes/csl/ama style.csl",
+    );
+    expect(args[args.indexOf("--bibliography") + 1]).toBe(
+      "/tmp/work/library.json",
+    );
+    expect(args[args.length - 1]).toBe("/vault dir/manuscript file.md");
   });
 
   it("omits --pdf-engine when none is configured", () => {
@@ -634,6 +694,121 @@ describe("runPandocExport", () => {
     expect(result.status).toBe("failed");
     expect(result.stderr).toContain("ENOENT");
   });
+
+  // -------------------------------------------------------------------------
+  // Two-step typst PDF path (Repair R10): pandoc emits typst source, then the
+  // configured typst binary compiles it. Both steps must exit 0 before the
+  // PDF is atomically promoted.
+  // -------------------------------------------------------------------------
+
+  const typstRunOptions = () => ({
+    config: TYPST_ARGS_CONFIG,
+    workDir: "/tmp/work",
+    libraryJson: JSON.stringify([{ id: "smith2024current" }]),
+    aliasFilterLua: buildAliasLuaFilter({ oldSmith2020: "smith2024current" }),
+  });
+
+  it("typst: runs pandoc then typst, promoting the PDF only when both exit 0", async () => {
+    const { ports, runner, state, process } = makeFakePorts();
+    const promise = runPandocExport(typstRunOptions(), ports);
+    await vi.waitFor(() => expect(runner).toHaveBeenCalledTimes(1));
+
+    const [pandocCommand, pandocArgs] = runner.mock.calls[0] as [
+      string,
+      string[],
+      { cwd: string },
+    ];
+    expect(pandocCommand).toBe("/opt/bin/pandoc");
+    expect(pandocArgs[pandocArgs.indexOf("--to") + 1]).toBe("typst");
+    expect(pandocArgs).not.toContain("--pdf-engine");
+    process.emitClose(0);
+
+    await vi.waitFor(() => expect(runner).toHaveBeenCalledTimes(2));
+    const [typstCommand, typstArgs, typstOptions] = runner.mock.calls[1] as [
+      string,
+      string[],
+      { cwd: string },
+    ];
+    expect(typstCommand).toBe("/opt/homebrew/bin/typst");
+    // typst 0.15 CLI contract: explicit `compile` subcommand, positional
+    // output (semantic update from the card's `typst <input> -o <output>`
+    // sketch — neither subcommand-less nor `-o` forms are accepted on 0.15).
+    expect(typstArgs).toEqual([
+      "compile",
+      `${TYPST_ARGS_CONFIG.tempOutputPath}.typ`,
+      `${TYPST_ARGS_CONFIG.tempOutputPath}.pdf`,
+    ]);
+    expect(typstOptions.cwd).toBe("/vault dir");
+    process.emitClose(0);
+
+    const result = await promise;
+    expect(result.status).toBe("success");
+    expect(result.targetPath).toBe(TYPST_ARGS_CONFIG.outputPath);
+    const rename = lastRenameTo(TYPST_ARGS_CONFIG.outputPath, state.ops);
+    expect(rename).toBeDefined();
+    expect(rename).toContain(`${TYPST_ARGS_CONFIG.tempOutputPath}.pdf`);
+    expect(state.ops).toContain(`unlink:${TYPST_ARGS_CONFIG.tempOutputPath}.typ`);
+  });
+
+  it("typst: a failing pandoc step preserves the artifact and never spawns typst", async () => {
+    const { ports, runner, state, process } = makeFakePorts([
+      [TYPST_ARGS_CONFIG.outputPath, "previous artifact"],
+    ]);
+    const promise = runPandocExport(typstRunOptions(), ports);
+    await vi.waitFor(() => expect(runner).toHaveBeenCalledTimes(1));
+    process.emitStderr("pandoc: cannot write typst source\n");
+    process.emitClose(1);
+    const result = await promise;
+
+    expect(result.status).toBe("failed");
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain("cannot write typst source");
+    expect(runner).toHaveBeenCalledTimes(1);
+    expect(state.files.get(TYPST_ARGS_CONFIG.outputPath)).toBe("previous artifact");
+    expect(state.ops).toContain(`unlink:${TYPST_ARGS_CONFIG.tempOutputPath}.typ`);
+    expect(lastRenameTo(TYPST_ARGS_CONFIG.outputPath, state.ops)).toBeUndefined();
+  });
+
+  it("typst: a failing typst step surfaces stderr and cleans both temps", async () => {
+    const { ports, state, process } = makeFakePorts([
+      [TYPST_ARGS_CONFIG.outputPath, "previous artifact"],
+    ]);
+    const promise = runPandocExport(typstRunOptions(), ports);
+    await vi.waitFor(() => expect(ports.runner).toHaveBeenCalledTimes(1));
+    process.emitClose(0);
+    await vi.waitFor(() => expect(ports.runner).toHaveBeenCalledTimes(2));
+    process.emitStderr("error: font fallback list must not be empty\n");
+    process.emitClose(2);
+    const result = await promise;
+
+    expect(result.status).toBe("failed");
+    expect(result.exitCode).toBe(2);
+    expect(result.stderr).toContain("font fallback list must not be empty");
+    expect(state.files.get(TYPST_ARGS_CONFIG.outputPath)).toBe("previous artifact");
+    expect(state.ops).toContain(`unlink:${TYPST_ARGS_CONFIG.tempOutputPath}.typ`);
+    expect(state.ops).toContain(`unlink:${TYPST_ARGS_CONFIG.tempOutputPath}.pdf`);
+    expect(lastRenameTo(TYPST_ARGS_CONFIG.outputPath, state.ops)).toBeUndefined();
+  });
+
+  it("typst: cancel during the typst step kills the child and cleans both temps", async () => {
+    const { ports, state, process } = makeFakePorts();
+    const controller = new AbortController();
+    const promise = runPandocExport(
+      { ...typstRunOptions(), signal: controller.signal },
+      ports,
+    );
+    await vi.waitFor(() => expect(ports.runner).toHaveBeenCalledTimes(1));
+    process.emitClose(0);
+    await vi.waitFor(() => expect(ports.runner).toHaveBeenCalledTimes(2));
+    controller.abort();
+    const result = await promise;
+
+    expect(result.status).toBe("cancelled");
+    expect(process.kill).toHaveBeenCalledWith("SIGTERM");
+    expect(state.ops).toContain(`unlink:${TYPST_ARGS_CONFIG.tempOutputPath}.typ`);
+    expect(state.ops).toContain(`unlink:${TYPST_ARGS_CONFIG.tempOutputPath}.pdf`);
+    expect(lastRenameTo(TYPST_ARGS_CONFIG.outputPath, state.ops)).toBeUndefined();
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -753,6 +928,32 @@ describe("exportPandoc", () => {
     const args = runner.mock.calls[0][1] as string[];
     expect(args[args.indexOf("--pdf-engine") + 1]).toBe("/opt/engines/weasyprint");
     expect(args).not.toContain("--reference-doc");
+  });
+
+  it("supports the two-step typst PDF path end to end (R10)", async () => {
+    const { ports, runner, state, process } = makeFakePorts();
+    const promise = exportPandoc(
+      baseJob({
+        format: "pdf",
+        pdfEngine: "/opt/homebrew/bin/typst",
+        referenceDocx: "",
+      }),
+      ports,
+    );
+    await vi.waitFor(() => expect(runner).toHaveBeenCalledTimes(1));
+    process.emitClose(0);
+    await vi.waitFor(() => expect(runner).toHaveBeenCalledTimes(2));
+    process.emitClose(0);
+    const result = await promise;
+
+    expect(result.status).toBe("success");
+    expect(result.targetPath).toBe("/exports/manuscript file.pdf");
+    const pandocArgs = runner.mock.calls[0][1] as string[];
+    expect(pandocArgs[pandocArgs.indexOf("--to") + 1]).toBe("typst");
+    expect(pandocArgs).not.toContain("--pdf-engine");
+    expect(runner.mock.calls[1][0]).toBe("/opt/homebrew/bin/typst");
+    // Temp working directory is cleaned up on the two-step path too.
+    expect(state.ops.some((op) => op.startsWith("rm:/tmp/paper-notes-export-"))).toBe(true);
   });
 });
 
