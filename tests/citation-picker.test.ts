@@ -21,9 +21,9 @@
  * Obsidian UI is involved. Subjective visual acceptance is Task 33 Gate D.
  */
 
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { App, PluginManifest } from "obsidian";
+import { MarkdownView, type App, type PluginManifest } from "obsidian";
 
 import type { PaperRecord } from "../src/types/paper";
 import {
@@ -48,6 +48,11 @@ const state = vi.hoisted(() => ({
   }>,
   registeredEvents: [] as string[],
   openedModals: [] as unknown[],
+  notices: [] as string[],
+  // When true, the mocked Modal constructor throws (simulates a headless
+  // context where the modal host is unavailable), forcing the command's
+  // catch path.
+  modalBroken: false,
 }));
 
 vi.mock("obsidian", () => {
@@ -150,6 +155,9 @@ vi.mock("obsidian", () => {
     app: unknown;
 
     constructor(app: unknown) {
+      if (state.modalBroken) {
+        throw new Error("Modal unavailable in a headless context");
+      }
       this.app = app;
     }
 
@@ -161,7 +169,15 @@ vi.mock("obsidian", () => {
     close(): void {}
   }
 
-  return { Plugin, ItemView, WorkspaceLeaf, Modal };
+  class Notice {
+    constructor(message: string) {
+      state.notices.push(message);
+    }
+  }
+
+  class MarkdownView {}
+
+  return { Plugin, ItemView, WorkspaceLeaf, Modal, Notice, MarkdownView };
 });
 
 interface FakeEl {
@@ -313,6 +329,88 @@ describe("paper-notes-insert-citation command registration", () => {
     await vi.waitFor(() => {
       expect(state.openedModals).toHaveLength(1);
     });
+  });
+});
+
+describe("Insert citation command resilience (Repair: Gate D R6)", () => {
+  beforeEach(() => {
+    state.registeredCommands.length = 0;
+    state.registeredEvents.length = 0;
+    state.openedModals.length = 0;
+    state.notices.length = 0;
+    state.modalBroken = false;
+  });
+
+  afterEach(() => {
+    state.modalBroken = false;
+  });
+
+  function runCommand(): void {
+    (citationCommand() as { callback?: () => void }).callback?.();
+  }
+
+  it("shows a Notice instead of silently no-oping when no editor is active", async () => {
+    // Old Obsidian builds have no `workspace.activeEditor` and the stable
+    // MarkdownView lookup finds nothing either — the command must tell the
+    // user why it did nothing.
+    const app = makeApp();
+    const workspace = app.workspace as unknown as {
+      activeEditor?: unknown;
+      getActiveViewOfType?: unknown;
+    };
+    delete workspace.activeEditor;
+    workspace.getActiveViewOfType = () => null;
+    const plugin = makePlugin(app);
+    await plugin.onload();
+
+    runCommand();
+    await vi.waitFor(() => {
+      expect(state.notices.length).toBeGreaterThan(0);
+    });
+    expect(state.notices.join(" ")).toContain("请先打开一篇笔记");
+    expect(state.openedModals).toHaveLength(0);
+  });
+
+  it("falls back to getActiveViewOfType(MarkdownView) when activeEditor is missing", async () => {
+    // Old Obsidian builds: no activeEditor property, but the stable
+    // MarkdownView API still resolves the active editor.
+    const app = makeApp();
+    const workspace = app.workspace as unknown as {
+      activeEditor?: unknown;
+      getActiveViewOfType?: unknown;
+    };
+    delete workspace.activeEditor;
+    const editor = makeEditor();
+    workspace.getActiveViewOfType = (type: unknown) =>
+      type === MarkdownView ? { editor, view: null } : null;
+    const plugin = makePlugin(app);
+    await plugin.onload();
+
+    runCommand();
+    await vi.waitFor(() => {
+      expect(state.openedModals).toHaveLength(1);
+    });
+    expect(state.notices).toHaveLength(0);
+  });
+
+  it("surfaces a Notice when the modal cannot be created (catch path)", async () => {
+    // Modal construction throws (headless context) — the user must see a
+    // Notice instead of a silent no-op.
+    const app = makeApp();
+    const editor = makeEditor();
+    (app.workspace as unknown as { activeEditor: { editor: unknown; view: unknown } }).activeEditor = {
+      editor,
+      view: null,
+    };
+    state.modalBroken = true;
+    const plugin = makePlugin(app);
+    await plugin.onload();
+
+    runCommand();
+    await vi.waitFor(() => {
+      expect(state.notices.length).toBeGreaterThan(0);
+    });
+    expect(state.openedModals).toHaveLength(0);
   });
 });
 

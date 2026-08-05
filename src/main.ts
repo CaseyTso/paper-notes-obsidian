@@ -1,6 +1,7 @@
 import {
   Plugin,
   Notice,
+  MarkdownView,
   type MetadataCache,
   type TFile,
   type Vault,
@@ -362,17 +363,17 @@ export default class PaperNotesPlugin extends Plugin {
 
   /**
    * Open the keyboard citation picker against the active Markdown editor
-   * and the current index records. The editor is accessed structurally
-   * through `workspace.activeEditor` so no additional obsidian runtime
-   * value imports enter the static graph. No-op when no editor is active
-   * (visual/UX polish is deferred to Task 33 Gate D).
+   * and the current index records. The editor is resolved through
+   * `workspace.activeEditor` (Obsidian 1.4.5+ API) with a fallback to the
+   * stable legacy `getActiveViewOfType(MarkdownView)` lookup, so the
+   * command works across Obsidian versions. When no editor is active the
+   * command surfaces a visible Notice instead of silently doing nothing
+   * (Repair: Gate D R6).
    */
   private async openCitationPicker(): Promise<void> {
-    const workspace = this.app.workspace as {
-      activeEditor?: { editor?: CitationEditorPort | null } | null;
-    };
-    const editor = workspace.activeEditor?.editor;
-    if (editor === undefined || editor === null) {
+    const editor = this.resolveActiveEditor();
+    if (editor === null) {
+      new Notice("Paper Notes: 请先打开一篇笔记并将光标置于正文。");
       return;
     }
     const records = this.libraryIndex?.getRecords() ?? [];
@@ -383,8 +384,34 @@ export default class PaperNotesPlugin extends Plugin {
       });
       modal.open();
     } catch {
-      // Modal unavailable in a headless context; the command is a no-op.
+      // Modal unavailable in a headless context; keep the no-op semantics
+      // but stop swallowing the failure silently (Repair: Gate D R6).
+      new Notice("Paper Notes: 引用选择器暂不可用。");
     }
+  }
+
+  /**
+   * Resolve the active Markdown editor with a version-tolerant fallback:
+   * `workspace.activeEditor?.editor` (Obsidian 1.4.5+) first, otherwise the
+   * stable legacy `workspace.getActiveViewOfType(MarkdownView)?.editor`.
+   * Returns null when neither API exposes an editor.
+   */
+  private resolveActiveEditor(): CitationEditorPort | null {
+    const workspace = this.app.workspace as {
+      activeEditor?: { editor?: CitationEditorPort | null } | null;
+      getActiveViewOfType?: <T extends unknown>(
+        type: unknown,
+      ) => T | null;
+    };
+    const viaActiveEditor = workspace.activeEditor?.editor ?? null;
+    if (viaActiveEditor !== null && viaActiveEditor !== undefined) {
+      return viaActiveEditor;
+    }
+    const view = workspace.getActiveViewOfType?.(
+      MarkdownView,
+    ) as { editor?: CitationEditorPort | null } | null | undefined;
+    const viaLegacyView = view?.editor ?? null;
+    return viaLegacyView ?? null;
   }
 
   /**
