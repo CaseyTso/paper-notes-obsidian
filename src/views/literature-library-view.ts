@@ -37,14 +37,15 @@ import {
 } from "../components/metric-cell";
 import {
   ItemActions,
-  assetPathOf,
   buildDeletePreview,
   nextReadingStatus,
+  openCard,
   renderPlanLines,
   resolveOpenTarget,
   type ActionOutcome,
   type CreateItemInput,
   type OpenAssetKind,
+  type OpenTarget,
 } from "../services/item-actions";
 // Modal classes are loaded lazily (see `loadModalClasses`): the plugin
 // scaffold smoke suite mocks `obsidian` with only Plugin/ItemView/
@@ -109,6 +110,13 @@ export interface LibraryViewSource {
   getFrontmatter(path: string): Record<string, unknown> | undefined;
   /** Basenames of the paper directory (`<root>/<key>/`). */
   listDirectory(dir: string): string[];
+  /**
+   * Card-note basenames (`*.md`, sorted) under one paper directory's
+   * `cards/` subdirectory. Interface reservation: a future independent
+   * card data source may replace the directory-listing implementation;
+   * callers (detail Cards block, single-card quick open) stay unchanged.
+   */
+  getCards(dir: string): string[];
   /** Volatile EasyScholar metrics per paper id (Task 26 wires the cache). */
   getMetrics?(paperId: string): PaperMetrics | undefined;
 }
@@ -517,6 +525,7 @@ export class PaperNotesLibraryView extends ItemView {
       row.createEl("th", { text: field.label });
       row.createEl("td", { text: field.value });
     }
+    this.renderCardsBlock(this.detailHost, selected);
     this.renderDetailActions(this.detailHost, selected);
   }
 
@@ -766,20 +775,67 @@ export class PaperNotesLibraryView extends ItemView {
   private openAsset(kind: OpenAssetKind, item: LibraryItem): void {
     const target =
       kind === "cards"
-        ? resolveOpenTarget(
+        ? // Single-card quick-open path: the first (sorted) card note.
+          resolveOpenTarget(
             kind,
             item.path,
-            this.source.listDirectory(assetPathOf("cards", item.path)),
+            this.source.getCards(item.path.slice(0, item.path.lastIndexOf("/"))),
           )
         : resolveOpenTarget(kind, item.path);
     if (target === undefined) {
       return;
     }
+    this.openTarget(target);
+  }
+
+  /**
+   * Open one specific card note (Gate D R3 interface reservation): the
+   * future in-panel card view reuses this entry; the detail Cards block
+   * is wired through it today. The shared `openCard()` helper keeps this
+   * path and the single-card quick open consistent.
+   */
+  private openCardNote(notePath: string, cardName: string): void {
+    const target = openCard(notePath, cardName);
+    if (target !== undefined) {
+      this.openTarget(target);
+    }
+  }
+
+  /** Open a resolved asset file in the workspace. */
+  private openTarget(target: OpenTarget): void {
     const file = this.app.vault.getAbstractFileByPath(target.path);
     if (file === null || typeof file !== "object" || !("path" in file)) {
       return;
     }
     void this.app.workspace.getLeaf(false)?.openFile(file as TFile);
+  }
+
+  /**
+   * Cards block (Gate D R3 repair): lists every card note under the
+   * paper's `cards/` directory; each row opens that exact card via
+   * `openCard()`. The block replaces the former "Open cards" button —
+   * the block is the multi-card entry point. No cards → no block.
+   * TODO(future): upgrade this container into the in-panel card-view
+   * component (view switching / card grid) per the user's long-term plan.
+   */
+  private renderCardsBlock(host: HTMLElement, item: LibraryItem): void {
+    const dir = item.path.slice(0, item.path.lastIndexOf("/"));
+    const cards = this.source.getCards(dir);
+    if (cards.length === 0) {
+      return;
+    }
+    const block = host.createDiv({ cls: "paper-notes-library-cards" });
+    block.createEl("h4", {
+      cls: "paper-notes-library-cards-heading",
+      text: "Cards",
+    });
+    for (const card of cards) {
+      const row = block.createEl("button", {
+        cls: "paper-notes-library-cards-row",
+        text: card.endsWith(".md") ? card.slice(0, -3) : card,
+      });
+      row.addEventListener("click", () => this.openCardNote(item.path, card));
+    }
   }
 
   private renderDetailActions(host: HTMLElement, item: LibraryItem): void {
@@ -803,15 +859,8 @@ export class PaperNotesLibraryView extends ItemView {
     open("pdf", "Open PDF", item.artifacts.pdf);
     open("minerU", "Open MinerU", item.artifacts.minerU);
     open("figure", "Open Figure", item.artifacts.figure);
-    open(
-      "cards",
-      "Open cards",
-      resolveOpenTarget(
-        "cards",
-        item.path,
-        this.source.listDirectory(assetPathOf("cards", item.path)),
-      ) !== undefined,
-    );
+    // "Open cards" was replaced by the detail Cards block (Gate D R3):
+    // the block lists every card note and is the multi-card entry point.
     // Invalid-metadata rows have no canonical key to mutate.
     if (item.invalid !== undefined) {
       return;

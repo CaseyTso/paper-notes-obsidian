@@ -161,3 +161,37 @@
   font-size: var(--font-ui-small);
   margin-bottom: 8px;
 }
+
+/* Cards block (Gate D R3 repair): the multi-card entry point that
+   replaced the former "Open cards" button. TODO(future): this container
+   upgrades into the in-panel card-view component. */
+.paper-notes-library-cards {
+  margin-top: 10px;
+  padding-top: 6px;
+  border-top: 1px solid var(--background-modifier-border);
+}
+
+.paper-notes-library-cards-heading {
+  margin: 0 0 4px;
+  font-size: var(--font-ui-small);
+  font-weight: var(--font-semibold);
+  color: var(--text-muted);
+}
+
+.paper-notes-library-cards-row {
+  display: block;
+  width: 100%;
+  margin: 2px 0;
+  padding: 2px 6px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-normal);
+  font-size: var(--font-ui-small);
+  text-align: left;
+  cursor: pointer;
+}
+
+.paper-notes-library-cards-row:hover {
+  background: var(--background-modifier-hover);
+}

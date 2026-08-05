@@ -320,9 +320,23 @@ export function resolveOpenTarget(
     if (card === undefined) {
       return undefined;
     }
-    return { kind, path: `${assetPathOf("cards", notePath)}/${card}` };
+    return openCard(notePath, card);
   }
   return { kind, path: assetPathOf(kind, notePath) };
+}
+
+/**
+ * Open one specific card note (Gate D R3 interface reservation): the
+ * future in-panel card view reuses this entry to open an individual
+ * card, and the detail Cards block is wired through it today. The card
+ * name must be a bare `.md` basename — names with a slash (path
+ * traversal) or without the `.md` suffix are rejected.
+ */
+export function openCard(notePath: string, cardName: string): OpenTarget | undefined {
+  if (!cardName.endsWith(".md") || cardName.includes("/")) {
+    return undefined;
+  }
+  return { kind: "cards", path: `${assetPathOf("cards", notePath)}/${cardName}` };
 }
 
 const READING_CYCLE: ReadingStatus[] = ["unread", "reading", "read"];

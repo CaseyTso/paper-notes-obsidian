@@ -35,6 +35,7 @@ import {
   confirmKeyMatches,
   formatBytes,
   nextReadingStatus,
+  openCard,
   parseCreateInput,
   renderCandidateLines,
   renderPlanLines,
@@ -652,6 +653,33 @@ describe("asset open targets (main/PDF/MinerU/Figure/cards)", () => {
   it("returns undefined for cards without any card note", () => {
     expect(resolveOpenTarget("cards", NOTE_PATH, [])).toBeUndefined();
     expect(resolveOpenTarget("cards", NOTE_PATH, ["notes.txt"])).toBeUndefined();
+  });
+});
+
+describe("openCard (specific card note, Gate D R3 interface reservation)", () => {
+  it("resolves one named card note under the paper cards directory", () => {
+    expect(openCard(NOTE_PATH, "card-b.md")).toEqual({
+      kind: "cards",
+      path: "05 Literature/alpha2024/cards/card-b.md",
+    });
+  });
+
+  it("rejects non-card names (no .md suffix)", () => {
+    expect(openCard(NOTE_PATH, "notes.txt")).toBeUndefined();
+    expect(openCard(NOTE_PATH, "card-b")).toBeUndefined();
+  });
+
+  it("rejects path-traversal card names (interface reservation guard)", () => {
+    expect(openCard(NOTE_PATH, "../main.md")).toBeUndefined();
+    expect(openCard(NOTE_PATH, "sub/card.md")).toBeUndefined();
+  });
+
+  it("keeps resolveOpenTarget(cards) on the same first-sorted-card path", () => {
+    // The single-card quick-open path must stay compatible: it opens the
+    // first sorted card note through the shared openCard() entry.
+    expect(resolveOpenTarget("cards", NOTE_PATH, ["b.md", "a.md"])).toEqual(
+      openCard(NOTE_PATH, "a.md"),
+    );
   });
 });
 

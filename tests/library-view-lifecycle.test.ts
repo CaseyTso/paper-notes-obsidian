@@ -103,6 +103,7 @@ function makeSource(): LibraryViewSource {
     getInvalidRecords: () => [],
     getFrontmatter: () => undefined,
     listDirectory: () => [],
+    getCards: () => [],
   };
 }
 

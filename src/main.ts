@@ -274,31 +274,39 @@ export default class PaperNotesPlugin extends Plugin {
    */
   private createLibraryViewSource(): LibraryViewSource {
     const vault = this.app.vault;
+    const listDir = (dir: string): string[] => {
+      if (vault === undefined) {
+        return [];
+      }
+      const folder = vault.getAbstractFileByPath(dir);
+      if (
+        folder === null ||
+        typeof folder !== "object" ||
+        !("children" in folder)
+      ) {
+        return [];
+      }
+      const children = (folder as { children?: Array<{ name?: unknown }> })
+        .children;
+      if (children === undefined) {
+        return [];
+      }
+      return children.map((child) =>
+        typeof child.name === "string" ? child.name : "",
+      );
+    };
     return {
       getRecords: () => this.libraryIndex?.getRecords() ?? [],
       getInvalidRecords: () => this.libraryIndex?.getInvalidRecords() ?? [],
       getFrontmatter: (path) => this.vaultAdapter?.getFrontmatter(path),
-      listDirectory: (dir) => {
-        if (vault === undefined) {
-          return [];
-        }
-        const folder = vault.getAbstractFileByPath(dir);
-        if (
-          folder === null ||
-          typeof folder !== "object" ||
-          !("children" in folder)
-        ) {
-          return [];
-        }
-        const children = (folder as { children?: Array<{ name?: unknown }> })
-          .children;
-        if (children === undefined) {
-          return [];
-        }
-        return children.map((child) =>
-          typeof child.name === "string" ? child.name : "",
-        );
-      },
+      listDirectory: (dir) => listDir(dir),
+      // Card listing is a directory read today; the signature is the
+      // contract, so a future independent card data source can replace
+      // the implementation without touching any caller.
+      getCards: (dir) =>
+        listDir(`${dir}/cards`)
+          .filter((name) => name.endsWith(".md"))
+          .sort(),
       // EasyScholar metrics arrive with Task 26; until then there are none.
       getMetrics: () => undefined,
     };
