@@ -23,18 +23,13 @@
  *   9. deletion only on a disposable item    -> CLI delete + plugin index drop
  *  10. deliberately failed migration rolls back -> CLI conflict envelope
  *
- * DOCUMENTED CROSS-REPO OBSERVATION (recorded, not papered over):
- * the committed core migration (4595816) emits canonical main notes whose
- * frontmatter carries `citation_key` / `paper_id` / `pdf_status` /
- * `reading_status` but NOT `schema_version` (only `item create` writes
- * `schema_version: 1`). The plugin index (Task 23) deliberately requires
- * `schema_version === 1` — see its own test "rejects unsupported and missing
- * schema versions" — so migrated fixture notes surface as invalid records
- * with reason `unsupported_schema`, while CLI-created items index cleanly.
- * The tests below pin this actual cross-repo behavior as a regression anchor;
- * the discrepancy is reported to the manager for adjudication (a core-side
- * migration fix or a plugin-side leniency decision would flip these
- * assertions, which is exactly what the anchor is for).
+ * CROSS-REPO CONTRACT (verified end-to-end): the core migration writes
+ * `schema_version: 1` into every migrated main note's raw frontmatter (core
+ * repair commit 05720a4, alongside `citation_key` / `paper_id` /
+ * `pdf_status` / `reading_status`), and `item create` writes the same. The
+ * plugin index (Task 23) requires `schema_version === 1`, so all four
+ * migrated fixture notes index as valid plugin records alongside CLI-created
+ * items. The assertions below pin this aligned cross-repo behavior.
  */
 
 import { spawnSync, execFileSync } from "node:child_process";
@@ -100,6 +95,8 @@ const MIGRATED_KEYS = [
   "leeMultiPdfTwoCards2026",
   "smithStandardOnePdf2024",
 ] as const;
+/** The migrated fixture note whose year (2026) matches the picker query. */
+const MIGRATED_2026_KEY = "leeMultiPdfTwoCards2026";
 const MAIN_KEY = "chenSyntheticSlice2026";
 const MAIN_RENAMED = "chenSyntheticRenamed2027";
 const DISPOSABLE_KEY = "zhaoDisposableSlice2026";
@@ -699,28 +696,21 @@ describe.skipIf(!hasCore)("core/plugin contract against the fixture vault", () =
   );
 
   it(
-    "reports migrated fixture notes as unsupported-schema invalid records (documented cross-repo gap)",
+    "indexes the migrated fixture notes as valid records (core writes schema_version: 1)",
     async () => {
-      // Cross-repo observation (recorded for the manager): the committed
-      // core migration writes {citation_key, paper_id, pdf_status,
-      // reading_status} but never `schema_version`; the plugin index (Task
-      // 23, tested) requires schema_version === 1. Pin the real behavior.
+      // Core repair (commit 05720a4) makes the migration write
+      // `schema_version: 1` into every migrated main note's raw frontmatter,
+      // so the plugin index (Task 23) accepts all four migrated fixture
+      // notes as valid records. Pin the aligned contract.
       const { vault, state } = makeVault();
       await applyMigration(vault, state);
 
       const index = indexRecords(vault);
-      expect(index.getRecords()).toHaveLength(0);
-      expect(index.isReadOnly()).toBe(false);
-      const invalid = index.getInvalidRecords();
-      expect(invalid).toHaveLength(4);
-      for (const record of invalid) {
-        expect(record.reasons).toContain("unsupported_schema");
-      }
-      expect(
-        invalid.map((record) => record.path).sort(),
-      ).toEqual(
-        MIGRATED_KEYS.map((key) => `${LIT}/${key}/${key}.md`).sort(),
+      expect(index.getRecords().map((record) => record.key).sort()).toEqual(
+        [...MIGRATED_KEYS].sort(),
       );
+      expect(index.isReadOnly()).toBe(false);
+      expect(index.getInvalidRecords()).toHaveLength(0);
     },
     120_000,
   );
@@ -740,8 +730,9 @@ describe.skipIf(!hasCore)("core/plugin contract against the fixture vault", () =
       expect(record!.year).toBe(2026);
       expect(record!.authors[0]).toMatchObject({ family: "Chen", given: "Wei" });
       expect(index.search("synthetic").map((r) => r.key)).toContain(MAIN_KEY);
-      // the migrated notes remain invalid (previous test pins that behavior)
-      expect(index.getInvalidRecords()).toHaveLength(4);
+      // the migrated fixture notes are valid too (schema_version written by
+      // the core migration), so nothing remains invalid
+      expect(index.getInvalidRecords()).toHaveLength(0);
     },
     120_000,
   );
@@ -883,7 +874,7 @@ describe.skipIf(!hasCore)("core/plugin contract against the fixture vault", () =
       );
       expect(
         searchCitationCandidates(index.getRecords(), "2026").map((r) => r.key),
-      ).toEqual([MAIN_KEY, DISPOSABLE_KEY]);
+      ).toEqual([MAIN_KEY, MIGRATED_2026_KEY, DISPOSABLE_KEY]);
 
       const edits: string[] = [];
       const editor = { replaceSelection: (text: string) => edits.push(text) };
@@ -1022,7 +1013,11 @@ describe.skipIf(!hasCore)("core/plugin contract against the fixture vault", () =
 
       const index = indexRecords(vault);
       const records = index.getRecords();
-      expect(records.map((record) => record.key)).toEqual([MAIN_RENAMED]);
+      // all four migrated fixture notes are valid now (schema_version written
+      // by the core migration) plus the renamed CLI-created item
+      expect(records.map((record) => record.key).sort()).toEqual(
+        [...MIGRATED_KEYS, MAIN_RENAMED].sort(),
+      );
       expect(aliasMapOf(records)).toEqual({ [MAIN_KEY]: MAIN_RENAMED });
 
       const root = mkdtempSync(join(tmpdir(), "paper-notes-export-"));
