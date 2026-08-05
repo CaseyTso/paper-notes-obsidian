@@ -1,5 +1,6 @@
 import {
   Plugin,
+  Notice,
   type MetadataCache,
   type TFile,
   type Vault,
@@ -14,7 +15,9 @@ import {
   type LiteratureVaultAdapter,
 } from "./services/library-index";
 import {
+  CSL_STYLE_DIR,
   DEFAULT_SETTINGS,
+  exportConfigOf,
   normalizeSettings,
   type PaperNotesSettings,
 } from "./settings";
@@ -30,6 +33,18 @@ import {
   VIEW_TYPE_PAPER_NOTES,
   type LibraryViewSource,
 } from "./views/literature-library-view";
+import { requireExportStyle, type CslVaultPort } from "./services/csl-style-manager";
+import { checkExportHealth, defaultHealthPort } from "./services/export-health";
+import {
+  aliasMapOf,
+  checkCitationKeys,
+  defaultExportPorts,
+  desktopOpenRevealActions,
+  exportPandoc,
+  exportTargetPath,
+  type ExportFormat,
+} from "./services/pandoc-export";
+import { createExportConfirmationModal } from "./modals/export-confirmation-modal";
 
 export { VIEW_TYPE_PAPER_NOTES };
 
@@ -37,6 +52,10 @@ export const OPEN_LIBRARY_COMMAND = "paper-notes-open-library";
 
 /** Command id for the keyboard citation picker (Task 27). */
 export const INSERT_CITATION_COMMAND = "paper-notes-insert-citation";
+
+/** Command ids for the focused Pandoc exporter (Task 29). */
+export const EXPORT_DOCX_COMMAND = "paper-notes-export-docx";
+export const EXPORT_PDF_COMMAND = "paper-notes-export-pdf";
 
 /**
  * Read-only Obsidian vault adapter for the in-memory index (Task 23).
@@ -89,6 +108,9 @@ export default class PaperNotesPlugin extends Plugin {
   private vaultAdapter: ObsidianVaultAdapter | undefined;
   private libraryView: PaperNotesLibraryView | null = null;
 
+  /** Abort controllers of in-flight Pandoc exports, cancelled on unload. */
+  private runningExports = new Set<AbortController>();
+
   async onload(): Promise<void> {
     this.registerView(VIEW_TYPE_PAPER_NOTES, (leaf) => {
       this.libraryView = new PaperNotesLibraryView(
@@ -112,8 +134,31 @@ export default class PaperNotesPlugin extends Plugin {
         void this.openCitationPicker();
       },
     });
+    // Focused academic export (Task 29): DOCX/PDF only, from the active
+    // Markdown note, into the fixed global output directory.
+    this.addCommand({
+      id: EXPORT_DOCX_COMMAND,
+      name: "Export active note as DOCX",
+      callback: () => {
+        void this.exportActiveNote("docx");
+      },
+    });
+    this.addCommand({
+      id: EXPORT_PDF_COMMAND,
+      name: "Export active note as PDF",
+      callback: () => {
+        void this.exportActiveNote("pdf");
+      },
+    });
     await this.initializeCliBridge();
     this.initializeLibraryIndex();
+  }
+
+  async onunload(): Promise<void> {
+    for (const controller of this.runningExports) {
+      controller.abort();
+    }
+    this.runningExports.clear();
   }
 
   /**
@@ -273,5 +318,155 @@ export default class PaperNotesPlugin extends Plugin {
     } catch {
       // Modal unavailable in a headless context; the command is a no-op.
     }
+  }
+
+  /**
+   * Export the active Markdown note as DOCX or PDF through Pandoc (Task
+   * 29). Preflight blocks on unknown citation keys, the fixed global
+   * output directory, Pandoc, the PDF engine, the selected CSL style and
+   * the reference DOCX before anything launches; an existing target asks
+   * for explicit confirmation via the export modal. The export itself
+   * writes to a temporary file and atomically publishes on exit 0.
+   */
+  private async exportActiveNote(format: ExportFormat): Promise<void> {
+    const workspace = this.app.workspace as {
+      getActiveFile?: () => TFile | null;
+    };
+    const activeFile = workspace.getActiveFile?.() ?? null;
+    if (activeFile === null) {
+      new Notice("Paper Notes: no active Markdown note to export.");
+      return;
+    }
+    const vault = this.app.vault;
+    const adapter = vault.adapter as { getFullPath?: (path: string) => string };
+    if (typeof adapter?.getFullPath !== "function") {
+      new Notice("Paper Notes: export needs the desktop vault adapter.");
+      return;
+    }
+
+    const cslCheck = await requireExportStyle(
+      this.createCslVaultPort(),
+      CSL_STYLE_DIR,
+      this.settings.selectedCsl,
+    );
+    const records = this.libraryIndex?.getRecords() ?? [];
+    const markdown = await vault.cachedRead(activeFile);
+    const gate = checkCitationKeys(markdown, records, aliasMapOf(records));
+    if (!gate.ok) {
+      new Notice(
+        `Paper Notes: unknown citation key(s): ${gate.unknownKeys.join(", ")}. Export blocked.`,
+      );
+      return;
+    }
+
+    const cfg = exportConfigOf(this.settings);
+    const health = await checkExportHealth(defaultHealthPort(), {
+      format,
+      exportDirectory: cfg.exportDirectory,
+      pandocPath: cfg.pandocPath,
+      pdfEngine: cfg.pdfEngine,
+      referenceDocx: cfg.referenceDocx,
+      csl: cslCheck,
+    });
+    if (!health.ok) {
+      new Notice(
+        `Paper Notes: export blocked. ${health.problems[0] ?? "preflight failed."}`,
+      );
+      return;
+    }
+
+    const ports = defaultExportPorts();
+    const targetPath = exportTargetPath(
+      health.exportDirectory,
+      activeFile.basename,
+      format,
+    );
+    const targetExists = await ports.fs.exists(targetPath);
+    const markdownPath = adapter.getFullPath(activeFile.path);
+    const cslPath = adapter.getFullPath(health.cslPath);
+    const engineLabel =
+      format === "pdf"
+        ? `PDF engine: ${health.pdfEngine}`
+        : health.referenceDocx.length > 0
+          ? `Reference DOCX: ${health.referenceDocx}`
+          : "Reference DOCX: Pandoc default";
+
+    try {
+      const modal = await createExportConfirmationModal(
+        this.app,
+        {
+          format,
+          targetPath,
+          targetExists,
+          cslTitle: health.cslTitle,
+          engineLabel,
+          actions: desktopOpenRevealActions(),
+          onCancel: () => {},
+        },
+        {
+          start: () => {
+            const controller = new AbortController();
+            this.runningExports.add(controller);
+            const result = exportPandoc(
+              {
+                format,
+                baseName: activeFile.basename,
+                markdown,
+                markdownPath,
+                exportDirectory: health.exportDirectory,
+                pandocPath: health.pandocPath,
+                pdfEngine: health.pdfEngine,
+                cslPath,
+                referenceDocx: health.referenceDocx,
+                records,
+                signal: controller.signal,
+              },
+              ports,
+            ).finally(() => this.runningExports.delete(controller));
+            return { abort: () => controller.abort(), result };
+          },
+        },
+      );
+      modal.open();
+    } catch {
+      new Notice("Paper Notes: export dialog unavailable.");
+    }
+  }
+
+  /**
+   * Read-only CSL vault port for the export gate: lists and reads styles
+   * from the vault adapter. Writes are never available from export flows.
+   */
+  private createCslVaultPort(): CslVaultPort {
+    const adapter = this.app.vault.adapter as unknown as {
+      list?: (path: string) => Promise<{ files: Array<{ name: string }> }>;
+      read?: (path: string) => Promise<string>;
+    };
+    return {
+      async listFiles(dir: string): Promise<string[]> {
+        if (typeof adapter?.list !== "function") {
+          return [];
+        }
+        try {
+          const listed = await adapter.list(dir);
+          return listed.files.map((file) => file.name);
+        } catch {
+          return [];
+        }
+      },
+      async readText(path: string): Promise<string | null> {
+        if (typeof adapter?.read !== "function") {
+          return null;
+        }
+        try {
+          return await adapter.read(path);
+        } catch {
+          return null;
+        }
+      },
+      async writeText(): Promise<void> {
+        throw new Error("CSL writes are not available from export flows.");
+      },
+    };
   }
 }

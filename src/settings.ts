@@ -97,3 +97,23 @@ export function normalizeSettings(loaded: unknown): PaperNotesSettings {
 export function metricsEnabledOf(settings: PaperNotesSettings): boolean {
   return settings.metricsEnabled !== false;
 }
+
+/**
+ * Export-relevant settings snapshot consumed by the Pandoc exporter
+ * (Task 29). Keeps the export flow decoupled from the full settings object.
+ */
+export function exportConfigOf(settings: PaperNotesSettings): {
+  exportDirectory: string;
+  pandocPath: string;
+  pdfEngine: string;
+  referenceDocx: string;
+  selectedCsl: string;
+} {
+  return {
+    exportDirectory: settings.exportDirectory,
+    pandocPath: settings.pandocPath,
+    pdfEngine: settings.pdfEngine,
+    referenceDocx: settings.referenceDocx,
+    selectedCsl: settings.selectedCsl,
+  };
+}
