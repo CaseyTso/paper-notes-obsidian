@@ -310,6 +310,16 @@ export default class PaperNotesPlugin extends Plugin {
           .sort(),
       // EasyScholar metrics arrive with Task 26; until then there are none.
       getMetrics: () => undefined,
+      // On-demand MinerU full-text search (design spec §9.4; Repair: Task
+      // 23 R7): the view calls this after its debounce; the index skips
+      // MinerU reads for records already matched by default fields, and
+      // the AbortSignal cancels an in-flight search.
+      searchFullText: (query, signal) => {
+        const index = this.libraryIndex;
+        return index === undefined
+          ? Promise.resolve([])
+          : index.searchFullText(query, { signal });
+      },
     };
   }
 

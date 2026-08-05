@@ -138,6 +138,13 @@
   padding: 12px;
 }
 
+/* On-demand MinerU full-text search status (Repair: Task 23 R7). */
+.paper-notes-library-fulltext-status {
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  padding: 4px 10px;
+}
+
 .paper-notes-library-detail-title {
   margin-top: 0;
   font-size: var(--font-ui-medium);

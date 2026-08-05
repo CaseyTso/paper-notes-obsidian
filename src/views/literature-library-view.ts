@@ -73,6 +73,14 @@ import { buildPaperDetail } from "../components/paper-detail";
 
 export const VIEW_TYPE_PAPER_NOTES = "paper-notes-open-library";
 
+/**
+ * Debounce window before an on-demand MinerU full-text search fires
+ * (Repair: Task 23 R7). The synchronous metadata filter renders
+ * immediately; only a query that stays put for this long triggers the
+ * async MinerU pass, so rapid typing collapses into one search.
+ */
+export const FULL_TEXT_SEARCH_DEBOUNCE_MS = 300;
+
 /** Plugin id from manifest.json; the view reads the CLI bridge off it. */
 const PLUGIN_ID = "paper-notes";
 
@@ -119,6 +127,17 @@ export interface LibraryViewSource {
   getCards(dir: string): string[];
   /** Volatile EasyScholar metrics per paper id (Task 26 wires the cache). */
   getMetrics?(paperId: string): PaperMetrics | undefined;
+  /**
+   * Explicit on-demand MinerU full-text search (design spec §9.4): reads
+   * `minerUmd_<key>.md` for records not matched by default fields. The
+   * optional signal cancels an in-flight search (rejects with
+   * `SearchCancelledError`). Absent in legacy/read-only sources: the view
+   * then degrades to metadata-only search.
+   */
+  searchFullText?(
+    query: string,
+    signal?: AbortSignal,
+  ): Promise<PaperRecord[]>;
 }
 
 interface ModalClasses {
@@ -146,6 +165,19 @@ export class PaperNotesLibraryView extends ItemView {
   private recordsById = new Map<string, PaperRecord>();
   /** Lazily loaded modal classes (kept off the static import graph). */
   private modalClasses: ModalClasses | undefined;
+  /** Pending on-demand full-text debounce timer (Repair: Task 23 R7). */
+  private fullTextTimer: ReturnType<typeof setTimeout> | undefined;
+  /** Abort controller of the in-flight full-text search (cancelled on re-query). */
+  private fullTextController: AbortController | undefined;
+  /** Extra rows appended by the last completed full-text search. */
+  private fullTextItems: LibraryItem[] = [];
+  /**
+   * Query the `fullTextItems` were produced for. Results for an older
+   * query are stale and must never be merged into the current view.
+   */
+  private fullTextQuery: string | undefined;
+  /** Lightweight "Searching MinerU full text…" indicator state. */
+  private fullTextSearching = false;
 
   constructor(leaf: WorkspaceLeaf, private readonly source: LibraryViewSource) {
     super(leaf);
@@ -173,6 +205,9 @@ export class PaperNotesLibraryView extends ItemView {
 
   async onClose(): Promise<void> {
     this.isOpen = false;
+    this.cancelFullTextSearch();
+    this.fullTextItems = [];
+    this.fullTextQuery = undefined;
     this.tableHost = null;
     this.detailHost = null;
     this.containerEl.empty();
@@ -203,6 +238,7 @@ export class PaperNotesLibraryView extends ItemView {
     search.addEventListener("input", () => {
       this.searchQuery = search.value;
       this.renderResults();
+      this.scheduleFullTextSearch();
     });
     const clear = toolbar.createEl("button", {
       cls: "paper-notes-library-clear",
@@ -397,8 +433,28 @@ export class PaperNotesLibraryView extends ItemView {
   private queryItems(): LibraryItem[] {
     const records = this.source.getRecords();
     this.recordsById = new Map(records.map((record) => [record.paperId, record]));
+    const searched = searchLibraryItems(
+      this.buildItems(records, this.source.getInvalidRecords()),
+      this.searchQuery,
+    );
+    const filtered = applyLibraryFilters(searched, this.filters);
+    const sorted = sortLibraryItems(filtered, this.sort);
+    const extras = this.fullTextExtras(filtered);
+    return extras.length === 0 ? sorted : [...sorted, ...extras];
+  }
+
+  /**
+   * Assemble display items for a record set with the view's volatile data
+   * (frontmatter, artifact listing, metric cache). Used by both the
+   * metadata pipeline (with the index's invalid rows) and the on-demand
+   * full-text pass (full-text hits are always valid records).
+   */
+  private buildItems(
+    records: PaperRecord[],
+    invalidRecords: InvalidRecord[],
+  ): LibraryItem[] {
     const cache = this.getMetricsCache();
-    const items = buildLibraryItems(records, this.source.getInvalidRecords(), {
+    return buildLibraryItems(records, invalidRecords, {
       frontmatter: (path) => this.source.getFrontmatter(path),
       listDirectory: (dir) => this.source.listDirectory(dir),
       metrics: (paperId) => {
@@ -408,9 +464,106 @@ export class PaperNotesLibraryView extends ItemView {
         return cached?.metrics ?? this.source.getMetrics?.(paperId);
       },
     });
-    const searched = searchLibraryItems(items, this.searchQuery);
-    const filtered = applyLibraryFilters(searched, this.filters);
-    return sortLibraryItems(filtered, this.sort);
+  }
+
+  /**
+   * Full-text rows for the CURRENT query, deduplicated against the
+   * metadata rows and still subject to the active filters. Rows produced
+   * for an older query are stale and never merged.
+   */
+  private fullTextExtras(filtered: LibraryItem[]): LibraryItem[] {
+    if (
+      this.fullTextItems.length === 0 ||
+      this.fullTextQuery !== this.searchQuery
+    ) {
+      return [];
+    }
+    const metadataPaths = new Set(filtered.map((item) => item.path));
+    return this.fullTextItems.filter(
+      (item) =>
+        !metadataPaths.has(item.path) &&
+        applyLibraryFilters([item], this.filters).length === 1,
+    );
+  }
+
+  /**
+   * On-demand MinerU full-text search (design spec §9.4; Repair: Task 23
+   * R7): the synchronous metadata filter above already rendered; a
+   * debounced async pass reads `minerUmd_<key>.md` for records the
+   * metadata missed and appends any full-text hits. Sources without a
+   * full-text bridge stay metadata-only. Emptying the query cancels any
+   * pending search and restores the full list.
+   */
+  private scheduleFullTextSearch(): void {
+    if (this.searchQuery.trim().length === 0) {
+      this.cancelFullTextSearch();
+      this.fullTextItems = [];
+      this.fullTextQuery = undefined;
+      this.renderResults();
+      return;
+    }
+    if (this.source.searchFullText === undefined) {
+      return;
+    }
+    if (this.fullTextTimer !== undefined) {
+      clearTimeout(this.fullTextTimer);
+    }
+    this.fullTextTimer = setTimeout(
+      () => void this.runFullTextSearch(),
+      FULL_TEXT_SEARCH_DEBOUNCE_MS,
+    );
+  }
+
+  /**
+   * Run the on-demand full-text search for the current query. Any
+   * in-flight request is cancelled first (stale results must never
+   * overwrite the newer query's rows); the result is merged only if this
+   * query is still the active one. Failures silently fall back to the
+   * metadata results already on screen.
+   */
+  private async runFullTextSearch(): Promise<void> {
+    this.fullTextTimer = undefined;
+    const query = this.searchQuery;
+    const searchFullText = this.source.searchFullText;
+    if (query.trim().length === 0 || searchFullText === undefined) {
+      return;
+    }
+    this.fullTextController?.abort();
+    const controller = new AbortController();
+    this.fullTextController = controller;
+    const signal = controller.signal;
+    this.fullTextSearching = true;
+    this.renderResults();
+    try {
+      const records = await searchFullText(query, signal);
+      if (signal.aborted || query !== this.searchQuery) {
+        return; // stale: a newer query superseded this one
+      }
+      this.fullTextItems = this.buildItems(records, []);
+      this.fullTextQuery = query;
+    } catch {
+      // Full-text search is best-effort: failures silently fall back to
+      // the metadata results already rendered (never crash the view).
+    } finally {
+      if (this.fullTextController === controller) {
+        this.fullTextController = undefined;
+      }
+      this.fullTextSearching = false;
+      if (this.isOpen && query === this.searchQuery) {
+        this.renderResults();
+      }
+    }
+  }
+
+  /** Cancel a pending debounce and any in-flight full-text request. */
+  private cancelFullTextSearch(): void {
+    if (this.fullTextTimer !== undefined) {
+      clearTimeout(this.fullTextTimer);
+      this.fullTextTimer = undefined;
+    }
+    this.fullTextController?.abort();
+    this.fullTextController = undefined;
+    this.fullTextSearching = false;
   }
 
   private renderResults(): void {
@@ -423,6 +576,13 @@ export class PaperNotesLibraryView extends ItemView {
       return;
     }
     this.tableHost.empty();
+    if (this.fullTextSearching) {
+      // Lightweight in-flight indicator for the on-demand MinerU pass.
+      this.tableHost.createDiv({
+        cls: "paper-notes-library-fulltext-status",
+        text: "Searching MinerU full text…",
+      });
+    }
     const items = this.queryItems();
     // Column customizations are view-level UI state; Task 24 uses the defaults.
     const columns = resolveColumns({});
