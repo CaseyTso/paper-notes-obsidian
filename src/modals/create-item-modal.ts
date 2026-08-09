@@ -58,6 +58,7 @@ export class CreateItemModal extends Modal {
     });
     this.inputEl = this.contentEl.createEl("input", {
       type: "text",
+      cls: "paper-notes-create-input",
       placeholder: "10.xxxx/..., PMID, arXiv, https://..., or /path/to/paper.pdf",
     });
     this.inputEl.value = this.initialText;

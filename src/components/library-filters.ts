@@ -110,3 +110,49 @@ export function applyLibraryFilters(
     return requiredArtifacts.every((part) => item.artifacts[part]);
   });
 }
+
+
+/**
+ * Advanced (collapsible) filter fields — year/journal/metrics ranges.
+ * Primary bar keeps Reading + artifact checkboxes only (Batch 1 layout).
+ */
+export function countActiveAdvancedFilters(filters: LibraryFilters): number {
+  let count = 0;
+  if (filters.yearFrom !== undefined) {
+    count += 1;
+  }
+  if (filters.yearTo !== undefined) {
+    count += 1;
+  }
+  if (filters.journal !== undefined && filters.journal.trim().length > 0) {
+    count += 1;
+  }
+  if (filters.cas !== undefined && filters.cas.trim().length > 0) {
+    count += 1;
+  }
+  if (filters.jcr !== undefined && filters.jcr.trim().length > 0) {
+    count += 1;
+  }
+  if (filters.ifMin !== undefined) {
+    count += 1;
+  }
+  if (filters.ifMax !== undefined) {
+    count += 1;
+  }
+  if (filters.jciMin !== undefined) {
+    count += 1;
+  }
+  if (filters.jciMax !== undefined) {
+    count += 1;
+  }
+  return count;
+}
+
+/**
+ * Whether the Advanced block should open automatically: any advanced
+ * condition is set. Manual collapse is still allowed; the badge uses the
+ * same count so a collapsed-but-active state stays visible.
+ */
+export function hasActiveAdvancedFilters(filters: LibraryFilters): boolean {
+  return countActiveAdvancedFilters(filters) > 0;
+}

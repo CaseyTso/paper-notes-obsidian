@@ -87,8 +87,11 @@ export function renderMetricBadge(
   state: MetricBadgeState,
 ): HTMLElement {
   const badge = host.createEl("span", {
-    cls: "paper-notes-metric-badge",
+    cls: `paper-notes-metric-badge paper-notes-metric-badge--${state.kind}`,
     text: state.value,
+    attr: {
+      "aria-label": `${state.label}: ${state.value}${state.stale ? " (stale)" : ""}`,
+    },
   });
   if (state.stale) {
     badge.addClass("paper-notes-metric-badge-stale");

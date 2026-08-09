@@ -667,13 +667,39 @@ describe("buildPaperDetail", () => {
     expect(field("Journal")).toBe("Nature Methods");
     expect(field("DOI")).toBe("10.1000/alpha");
     expect(field("PMID")).toBe("12345");
-    expect(field("Reading status")).toBe("read");
-    expect(field("PDF/MinerU/Figure")).toBe("PDF · MinerU");
-    expect(field("CAS")).toBe("中科院一区");
-    expect(field("JCR")).toBe("Q1");
-    expect(field("IF")).toBe("8.1");
-    expect(field("JCI")).toBe("2.3");
-    expect(field("Abstract")).toBe("Alpha abstract text.");
+    // Batch 2 (A+C): reading status, artifacts, metrics and the abstract
+    // are sectioned fields, not flat bibliographic rows.
+    expect(field("Reading status")).toBeUndefined();
+    expect(field("PDF/MinerU/Figure")).toBeUndefined();
+    expect(field("CAS")).toBeUndefined();
+    expect(field("Abstract")).toBeUndefined();
+    expect(detail.readingStatus).toBe("read");
+    expect(detail.artifacts).toEqual({ pdf: true, minerU: true, figure: false });
+    expect(detail.metrics).toEqual([
+      { label: "CAS", value: "中科院一区" },
+      { label: "JCR", value: "Q1" },
+      { label: "IF", value: "8.1" },
+      { label: "JCI", value: "2.3" },
+    ]);
+    expect(detail.abstract).toBe("Alpha abstract text.");
+  });
+
+  it("omits absent sections from the detail model", () => {
+    const [item] = buildLibraryItems(
+      [makeRecord({ abstract: "", identifiers: {} })],
+      [],
+      buildOptions({
+        frontmatter: () => undefined,
+        listDirectory: () => [],
+        metrics: () => undefined,
+      }),
+    );
+    const detail = buildPaperDetail(item);
+    expect(detail.readingStatus).toBeUndefined();
+    expect(detail.metrics).toEqual([]);
+    expect(detail.abstract).toBeUndefined();
+    expect(detail.fields.map((f) => f.label)).not.toContain("Abstract");
+    expect(detail.artifacts).toEqual({ pdf: false, minerU: false, figure: false });
   });
 
   it("is read-only: mutating the detail never touches the source item", () => {

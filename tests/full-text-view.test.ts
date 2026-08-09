@@ -246,7 +246,10 @@ interface ElLike {
 function findByClass(root: ElLike, cls: string): ElLike[] {
   const found: ElLike[] = [];
   const walk = (node: ElLike): void => {
-    if (node.cls === cls) {
+    if (
+      node.cls === cls ||
+      node.cls.split(/\s+/).filter(Boolean).includes(cls)
+    ) {
       found.push(node);
     }
     for (const child of node.children) {

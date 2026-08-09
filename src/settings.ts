@@ -9,6 +9,25 @@
  * older `data.json` files keep working.
  */
 
+import {
+  clampColumnWidth,
+  type LibraryColumnId,
+} from "./components/library-table";
+
+/** Known column ids accepted in persisted `columnWidths` (Batch 2 D). */
+const COLUMN_IDS: readonly LibraryColumnId[] = [
+  "title",
+  "firstAuthor",
+  "year",
+  "journal",
+  "cas",
+  "jcr",
+  "if",
+  "jci",
+  "artifacts",
+  "readingStatus",
+];
+
 export interface PaperNotesSettings {
   /** Path to the paper-notes core CLI executable. */
   cliPath: string;
@@ -36,6 +55,20 @@ export interface PaperNotesSettings {
    * the persisted-defaults contract of `DEFAULT_SETTINGS` stays stable.
    */
   metricsEnabled?: boolean;
+  /**
+   * Legacy detail-pane share of the former split layout (0–1), kept only
+   * so older `data.json` files normalize cleanly. The Library shell no
+   * longer reads it (full-width table + double-click drawer); the value
+   * is tolerated but never consumed by the UI.
+   */
+  detailPaneRatio?: number;
+  /**
+   * Per-column width overrides (Batch 2 D), keyed by column id → px.
+   * Persisted to `data.json` by the library view (merge-save, never
+   * overwriting other keys); normalized here so corrupt values drop and
+   * out-of-range widths clamp to the drag bounds.
+   */
+  columnWidths?: Partial<Record<LibraryColumnId, number>>;
 }
 
 export const DEFAULT_SETTINGS: PaperNotesSettings = {
@@ -86,6 +119,36 @@ export function normalizeSettings(loaded: unknown): PaperNotesSettings {
   }
   if (typeof source.metricsEnabled === "boolean") {
     settings.metricsEnabled = source.metricsEnabled;
+  }
+  if (
+    typeof source.detailPaneRatio === "number" &&
+    Number.isFinite(source.detailPaneRatio)
+  ) {
+    // Soft-clamp here keeps data.json free of NaN/outliers; the layout
+    // helper re-clamps on use for drag-time safety.
+    const ratio = source.detailPaneRatio;
+    if (ratio >= 0.05 && ratio <= 0.95) {
+      settings.detailPaneRatio = ratio;
+    }
+  }
+  if (
+    typeof source.columnWidths === "object" &&
+    source.columnWidths !== null
+  ) {
+    const raw = source.columnWidths as Record<string, unknown>;
+    const normalized: Partial<Record<LibraryColumnId, number>> = {};
+    for (const [id, width] of Object.entries(raw)) {
+      if (
+        (COLUMN_IDS as readonly string[]).includes(id) &&
+        typeof width === "number" &&
+        Number.isFinite(width)
+      ) {
+        normalized[id as LibraryColumnId] = clampColumnWidth(width);
+      }
+    }
+    if (Object.keys(normalized).length > 0) {
+      settings.columnWidths = normalized;
+    }
   }
   return settings;
 }

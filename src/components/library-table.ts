@@ -55,19 +55,47 @@ export interface LibraryColumn {
   width: number;
 }
 
-/** Default column list (plan Task 24): the ten approved columns in order. */
+/**
+ * Column-width drag rules (Batch 3): dragging or persisting a width has no
+ * 720px ceiling any more — only a minimum floor and an absurd-value safety
+ * valve so corrupt persisted data can never freeze the table. Normal
+ * dragging never reaches the valve.
+ */
+export const COLUMN_WIDTH_MIN_PX = 48;
+export const COLUMN_WIDTH_SAFETY_MAX_PX = 100000;
+
+/**
+ * Default column list (plan Task 24): the ten approved columns in order.
+ * Batch 2 D raised the defaults so titles, journals, artifact chips and
+ * reading-status chips read comfortably without hiding any column.
+ */
 export const DEFAULT_LIBRARY_COLUMNS: LibraryColumn[] = [
-  { id: "title", label: "Title", visible: true, width: 260 },
-  { id: "firstAuthor", label: "First author", visible: true, width: 140 },
-  { id: "year", label: "Year", visible: true, width: 60 },
-  { id: "journal", label: "Journal", visible: true, width: 160 },
-  { id: "cas", label: "CAS", visible: true, width: 90 },
-  { id: "jcr", label: "JCR", visible: true, width: 60 },
-  { id: "if", label: "IF", visible: true, width: 60 },
-  { id: "jci", label: "JCI", visible: true, width: 60 },
-  { id: "artifacts", label: "PDF/MinerU/Figure", visible: true, width: 150 },
-  { id: "readingStatus", label: "Reading status", visible: true, width: 110 },
+  { id: "title", label: "Title", visible: true, width: 340 },
+  { id: "firstAuthor", label: "First author", visible: true, width: 150 },
+  { id: "year", label: "Year", visible: true, width: 70 },
+  { id: "journal", label: "Journal", visible: true, width: 200 },
+  { id: "cas", label: "CAS", visible: true, width: 100 },
+  { id: "jcr", label: "JCR", visible: true, width: 70 },
+  { id: "if", label: "IF", visible: true, width: 70 },
+  { id: "jci", label: "JCI", visible: true, width: 70 },
+  { id: "artifacts", label: "PDF/MinerU/Figure", visible: true, width: 180 },
+  { id: "readingStatus", label: "Reading status", visible: true, width: 130 },
 ];
+
+/**
+ * Clamp a column width (rounded to whole pixels): non-finite input
+ * (corrupt persisted data) becomes the minimum; only absurd widths above
+ * the safety valve are capped. In-range values, however wide, pass through.
+ */
+export function clampColumnWidth(width: number): number {
+  if (!Number.isFinite(width)) {
+    return COLUMN_WIDTH_MIN_PX;
+  }
+  return Math.min(
+    COLUMN_WIDTH_SAFETY_MAX_PX,
+    Math.max(COLUMN_WIDTH_MIN_PX, Math.round(width)),
+  );
+}
 
 export interface ColumnCustomization {
   visible?: boolean;

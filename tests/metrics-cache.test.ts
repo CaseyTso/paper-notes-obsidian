@@ -148,12 +148,14 @@ class ElStub {
 
   createEl(
     _tag: string,
-    opts: { cls?: string; text?: string } = {},
+    opts: { cls?: string; text?: string; attr?: Record<string, string> } = {},
   ): ElStub {
     const el = new ElStub();
     el.textContent = opts.text ?? "";
     if (opts.cls !== undefined) {
-      el.classes.push(opts.cls);
+      for (const token of opts.cls.split(/\s+/).filter(Boolean)) {
+        el.classes.push(token);
+      }
     }
     this.children.push(el);
     return el;
@@ -814,6 +816,7 @@ describe("metric cell badges", () => {
     expect(badge).toBe(host.children[0]);
     expect(host.children[0].textContent).toBe("82.9");
     expect(host.children[0].classes).toContain("paper-notes-metric-badge");
+    expect(host.children[0].classes).toContain("paper-notes-metric-badge--if");
     expect(host.children[0].classes).toContain("paper-notes-metric-badge-stale");
     expect(host.children[0].title).toBe("Stale — cached 2027-01-01");
 
@@ -825,6 +828,7 @@ describe("metric cell badges", () => {
       stale: false,
       tooltip: "Cached 2027-01-01",
     });
+    expect(freshHost.children[0].classes).toContain("paper-notes-metric-badge--cas");
     expect(freshHost.children[0].classes).not.toContain(
       "paper-notes-metric-badge-stale",
     );

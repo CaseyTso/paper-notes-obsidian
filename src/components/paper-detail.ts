@@ -1,14 +1,25 @@
 /**
- * Read-only paper detail model (Task 24).
+ * Read-only paper detail model (Task 24, Batch 2 A+C).
  *
- * `buildPaperDetail` derives a flat, display-only model from a library item:
+ * `buildPaperDetail` derives a display-only model from a library item:
  * every value is copied into fresh strings/arrays, so mutating the detail
  * can never touch the index record. No editing, no write-back — manual
  * metadata editing happens in the main YAML (design spec §9.5).
+ *
+ * Batch 2 sections the drawer: bibliographic rows (`fields`), the header
+ * reading-status chip, a metric badge row (`metrics`), an artifact
+ * summary (`artifacts`) and the full abstract text (`abstract` — the view
+ * truncates long abstracts with an Expand toggle). All sections are
+ * read-only derivations; nothing here writes paper YAML.
  */
 
-import type { LibraryItem, PaperMetrics } from "./library-table";
-import { INVALID_METADATA_TITLE, formatColumnValue } from "./library-table";
+import type {
+  ArtifactAvailability,
+  LibraryItem,
+  PaperMetrics,
+  ReadingStatus,
+} from "./library-table";
+import { INVALID_METADATA_TITLE } from "./library-table";
 import type { PaperAuthor } from "../types/paper";
 
 export interface PaperDetailField {
@@ -22,7 +33,16 @@ export interface PaperDetailData {
   paperId: string;
   /** Present only for invalid-metadata rows. */
   invalid?: { reasons: string[] };
+  /** Bibliographic rows (authors, year, journal, identifiers). */
   fields: PaperDetailField[];
+  /** Reading status for the drawer header chip (absent when unset). */
+  readingStatus?: ReadingStatus;
+  /** Present metric badge rows (CAS/JCR/IF/JCI), UI-only. */
+  metrics: PaperDetailField[];
+  /** Artifact file presence for the attachments summary row. */
+  artifacts: ArtifactAvailability;
+  /** Full abstract text (view truncates >600 chars with Expand). */
+  abstract?: string;
 }
 
 /** Deterministic "Family Given; Literal" rendering of the full author list. */
@@ -47,12 +67,17 @@ function stringifyMetric(
   return typeof value === "number" ? String(value) : value;
 }
 
+const NO_ARTIFACTS: ArtifactAvailability = {
+  pdf: false,
+  minerU: false,
+  figure: false,
+};
+
 /**
  * Derive the read-only detail panel model. All output values are fresh
  * copies; the source item is only read from.
  */
 export function buildPaperDetail(item: LibraryItem): PaperDetailData {
-  const fields: PaperDetailField[] = [];
   if (item.invalid !== undefined) {
     return {
       title: INVALID_METADATA_TITLE,
@@ -63,6 +88,8 @@ export function buildPaperDetail(item: LibraryItem): PaperDetailData {
         { label: "Path", value: item.path },
         { label: "Diagnostics", value: item.invalid.reasons.join(", ") },
       ],
+      metrics: [],
+      artifacts: { ...NO_ARTIFACTS },
     };
   }
   const record = item.record!;
@@ -94,8 +121,7 @@ export function buildPaperDetail(item: LibraryItem): PaperDetailData {
       ? [{ label: "JCI", value: stringifyMetric(item.metrics, "jci") as string }]
       : []),
   ];
-  const artifacts = formatColumnValue(item, "artifacts");
-  fields.push(
+  const fields: PaperDetailField[] = [
     ...(record.authors.length > 0
       ? [{ label: "Authors", value: formatAuthors(record.authors) }]
       : []),
@@ -104,21 +130,19 @@ export function buildPaperDetail(item: LibraryItem): PaperDetailData {
       ? [{ label: "Journal", value: item.journal }]
       : []),
     ...identifiers,
-    ...(item.readingStatus !== undefined
-      ? [{ label: "Reading status", value: item.readingStatus }]
-      : []),
-    ...(artifacts.length > 0
-      ? [{ label: "PDF/MinerU/Figure", value: artifacts }]
-      : []),
-    ...metrics,
-    ...(record.abstract !== undefined && record.abstract.length > 0
-      ? [{ label: "Abstract", value: record.abstract }]
-      : []),
-  );
+  ];
+  const abstract =
+    record.abstract !== undefined && record.abstract.length > 0
+      ? record.abstract
+      : undefined;
   return {
     title: item.title,
     key: item.key,
     paperId: item.paperId,
     fields,
+    readingStatus: item.readingStatus,
+    metrics,
+    artifacts: { ...item.artifacts },
+    ...(abstract !== undefined ? { abstract } : {}),
   };
 }

@@ -56,10 +56,12 @@ import {
 import type { CreateItemCallbacks } from "../modals/create-item-modal";
 import {
   buildLibraryItems,
+  clampColumnWidth,
   formatColumnValue,
   resolveColumns,
   searchLibraryItems,
   sortLibraryItems,
+  type ColumnCustomizations,
   type LibraryColumnId,
   type LibraryItem,
   type LibrarySort,
@@ -68,6 +70,8 @@ import {
 import {
   EMPTY_LIBRARY_FILTERS,
   applyLibraryFilters,
+  countActiveAdvancedFilters,
+  hasActiveAdvancedFilters,
   type ArtifactPart,
   type LibraryFilters,
 } from "../components/library-filters";
@@ -89,6 +93,9 @@ const PLUGIN_ID = "paper-notes";
 /** Command ids registered by the view (main.ts is frozen; Task 26). */
 const REFRESH_JOURNAL_COMMAND = "paper-notes-refresh-journal-metrics";
 const REFRESH_ALL_COMMAND = "paper-notes-refresh-all-metrics";
+
+/** Long abstracts in the drawer truncate at this many characters. */
+const ABSTRACT_TRUNCATE_CHARS = 600;
 
 /** Map the four metric columns onto their badge kinds. */
 const METRIC_COLUMN_KINDS: Partial<Record<LibraryColumnId, MetricKind>> = {
@@ -156,7 +163,6 @@ export class PaperNotesLibraryView extends ItemView {
   private selectedPath: string | undefined;
   private isOpen = false;
   private tableHost: HTMLElement | null = null;
-  private detailHost: HTMLElement | null = null;
   /** Lazily resolved CLI-backed item actions (Task 25). */
   private itemActions: ItemActions | undefined;
   private actionsResolved = false;
@@ -180,6 +186,33 @@ export class PaperNotesLibraryView extends ItemView {
   private fullTextQuery: string | undefined;
   /** Lightweight "Searching MinerU full text…" indicator state. */
   private fullTextSearching = false;
+  /**
+   * Advanced filter disclosure. `undefined` = follow auto policy
+   * (open when any advanced condition is active); boolean = user override.
+   */
+  private advancedFiltersExpanded: boolean | undefined = undefined;
+  private drawerHost: HTMLElement | null = null;
+  private drawerOpen = false;
+  private boundDrawerKey: ((event: KeyboardEvent) => void) | null = null;
+  /** Long-abstract Expand toggle inside the drawer (per-open state). */
+  private abstractExpanded = false;
+  /**
+   * Per-column width customizations (Batch 2 D). Seeded once from the
+   * plugin settings (data.json `columnWidths`); the drag handler updates
+   * it live and persists via merge-save.
+   */
+  private columnWidths: ColumnCustomizations = {};
+  private columnWidthsSeeded = false;
+  /** Active column resize session (null when not dragging). */
+  private columnResize: {
+    columnId: LibraryColumnId;
+    th: HTMLElement;
+    startX: number;
+    startWidth: number;
+  } | null = null;
+  private boundColumnPointerMove: ((event: PointerEvent) => void) | null =
+    null;
+  private boundColumnPointerUp: ((event: PointerEvent) => void) | null = null;
 
   constructor(leaf: WorkspaceLeaf, private readonly source: LibraryViewSource) {
     super(leaf);
@@ -208,10 +241,23 @@ export class PaperNotesLibraryView extends ItemView {
   async onClose(): Promise<void> {
     this.isOpen = false;
     this.cancelFullTextSearch();
+    this.detachDrawerKeyHandler();
+    this.columnResize = null;
+    if (typeof document !== "undefined") {
+      if (this.boundColumnPointerMove !== null) {
+        document.removeEventListener("pointermove", this.boundColumnPointerMove);
+      }
+      if (this.boundColumnPointerUp !== null) {
+        document.removeEventListener("pointerup", this.boundColumnPointerUp);
+      }
+    }
+    this.boundColumnPointerMove = null;
+    this.boundColumnPointerUp = null;
     this.fullTextItems = [];
     this.fullTextQuery = undefined;
     this.tableHost = null;
-    this.detailHost = null;
+    this.drawerHost = null;
+    this.drawerOpen = false;
     this.containerEl.empty();
   }
 
@@ -248,19 +294,34 @@ export class PaperNotesLibraryView extends ItemView {
     });
     clear.addEventListener("click", () => {
       this.filters = { ...EMPTY_LIBRARY_FILTERS };
+      // Clearing advanced conditions drops any manual expand override so
+      // the Advanced block returns to the default collapsed state.
+      this.advancedFiltersExpanded = undefined;
       this.render();
     });
     const create = toolbar.createEl("button", {
-      cls: "paper-notes-library-create",
+      cls: "paper-notes-library-create mod-cta",
       text: "Create item",
     });
     create.addEventListener("click", () => void this.runCreate());
 
     this.renderFilterBar(container);
 
-    const split = container.createDiv({ cls: "paper-notes-library-split" });
-    this.tableHost = split.createDiv({ cls: "paper-notes-library-table-host" });
-    this.detailHost = split.createDiv({ cls: "paper-notes-library-detail-host" });
+    // Full-width table shell: no resident detail pane, no splitter. The
+    // detail surface is the overlay drawer, opened by double-clicking a
+    // row and closed via Esc / backdrop / Close (any leaf width).
+    this.tableHost = container.createDiv({
+      cls: "paper-notes-library-table-host",
+    });
+
+    // Detail drawer host (Batch 1): reuses renderDetailInto.
+    this.drawerHost = container.createDiv({
+      cls: "paper-notes-library-drawer-host",
+    });
+    if (!this.drawerOpen) {
+      this.drawerHost.addClass("is-hidden");
+    }
+
     this.renderResults();
   }
 
@@ -270,61 +331,8 @@ export class PaperNotesLibraryView extends ItemView {
       cls: "paper-notes-library-filter-heading",
       text: "Filters",
     });
-    this.filterNumberInput(
-      bar,
-      "Year from",
-      this.filters.yearFrom,
-      (value) => this.updateFilters({ yearFrom: value }),
-    );
-    this.filterNumberInput(
-      bar,
-      "Year to",
-      this.filters.yearTo,
-      (value) => this.updateFilters({ yearTo: value }),
-    );
-    this.filterTextInput(
-      bar,
-      "Journal",
-      this.filters.journal,
-      (value) => this.updateFilters({ journal: value }),
-    );
-    this.filterTextInput(
-      bar,
-      "CAS",
-      this.filters.cas,
-      (value) => this.updateFilters({ cas: value }),
-    );
-    this.filterTextInput(
-      bar,
-      "JCR",
-      this.filters.jcr,
-      (value) => this.updateFilters({ jcr: value }),
-    );
-    this.filterNumberInput(
-      bar,
-      "IF min",
-      this.filters.ifMin,
-      (value) => this.updateFilters({ ifMin: value }),
-    );
-    this.filterNumberInput(
-      bar,
-      "IF max",
-      this.filters.ifMax,
-      (value) => this.updateFilters({ ifMax: value }),
-    );
-    this.filterNumberInput(
-      bar,
-      "JCI min",
-      this.filters.jciMin,
-      (value) => this.updateFilters({ jciMin: value }),
-    );
-    this.filterNumberInput(
-      bar,
-      "JCI max",
-      this.filters.jciMax,
-      (value) => this.updateFilters({ jciMax: value }),
-    );
 
+    // Primary row: Reading + artifact presence (always visible).
     const statusWrap = bar.createDiv({ cls: "paper-notes-library-filter" });
     statusWrap.createEl("label", { text: "Reading" });
     const status = statusWrap.createEl("select");
@@ -342,13 +350,96 @@ export class PaperNotesLibraryView extends ItemView {
     status.addEventListener("change", () => {
       const value = status.value;
       this.updateFilters({
-        readingStatus: value === "" ? undefined : (value as LibraryFilters["readingStatus"]),
+        readingStatus:
+          value === "" ? undefined : (value as LibraryFilters["readingStatus"]),
       });
     });
 
     this.artifactCheckbox(bar, "PDF", "pdf");
     this.artifactCheckbox(bar, "MinerU", "minerU");
     this.artifactCheckbox(bar, "Figure", "figure");
+
+    const advancedCount = countActiveAdvancedFilters(this.filters);
+    const expanded = this.isAdvancedFiltersExpanded();
+    const toggle = bar.createEl("button", {
+      cls: "paper-notes-library-advanced-toggle",
+      attr: {
+        type: "button",
+        "aria-expanded": expanded ? "true" : "false",
+      },
+    });
+    const toggleLabel = advancedCount > 0
+      ? `Advanced · ${advancedCount}`
+      : "Advanced";
+    // Prefer textContent: unit-test El stubs may lack setText.
+    toggle.textContent = expanded ? `${toggleLabel} ▾` : `${toggleLabel} ▸`;
+    toggle.addEventListener("click", () => {
+      // Manual override: flip relative to the current effective state.
+      this.advancedFiltersExpanded = !this.isAdvancedFiltersExpanded();
+      this.render();
+    });
+
+    if (!expanded) {
+      return;
+    }
+
+    const advanced = bar.createDiv({
+      cls: "paper-notes-library-filters-advanced",
+    });
+    this.filterNumberInput(
+      advanced,
+      "Year from",
+      this.filters.yearFrom,
+      (value) => this.updateFilters({ yearFrom: value }),
+    );
+    this.filterNumberInput(
+      advanced,
+      "Year to",
+      this.filters.yearTo,
+      (value) => this.updateFilters({ yearTo: value }),
+    );
+    this.filterTextInput(
+      advanced,
+      "Journal",
+      this.filters.journal,
+      (value) => this.updateFilters({ journal: value }),
+    );
+    this.filterTextInput(
+      advanced,
+      "CAS",
+      this.filters.cas,
+      (value) => this.updateFilters({ cas: value }),
+    );
+    this.filterTextInput(
+      advanced,
+      "JCR",
+      this.filters.jcr,
+      (value) => this.updateFilters({ jcr: value }),
+    );
+    this.filterNumberInput(
+      advanced,
+      "IF min",
+      this.filters.ifMin,
+      (value) => this.updateFilters({ ifMin: value }),
+    );
+    this.filterNumberInput(
+      advanced,
+      "IF max",
+      this.filters.ifMax,
+      (value) => this.updateFilters({ ifMax: value }),
+    );
+    this.filterNumberInput(
+      advanced,
+      "JCI min",
+      this.filters.jciMin,
+      (value) => this.updateFilters({ jciMin: value }),
+    );
+    this.filterNumberInput(
+      advanced,
+      "JCI max",
+      this.filters.jciMax,
+      (value) => this.updateFilters({ jciMax: value }),
+    );
   }
 
   private filterTextInput(
@@ -416,7 +507,23 @@ export class PaperNotesLibraryView extends ItemView {
   }
 
   private updateFilters(patch: Partial<LibraryFilters>): void {
+    const beforeAdvanced = hasActiveAdvancedFilters(this.filters);
     this.filters = { ...this.filters, ...patch };
+    const afterAdvanced = hasActiveAdvancedFilters(this.filters);
+    // Newly-activated advanced conditions force a re-open unless the user
+    // has an explicit collapse override *and* the count was already > 0.
+    // First activation always expands (policy D).
+    if (afterAdvanced && !beforeAdvanced) {
+      this.advancedFiltersExpanded = true;
+      this.render();
+      return;
+    }
+    // If the Advanced block is currently showing, keep inputs in sync by
+    // re-rendering the bar; primary-only changes only need the table.
+    if (this.isAdvancedFiltersExpanded()) {
+      this.render();
+      return;
+    }
     this.renderResults();
   }
 
@@ -586,11 +693,19 @@ export class PaperNotesLibraryView extends ItemView {
       });
     }
     const items = this.queryItems();
-    // Column customizations are view-level UI state; Task 24 uses the defaults.
-    const columns = resolveColumns({});
+    // Batch 2 (D): column widths come from the persisted customizations
+    // (seeded from settings.columnWidths, updated by the drag handler).
+    const columns = resolveColumns(this.effectiveColumnWidths());
     const table = this.tableHost.createEl("table", {
       cls: "paper-notes-library-table",
     });
+    // Batch 3: the table width follows the sum of the visible column
+    // widths, so once the total exceeds the host's client width the host
+    // (overflow:auto) shows a bottom horizontal scrollbar to reach the
+    // right-hand columns. CSS `min-width: 100%` still fills the host when
+    // the sum is narrower.
+    const totalWidth = columns.reduce((sum, column) => sum + column.width, 0);
+    table.style.width = `${totalWidth}px`;
     const headerRow = table.createEl("thead").createEl("tr");
     for (const column of columns) {
       const th = headerRow.createEl("th", { text: column.label });
@@ -599,6 +714,18 @@ export class PaperNotesLibraryView extends ItemView {
         th.addClass(this.sort.direction === "asc" ? "sorted-asc" : "sorted-desc");
       }
       th.addEventListener("click", () => this.toggleSort(column.id));
+      // Right-edge drag handle: resizing must never trigger sorting, so
+      // the handle swallows its own click and pointerdown.
+      const handle = th.createEl("span", {
+        cls: "paper-notes-col-resize-handle",
+        attr: { "aria-hidden": "true" },
+      });
+      handle.addEventListener("pointerdown", (event: PointerEvent) =>
+        this.beginColumnResize(event, th, column.id),
+      );
+      handle.addEventListener("click", (event: MouseEvent) => {
+        event.stopPropagation();
+      });
     }
     const body = table.createEl("tbody");
     if (items.length === 0) {
@@ -621,10 +748,15 @@ export class PaperNotesLibraryView extends ItemView {
       for (const column of columns) {
         const kind = METRIC_COLUMN_KINDS[column.id];
         if (kind === undefined) {
-          row.createEl("td", { text: formatColumnValue(item, column.id) });
+          const cell = row.createEl("td", {
+            cls: `paper-notes-col-${column.id}`,
+          });
+          this.renderPlainCell(cell, item, column.id);
           continue;
         }
-        const cell = row.createEl("td");
+        const cell = row.createEl("td", {
+          cls: `paper-notes-col-${column.id}`,
+        });
         const badge = metricBadgeStateOf(
           kind,
           this.metricEntryOf(item),
@@ -636,42 +768,111 @@ export class PaperNotesLibraryView extends ItemView {
         }
       }
       row.addEventListener("click", () => {
+        // Selection highlight only; the detail surface is the drawer,
+        // opened on double-click. Never re-render the whole shell here.
         this.selectedPath = item.path;
-        this.renderResults();
+        this.renderTable();
+      });
+      row.addEventListener("dblclick", (event: MouseEvent) => {
+        event.preventDefault();
+        this.selectedPath = item.path;
+        this.openDetailDrawer();
       });
     }
   }
 
   private renderDetail(): void {
-    if (this.detailHost === null) {
+    if (this.drawerOpen) {
+      this.renderDetailDrawer();
+    } else if (this.drawerHost !== null) {
+      this.drawerHost.empty();
+      this.drawerHost.addClass("is-hidden");
+    }
+  }
+
+  /** Populate the right-side detail drawer with the selected paper. */
+  private renderDetailDrawer(): void {
+    if (this.drawerHost === null) {
       return;
     }
-    this.detailHost.empty();
+    this.drawerHost.empty();
+    this.drawerHost.removeClass("is-hidden");
+    const backdrop = this.drawerHost.createDiv({
+      cls: "paper-notes-library-drawer-backdrop",
+    });
+    backdrop.addEventListener("click", () => this.closeDetailDrawer());
+    const panel = this.drawerHost.createDiv({
+      cls: "paper-notes-library-drawer-panel",
+    });
+    const header = panel.createDiv({ cls: "paper-notes-library-drawer-header" });
+    header.createEl("span", {
+      cls: "paper-notes-library-drawer-title",
+      text: "Details",
+    });
+    const close = header.createEl("button", {
+      cls: "paper-notes-library-drawer-close",
+      text: "Close",
+      attr: { type: "button", "aria-label": "Close details" },
+    });
+    close.addEventListener("click", () => this.closeDetailDrawer());
+    // Batch 2 (A): the grouped action bar is a top bar between the drawer
+    // header and the scrollable body — structurally outside the scroll
+    // area, so it never scrolls away with a long abstract.
+    const actionsBar = panel.createDiv({
+      cls: "paper-notes-library-actions paper-notes-library-actions-bar",
+    });
+    const body = panel.createDiv({ cls: "paper-notes-library-drawer-body" });
+    const selected = this.renderDetailInto(body);
+    this.renderDetailActions(actionsBar, selected);
+    this.attachDrawerKeyHandler();
+  }
+
+  /**
+   * Shared read-only detail body (Batch 2 A+C): sectioned — header
+   * (title/key/reading chip), bibliography, metric badges, attachments,
+   * Abstract (>600 chars truncated with Expand), Cards block. The grouped
+   * action bar is rendered separately by the drawer as a top bar and is
+   * never part of the scrollable body. Returns the selected item so the
+   * drawer can populate its action bar.
+   */
+  private renderDetailInto(host: HTMLElement): LibraryItem | undefined {
+    host.empty();
     const items = this.queryItems();
     if (items.length === 0) {
-      this.detailHost
-        .createEl("p", {
-          cls: "paper-notes-library-empty",
-          text: "No papers in the library yet.",
-        });
-      return;
+      host.createEl("p", {
+        cls: "paper-notes-library-empty",
+        text: "No papers in the library yet.",
+      });
+      return undefined;
     }
     const selected = items.find((item) => item.path === this.selectedPath);
     if (selected === undefined) {
-      this.detailHost
-        .createEl("p", {
-          cls: "paper-notes-library-empty",
-          text: "Select a paper to view its read-only details.",
-        });
-      return;
+      host.createEl("p", {
+        cls: "paper-notes-library-empty",
+        text: "Select a paper to view its read-only details.",
+      });
+      return undefined;
     }
     const detail = buildPaperDetail(selected);
-    this.detailHost.createEl("h3", {
+    // Header section: title + key + reading-status chip.
+    const header = host.createDiv({
+      cls: "paper-notes-library-detail-header",
+    });
+    header.createEl("h3", {
       cls: "paper-notes-library-detail-title",
       text: detail.title,
     });
+    if (detail.key.length > 0) {
+      header.createEl("div", {
+        cls: "paper-notes-library-detail-key",
+        text: detail.key,
+      });
+    }
+    if (detail.readingStatus !== undefined) {
+      this.renderReadingStatusChip(header, detail.readingStatus);
+    }
     if (detail.invalid !== undefined) {
-      const diagnostics = this.detailHost.createEl("div", {
+      const diagnostics = host.createDiv({
         cls: "paper-notes-library-diagnostics",
       });
       diagnostics.createEl("strong", { text: "Invalid metadata" });
@@ -679,7 +880,15 @@ export class PaperNotesLibraryView extends ItemView {
         diagnostics.createEl("div", { text: `- ${reason}` });
       }
     }
-    const table = this.detailHost.createEl("table", {
+    // Bibliography section: the read-only field table.
+    const bibliography = host.createDiv({
+      cls: "paper-notes-detail-section detail-section-bibliography",
+    });
+    bibliography.createEl("h4", {
+      cls: "paper-notes-detail-section-heading",
+      text: "Bibliography",
+    });
+    const table = bibliography.createEl("table", {
       cls: "paper-notes-library-detail",
     });
     for (const field of detail.fields) {
@@ -687,8 +896,170 @@ export class PaperNotesLibraryView extends ItemView {
       row.createEl("th", { text: field.label });
       row.createEl("td", { text: field.value });
     }
-    this.renderCardsBlock(this.detailHost, selected);
-    this.renderDetailActions(this.detailHost, selected);
+    // Metrics section: one badge per present metric (UI-only, same badge
+    // classes as the table so both surfaces share the token styling).
+    if (detail.metrics.length > 0) {
+      const metricsSection = host.createDiv({
+        cls: "paper-notes-detail-section detail-section-metrics",
+      });
+      metricsSection.createEl("h4", {
+        cls: "paper-notes-detail-section-heading",
+        text: "Metrics",
+      });
+      const row = metricsSection.createDiv({
+        cls: "paper-notes-detail-metrics-row",
+      });
+      for (const metric of detail.metrics) {
+        const kind = metric.label.toLowerCase();
+        row.createEl("span", {
+          cls: `paper-notes-metric-badge paper-notes-metric-badge--${kind}`,
+          text: metric.value,
+          attr: { "aria-label": `${metric.label}: ${metric.value}` },
+        });
+      }
+    }
+    // Attachments section: PDF/MinerU/Figure presence chips.
+    const attachments = host.createDiv({
+      cls: "paper-notes-detail-section detail-section-artifacts",
+    });
+    attachments.createEl("h4", {
+      cls: "paper-notes-detail-section-heading",
+      text: "Attachments",
+    });
+    this.renderArtifactChips(attachments, detail.artifacts);
+    // Abstract section: truncate long abstracts, Expand reveals the rest.
+    if (detail.abstract !== undefined && detail.abstract.length > 0) {
+      const abstractSection = host.createDiv({
+        cls: "paper-notes-detail-section detail-section-abstract",
+      });
+      abstractSection.createEl("h4", {
+        cls: "paper-notes-detail-section-heading",
+        text: "Abstract",
+      });
+      const truncated =
+        detail.abstract.length > ABSTRACT_TRUNCATE_CHARS;
+      abstractSection.createDiv({
+        cls: "paper-notes-detail-abstract",
+        text: truncated && !this.abstractExpanded
+          ? `${detail.abstract.slice(0, ABSTRACT_TRUNCATE_CHARS)}…`
+          : detail.abstract,
+      });
+      if (truncated) {
+        const expand = abstractSection.createEl("button", {
+          cls: "paper-notes-detail-abstract-expand",
+          text: this.abstractExpanded ? "Collapse" : "Expand",
+          attr: { type: "button" },
+        });
+        expand.addEventListener("click", () => {
+          this.abstractExpanded = !this.abstractExpanded;
+          this.renderDetailDrawer();
+        });
+      }
+    }
+    this.renderCardsBlock(host, selected);
+    return selected;
+  }
+
+  private renderPlainCell(
+    cell: HTMLElement,
+    item: LibraryItem,
+    columnId: LibraryColumnId,
+  ): void {
+    if (columnId === "readingStatus") {
+      this.renderReadingStatusChip(cell, item.readingStatus);
+      return;
+    }
+    if (columnId === "artifacts") {
+      this.renderArtifactChips(cell, item.artifacts);
+      return;
+    }
+    // Prefer textContent over Obsidian's setText so unit-test element
+    // stubs (and plain HTMLElement) both work without extra mocks.
+    cell.textContent = formatColumnValue(item, columnId);
+  }
+
+  private renderReadingStatusChip(
+    host: HTMLElement,
+    status: LibraryItem["readingStatus"],
+  ): void {
+    if (status === undefined) {
+      return;
+    }
+    host.createEl("span", {
+      cls: `paper-notes-status-chip paper-notes-status-chip--${status}`,
+      text: status,
+      attr: { "aria-label": `Reading status: ${status}` },
+    });
+  }
+
+  private renderArtifactChips(
+    host: HTMLElement,
+    artifacts: LibraryItem["artifacts"],
+  ): void {
+    const row = host.createDiv({ cls: "paper-notes-chip-row" });
+    for (const [key, label] of [
+      ["pdf", "PDF"],
+      ["minerU", "MinerU"],
+      ["figure", "Figure"],
+    ] as const) {
+      const present = artifacts[key];
+      row.createEl("span", {
+        cls: present
+          ? "paper-notes-artifact-chip is-present"
+          : "paper-notes-artifact-chip",
+        text: label,
+        attr: present
+          ? { "aria-label": `${label} available` }
+          : { "aria-label": `${label} missing`, "aria-hidden": "true" },
+      });
+    }
+  }
+
+  /** Effective Advanced disclosure (auto when no manual override). */
+  private isAdvancedFiltersExpanded(): boolean {
+    if (this.advancedFiltersExpanded !== undefined) {
+      return this.advancedFiltersExpanded;
+    }
+    return hasActiveAdvancedFilters(this.filters);
+  }
+
+  private openDetailDrawer(): void {
+    this.drawerOpen = true;
+    // Fresh per open: a previously expanded long Abstract collapses again.
+    this.abstractExpanded = false;
+    this.renderDetailDrawer();
+  }
+
+  private closeDetailDrawer(): void {
+    this.drawerOpen = false;
+    this.abstractExpanded = false;
+    this.detachDrawerKeyHandler();
+    if (this.drawerHost !== null) {
+      this.drawerHost.empty();
+      this.drawerHost.addClass("is-hidden");
+    }
+  }
+
+  private attachDrawerKeyHandler(): void {
+    this.detachDrawerKeyHandler();
+    this.boundDrawerKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && this.drawerOpen) {
+        event.preventDefault();
+        this.closeDetailDrawer();
+      }
+    };
+    if (typeof window !== "undefined") {
+      window.addEventListener("keydown", this.boundDrawerKey);
+    }
+  }
+
+  private detachDrawerKeyHandler(): void {
+    if (this.boundDrawerKey !== null) {
+      if (typeof window !== "undefined") {
+        window.removeEventListener("keydown", this.boundDrawerKey);
+      }
+      this.boundDrawerKey = null;
+    }
   }
 
   /**
@@ -1000,20 +1371,44 @@ export class PaperNotesLibraryView extends ItemView {
     }
   }
 
-  private renderDetailActions(host: HTMLElement, item: LibraryItem): void {
+  /**
+   * Batch 2 (A): grouped top action bar — Open | Status | Danger. The bar
+   * lives OUTSIDE the drawer's scrollable body (see renderDetailDrawer),
+   * so it stays visible no matter how long the Abstract gets. Read-only
+   * mode renders the CLI-unavailable hint instead of buttons.
+   */
+  private renderDetailActions(
+    host: HTMLElement,
+    item: LibraryItem | undefined,
+  ): void {
     const actions = this.getActions();
-    const bar = host.createDiv({ cls: "paper-notes-library-actions" });
-    if (actions === undefined) {
+    const bar = host.createDiv({ cls: "paper-notes-library-action-bar" });
+    if (actions === undefined || item === undefined) {
       bar.createEl("span", {
         cls: "paper-notes-library-actions-hint",
         text: "paper-notes CLI unavailable — the library is read-only.",
       });
       return;
     }
-    const open = (kind: OpenAssetKind, label: string, enabled: boolean): void => {
-      const button = bar.createEl("button", { text: label });
+    // Open group: asset openers (main is always available; artifacts only
+    // when the file exists). "Open cards" was replaced by the detail Cards
+    // block (Gate D R3): the block lists every card note and is the
+    // multi-card entry point.
+    const openGroup = bar.createDiv({
+      cls: "paper-notes-library-action-group actions-open",
+    });
+    const open = (
+      kind: OpenAssetKind,
+      label: string,
+      enabled: boolean,
+    ): void => {
+      const button = openGroup.createEl("button", {
+        cls: "paper-notes-library-action-open",
+        text: label,
+      });
       if (!enabled) {
         button.disabled = true;
+        button.title = `${label} unavailable`;
       }
       button.addEventListener("click", () => this.openAsset(kind, item));
     };
@@ -1021,23 +1416,175 @@ export class PaperNotesLibraryView extends ItemView {
     open("pdf", "Open PDF", item.artifacts.pdf);
     open("minerU", "Open MinerU", item.artifacts.minerU);
     open("figure", "Open Figure", item.artifacts.figure);
-    // "Open cards" was replaced by the detail Cards block (Gate D R3):
-    // the block lists every card note and is the multi-card entry point.
     // Invalid-metadata rows have no canonical key to mutate.
     if (item.invalid !== undefined) {
       return;
     }
-    const status = bar.createEl("button", {
+    // Status group: reading cycle, attach, rename.
+    const statusGroup = bar.createDiv({
+      cls: "paper-notes-library-action-group actions-status",
+    });
+    const status = statusGroup.createEl("button", {
+      cls: "paper-notes-library-action-status",
       text: `Reading: ${item.readingStatus ?? "unread"} → ${nextReadingStatus(item.readingStatus)}`,
     });
     status.addEventListener("click", () => void this.cycleReadingStatus(item));
-    const attach = bar.createEl("button", { text: "Attach PDF" });
+    const attach = statusGroup.createEl("button", { text: "Attach PDF" });
     attach.addEventListener("click", () => void this.startAttach(item));
-    const rename = bar.createEl("button", { text: "Rename key" });
+    const rename = statusGroup.createEl("button", { text: "Rename key" });
     rename.addEventListener("click", () => void this.startRename(item));
-    const remove = bar.createEl("button", { text: "Delete" });
+    // Danger group: destructive, always mod-warning styled.
+    const dangerGroup = bar.createDiv({
+      cls: "paper-notes-library-action-group actions-danger",
+    });
+    const remove = dangerGroup.createEl("button", { text: "Delete" });
     remove.addClass("mod-warning");
     remove.addEventListener("click", () => this.startDelete(item));
+  }
+
+  /**
+   * Effective column-width customizations (Batch 2 D): the view's live
+   * state, seeded once from the persisted plugin settings. `resolveColumns`
+   * applies them over the defaults; the drag handler mutates them.
+   */
+  private effectiveColumnWidths(): ColumnCustomizations {
+    if (!this.columnWidthsSeeded) {
+      this.columnWidthsSeeded = true;
+      const persisted = this.resolvePluginBridge()?.settings.columnWidths;
+      if (persisted !== undefined) {
+        for (const [id, width] of Object.entries(persisted)) {
+          if (typeof width === "number") {
+            this.columnWidths[id as LibraryColumnId] = { width };
+          }
+        }
+      }
+    }
+    return this.columnWidths;
+  }
+
+  /**
+   * Begin a column resize on the header's right-edge handle. The drag
+   * listens on `document` (pointermove/pointerup) so it tracks outside the
+   * header; the handle's own pointerdown/click are swallowed so resizing
+   * never triggers a sort.
+   */
+  private beginColumnResize(
+    event: PointerEvent,
+    th: HTMLElement,
+    columnId: LibraryColumnId,
+  ): void {
+    event.preventDefault();
+    event.stopPropagation();
+    const startWidth = parseFloat(th.style.width);
+    this.columnResize = {
+      columnId,
+      th,
+      startX: event.clientX,
+      startWidth: Number.isFinite(startWidth) ? startWidth : 0,
+    };
+    if (typeof document !== "undefined") {
+      this.boundColumnPointerMove = (move: PointerEvent) =>
+        this.moveColumnResize(move);
+      this.boundColumnPointerUp = (up: PointerEvent) =>
+        void this.endColumnResize(up);
+      document.addEventListener("pointermove", this.boundColumnPointerMove);
+      document.addEventListener("pointerup", this.boundColumnPointerUp);
+    }
+  }
+
+  /** Live width update while dragging (no ceiling; only the safety valve). */
+  private moveColumnResize(event: PointerEvent): void {
+    const state = this.columnResize;
+    if (state === null) {
+      return;
+    }
+    event.preventDefault();
+    const width = clampColumnWidth(
+      state.startWidth + (event.clientX - state.startX),
+    );
+    state.th.style.width = `${width}px`;
+  }
+
+  /**
+   * Finish the drag: apply the final width (no ceiling), add it as a
+   * customization, re-render the table and persist via merge-save (only
+   * the `columnWidths` key changes; metricsCache and friends survive).
+   */
+  private async endColumnResize(event: PointerEvent): Promise<void> {
+    const state = this.columnResize;
+    if (state === null) {
+      return;
+    }
+    this.columnResize = null;
+    if (typeof document !== "undefined") {
+      if (this.boundColumnPointerMove !== null) {
+        document.removeEventListener("pointermove", this.boundColumnPointerMove);
+      }
+      if (this.boundColumnPointerUp !== null) {
+        document.removeEventListener("pointerup", this.boundColumnPointerUp);
+      }
+      this.boundColumnPointerMove = null;
+      this.boundColumnPointerUp = null;
+    }
+    const width = clampColumnWidth(
+      state.startWidth + (event.clientX - state.startX),
+    );
+    if (width === state.startWidth) {
+      return;
+    }
+    this.columnWidths[state.columnId] = { width };
+    this.syncColumnWidthsToSettings();
+    this.renderTable();
+    await this.persistColumnWidths();
+  }
+
+  /**
+   * Write the in-memory plugin settings copy so fresh renders/views see
+   * the new widths immediately, without waiting for a reload.
+   */
+  private syncColumnWidthsToSettings(): void {
+    const registry = (this.app as unknown as {
+      plugins?: { plugins?: Record<string, unknown> };
+    }).plugins;
+    const plugin = registry?.plugins?.[PLUGIN_ID] as
+      | { settings?: PaperNotesSettings }
+      | undefined;
+    if (plugin?.settings === undefined) {
+      return;
+    }
+    const plain: Partial<Record<LibraryColumnId, number>> = {};
+    for (const [id, customization] of Object.entries(this.columnWidths)) {
+      if (customization?.width !== undefined) {
+        plain[id as LibraryColumnId] = customization.width;
+      }
+    }
+    plugin.settings = { ...plugin.settings, columnWidths: plain };
+  }
+
+  /**
+   * Merge-save the column widths into the plugin `data.json`: load the
+   * current payload, replace only the `columnWidths` key, write it back.
+   * A save that overwrote the whole payload would drop `metricsCache`
+   * and other persisted keys — the merge test guards against that class.
+   */
+  private async persistColumnWidths(): Promise<void> {
+    const bridge = this.resolvePluginBridge();
+    if (
+      bridge?.loadData === undefined ||
+      bridge?.saveData === undefined
+    ) {
+      return;
+    }
+    const plain: Record<string, number> = {};
+    for (const [id, customization] of Object.entries(this.columnWidths)) {
+      if (customization?.width !== undefined) {
+        plain[id] = customization.width;
+      }
+    }
+    const loaded = (await bridge.loadData().catch(() => undefined)) ?? {};
+    const base =
+      typeof loaded === "object" && loaded !== null ? loaded : {};
+    await bridge.saveData({ ...base, columnWidths: plain });
   }
 
   /** Reading-status shortcuts route through `item update` (spec §9.5). */
