@@ -151,25 +151,21 @@ function nonEmptyString(value: unknown): string | undefined {
 }
 
 /**
- * Map the normalized CLI result (`data.metrics`, core adapter shape) onto
- * the volatile `PaperMetrics` UI shape. Unknown fields are dropped;
- * undefined is returned when nothing usable remains.
+ * Pull CAS/JCR/IF/JCI from one record-like object. Accepts both the CLI
+ * field names (`cas_partition` / `jcr_partition`) and the UI cache names
+ * (`cas` / `jcr`) so envelope parsing and cache reloads share one path.
  */
-export function metricsFromEnvelope(payload: unknown): PaperMetrics | undefined {
-  if (typeof payload !== "object" || payload === null || Array.isArray(payload)) {
-    return undefined;
-  }
-  const inner = (payload as Record<string, unknown>).metrics;
-  if (typeof inner !== "object" || inner === null || Array.isArray(inner)) {
-    return undefined;
-  }
-  const record = inner as Record<string, unknown>;
+function paperMetricsFromRecord(
+  record: Record<string, unknown>,
+): PaperMetrics | undefined {
   const metrics: PaperMetrics = {};
-  const cas = nonEmptyString(record.cas_partition);
+  const cas =
+    nonEmptyString(record.cas_partition) ?? nonEmptyString(record.cas);
   if (cas !== undefined) {
     metrics.cas = cas;
   }
-  const jcr = nonEmptyString(record.jcr_partition);
+  const jcr =
+    nonEmptyString(record.jcr_partition) ?? nonEmptyString(record.jcr);
   if (jcr !== undefined) {
     metrics.jcr = jcr;
   }
@@ -182,6 +178,47 @@ export function metricsFromEnvelope(payload: unknown): PaperMetrics | undefined 
     metrics.jci = jciValue;
   }
   return Object.keys(metrics).length > 0 ? metrics : undefined;
+}
+
+/**
+ * Map a CLI `metrics query` success payload onto the volatile
+ * `PaperMetrics` UI shape.
+ *
+ * Live CLI success shape (protocol v1):
+ *   envelope.data.metrics = {
+ *     source, journal, issn, level,
+ *     metrics: { if, if5, jci, jcr_partition, cas_partition },
+ *     queried_at,
+ *   }
+ *
+ * Callers pass `envelope.data.metrics` (the adapter wrapper). This helper
+ * also tolerates a flat partition object, a double-wrapped `data` object,
+ * and the already-normalized UI field names. Unknown fields are dropped;
+ * undefined is returned when nothing usable remains.
+ */
+export function metricsFromEnvelope(payload: unknown): PaperMetrics | undefined {
+  if (typeof payload !== "object" || payload === null || Array.isArray(payload)) {
+    return undefined;
+  }
+  const root = payload as Record<string, unknown>;
+  // Deepest-first: official metrics block → adapter wrapper → root.
+  const candidates: Record<string, unknown>[] = [root];
+  const nested = root.metrics;
+  if (typeof nested === "object" && nested !== null && !Array.isArray(nested)) {
+    const nestedRecord = nested as Record<string, unknown>;
+    candidates.unshift(nestedRecord);
+    const deeper = nestedRecord.metrics;
+    if (typeof deeper === "object" && deeper !== null && !Array.isArray(deeper)) {
+      candidates.unshift(deeper as Record<string, unknown>);
+    }
+  }
+  for (const record of candidates) {
+    const metrics = paperMetricsFromRecord(record);
+    if (metrics !== undefined) {
+      return metrics;
+    }
+  }
+  return undefined;
 }
 
 function errorCodeOf(envelope: ProtocolEnvelope): MetricErrorCode {

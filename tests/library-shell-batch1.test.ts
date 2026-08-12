@@ -1,10 +1,10 @@
 /**
- * Batch 1 Literature Library shell: two-level filters, full-width table
- * (no splitter, no resident detail pane) and double-click detail drawer
- * (DOM wiring). Single-click only selects; the drawer opens on
- * double-click at any leaf width and closes via Close / backdrop / Esc.
+ * Literature Library shell + row activation (ux-interaction):
+ * two-level filters, full-width table, Detail Drawer on single-click
+ * (after a short click/dblclick delay), Primary PDF on double-click,
+ * clickable reading chips, Open Folder in the drawer action bar.
  */
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { WorkspaceLeaf } from "obsidian";
 
 import {
@@ -12,6 +12,8 @@ import {
   type LibraryViewSource,
 } from "../src/views/literature-library-view";
 import type { PaperRecord } from "../src/types/paper";
+
+const mockNotices: string[] = [];
 
 vi.mock("obsidian", () => {
   interface ElOpts {
@@ -103,7 +105,9 @@ vi.mock("obsidian", () => {
 
   class WorkspaceLeaf {}
   class Notice {
-    constructor(_message: string) {}
+    constructor(message: string) {
+      mockNotices.push(message);
+    }
   }
 
   return { ItemView, WorkspaceLeaf, Notice };
@@ -180,10 +184,40 @@ function clickRow(row: ElLike): void {
   row.listeners["click"]?.({});
 }
 
-/** The open drawer panel (after dblclick), scoped for section asserts. */
+/** Advance past the row single-click → drawer delay (280ms). */
+async function flushRowClickDelay(): Promise<void> {
+  await vi.advanceTimersByTimeAsync(300);
+}
+
+/** Single-click a row and wait for the Detail Drawer to open. */
+async function openDrawerViaClick(
+  view: PaperNotesLibraryView,
+  rowIndex = 0,
+): Promise<void> {
+  clickRow(rowsOf(view)[rowIndex]);
+  await flushRowClickDelay();
+}
+
+/** The open drawer panel (after single-click), scoped for section asserts. */
 function drawerPanel(view: PaperNotesLibraryView): ElLike {
   const root = view.containerEl as unknown as ElLike;
   return findByClass(root, "paper-notes-library-drawer-panel")[0];
+}
+
+/** First chip whose class tokens include the base chip class. */
+function findStatusChips(root: ElLike): ElLike[] {
+  const found: ElLike[] = [];
+  const walk = (node: ElLike): void => {
+    const tokens = node.cls.split(/\s+/).filter(Boolean);
+    if (tokens.includes("paper-notes-status-chip")) {
+      found.push(node);
+    }
+    for (const child of node.children) {
+      walk(child);
+    }
+  };
+  walk(root);
+  return found;
 }
 
 function collectTexts(root: ElLike): string[] {
@@ -297,6 +331,14 @@ function installBridgeWithPersistence(
 }
 
 describe("Batch 1 library shell", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    mockNotices.length = 0;
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it("renders a full-width table with no splitter and no resident detail host", async () => {
     const view = new PaperNotesLibraryView({} as WorkspaceLeaf, makeSource());
     await view.onOpen();
@@ -317,6 +359,18 @@ describe("Batch 1 library shell", () => {
     ).toHaveLength(0);
   });
 
+  it("collapses Advanced by default when no advanced conditions are active", async () => {
+    const view = new PaperNotesLibraryView({} as WorkspaceLeaf, makeSource());
+    await view.onOpen();
+    const root = view.containerEl as unknown as ElLike;
+    expect(
+      findByClass(root, "paper-notes-library-filters-advanced"),
+    ).toHaveLength(0);
+    expect(
+      findByClass(root, "paper-notes-library-advanced-toggle")[0]?.textContent,
+    ).toBe("Advanced ▸");
+  });
+
   it("expands Advanced on toggle", async () => {
     const view = new PaperNotesLibraryView({} as WorkspaceLeaf, makeSource());
     await view.onOpen();
@@ -329,21 +383,27 @@ describe("Batch 1 library shell", () => {
     ).toHaveLength(1);
   });
 
-  it("selects the row on single click without opening a drawer", async () => {
+  it("selects the row immediately on single click and opens the drawer after delay", async () => {
     const view = new PaperNotesLibraryView({} as WorkspaceLeaf, makeSource());
     await view.onOpen();
     clickRow(rowsOf(view)[0]);
-    const root = view.containerEl as unknown as ElLike;
-    expect(findByClass(root, "paper-notes-library-drawer-panel")).toHaveLength(0);
+    // Before the delay elapses: selected, drawer still closed.
     expect(rowsOf(view)[0].cls).toContain("selected");
+    let root = view.containerEl as unknown as ElLike;
+    expect(findByClass(root, "paper-notes-library-drawer-panel")).toHaveLength(0);
+    await flushRowClickDelay();
+    root = view.containerEl as unknown as ElLike;
+    expect(findByClass(root, "paper-notes-library-drawer-panel")).toHaveLength(1);
+    expect(
+      findByClass(root, "paper-notes-library-detail-title")[0]?.textContent,
+    ).toBe("Alpha cells");
   });
 
-  it("opens the detail drawer on double-click at any width", async () => {
+  it("opens the detail drawer on single-click at any leaf width", async () => {
     const view = new PaperNotesLibraryView({} as WorkspaceLeaf, makeSource());
-    // Wide leaf: drawer must still open (previously guarded to narrow).
     (view.containerEl as unknown as { clientWidth: number }).clientWidth = 1000;
     await view.onOpen();
-    dblclickRow(rowsOf(view)[0]);
+    await openDrawerViaClick(view);
     const root = view.containerEl as unknown as ElLike;
     expect(findByClass(root, "paper-notes-library-drawer-panel")).toHaveLength(1);
     expect(
@@ -357,15 +417,14 @@ describe("Batch 1 library shell", () => {
   it("drawer shows the flat detail table for the selected record", async () => {
     const view = new PaperNotesLibraryView({} as WorkspaceLeaf, makeSource());
     await view.onOpen();
-    dblclickRow(rowsOf(view)[0]);
+    await openDrawerViaClick(view);
     const root = view.containerEl as unknown as ElLike;
     const detail = findByClass(root, "paper-notes-library-detail")[0];
     expect(detail).toBeDefined();
-    // Flat field rows (label/value) plus Cards/actions blocks render inside.
     expect(detail.children.length).toBeGreaterThan(0);
   });
 
-  it("double-clicking a different row swaps the drawer content", async () => {
+  it("single-clicking a different row swaps the drawer content", async () => {
     const view = new PaperNotesLibraryView(
       {} as WorkspaceLeaf,
       makeSource([makeRecord("Alpha cells", 2024), makeRecord("Beta cells", 2025, NOTE_PATH_B)]),
@@ -373,22 +432,80 @@ describe("Batch 1 library shell", () => {
     await view.onOpen();
     const rows = rowsOf(view);
     expect(rows).toHaveLength(2);
-    dblclickRow(rows[0]); // newest first (year desc) → Beta cells
+    await openDrawerViaClick(view, 0); // newest first (year desc) → Beta cells
     let root = view.containerEl as unknown as ElLike;
     expect(
       findByClass(root, "paper-notes-library-detail-title")[0]?.textContent,
     ).toBe("Beta cells");
-    dblclickRow(rows[1]);
+    await openDrawerViaClick(view, 1);
     root = view.containerEl as unknown as ElLike;
     expect(
       findByClass(root, "paper-notes-library-detail-title")[0]?.textContent,
     ).toBe("Alpha cells");
   });
 
+  it("double-click opens Primary PDF only and cancels the pending drawer", async () => {
+    const opened: string[] = [];
+    const view = new PaperNotesLibraryView({} as WorkspaceLeaf, makeSource());
+    (view as unknown as { app: unknown }).app = {
+      vault: {
+        adapter: { getBasePath: () => "/vault" },
+        getAbstractFileByPath: (path: string) =>
+          path.endsWith(".pdf") ? { path } : null,
+      },
+      workspace: {
+        getLeaf: () => ({
+          openFile: async (file: { path: string }) => {
+            opened.push(file.path);
+          },
+        }),
+      },
+      plugins: undefined,
+    };
+    await view.onOpen();
+    // Browser sequence: click then dblclick; the timer must be cancelled.
+    clickRow(rowsOf(view)[0]);
+    dblclickRow(rowsOf(view)[0]);
+    await flushRowClickDelay();
+    const root = view.containerEl as unknown as ElLike;
+    expect(findByClass(root, "paper-notes-library-drawer-panel")).toHaveLength(0);
+    expect(opened).toEqual(["05 Literature/alpha2024/alpha2024.pdf"]);
+    expect(mockNotices).toHaveLength(0);
+  });
+
+  it("double-click with no PDF shows a Notice and opens neither drawer nor figure", async () => {
+    const opened: string[] = [];
+    const source = makeSource();
+    source.listDirectory = () => []; // no PDF basenames
+    const view = new PaperNotesLibraryView({} as WorkspaceLeaf, source);
+    (view as unknown as { app: unknown }).app = {
+      vault: {
+        adapter: { getBasePath: () => "/vault" },
+        getAbstractFileByPath: () => null,
+      },
+      workspace: {
+        getLeaf: () => ({
+          openFile: async (file: { path: string }) => {
+            opened.push(file.path);
+          },
+        }),
+      },
+      plugins: undefined,
+    };
+    await view.onOpen();
+    clickRow(rowsOf(view)[0]);
+    dblclickRow(rowsOf(view)[0]);
+    await flushRowClickDelay();
+    const root = view.containerEl as unknown as ElLike;
+    expect(findByClass(root, "paper-notes-library-drawer-panel")).toHaveLength(0);
+    expect(opened).toEqual([]);
+    expect(mockNotices.some((n) => /Primary PDF not found/i.test(n))).toBe(true);
+  });
+
   it("closes the drawer via its Close button", async () => {
     const view = new PaperNotesLibraryView({} as WorkspaceLeaf, makeSource());
     await view.onOpen();
-    dblclickRow(rowsOf(view)[0]);
+    await openDrawerViaClick(view);
     let root = view.containerEl as unknown as ElLike;
     const close = findByClass(root, "paper-notes-library-drawer-close")[0];
     close.listeners["click"]?.(undefined);
@@ -399,7 +516,7 @@ describe("Batch 1 library shell", () => {
   it("closes the drawer on backdrop click", async () => {
     const view = new PaperNotesLibraryView({} as WorkspaceLeaf, makeSource());
     await view.onOpen();
-    dblclickRow(rowsOf(view)[0]);
+    await openDrawerViaClick(view);
     let root = view.containerEl as unknown as ElLike;
     const backdrop = findByClass(root, "paper-notes-library-drawer-backdrop")[0];
     backdrop.listeners["click"]?.(undefined);
@@ -412,7 +529,7 @@ describe("Batch 1 library shell", () => {
     try {
       const view = new PaperNotesLibraryView({} as WorkspaceLeaf, makeSource());
       await view.onOpen();
-      dblclickRow(rowsOf(view)[0]);
+      await openDrawerViaClick(view);
       let root = view.containerEl as unknown as ElLike;
       expect(findByClass(root, "paper-notes-library-drawer-panel")).toHaveLength(
         1,
@@ -430,8 +547,9 @@ describe("Batch 1 library shell", () => {
   it("keeps an open drawer when a single click re-renders the table", async () => {
     const view = new PaperNotesLibraryView({} as WorkspaceLeaf, makeSource());
     await view.onOpen();
-    dblclickRow(rowsOf(view)[0]);
-    clickRow(rowsOf(view)[0]); // selection-only re-render
+    await openDrawerViaClick(view);
+    clickRow(rowsOf(view)[0]); // re-selects; pending timer re-opens after delay
+    await flushRowClickDelay();
     const root = view.containerEl as unknown as ElLike;
     expect(findByClass(root, "paper-notes-library-drawer-panel")).toHaveLength(1);
     expect(
@@ -442,7 +560,7 @@ describe("Batch 1 library shell", () => {
   it("preserves an open drawer across a full re-render (filter toggle)", async () => {
     const view = new PaperNotesLibraryView({} as WorkspaceLeaf, makeSource());
     await view.onOpen();
-    dblclickRow(rowsOf(view)[0]);
+    await openDrawerViaClick(view);
     const root0 = view.containerEl as unknown as ElLike;
     const toggle = findByClass(root0, "paper-notes-library-advanced-toggle")[0];
     toggle.listeners["click"]?.(undefined); // render() rebuilds the shell
@@ -460,7 +578,7 @@ describe("Batch 1 library shell", () => {
     source.getFrontmatter = () => ({ reading_status: "reading" });
     const view = new PaperNotesLibraryView({} as WorkspaceLeaf, source);
     await view.onOpen();
-    dblclickRow(rowsOf(view)[0]);
+    await openDrawerViaClick(view);
     const panel = drawerPanel(view);
     expect(findByClass(panel, "paper-notes-library-detail-header")).toHaveLength(
       1,
@@ -481,7 +599,7 @@ describe("Batch 1 library shell", () => {
     source.getMetrics = () => ({ if: 8.1, jcr: "Q1", cas: "中科院一区" });
     const view = new PaperNotesLibraryView({} as WorkspaceLeaf, source);
     await view.onOpen();
-    dblclickRow(rowsOf(view)[0]);
+    await openDrawerViaClick(view);
     const panel = drawerPanel(view);
     expect(findByClass(panel, "paper-notes-detail-section")).toHaveLength(4);
     expect(findByClass(panel, "detail-section-bibliography")).toHaveLength(1);
@@ -498,11 +616,11 @@ describe("Batch 1 library shell", () => {
     expect(findByClass(panel, "is-present")).toHaveLength(1); // pdf only
   });
 
-  it("renders the grouped action bar above the scrollable body", async () => {
+  it("renders the grouped action bar with Open Folder and without Reading button", async () => {
     const view = new PaperNotesLibraryView({} as WorkspaceLeaf, makeSource());
     installCliBridge(view);
     await view.onOpen();
-    dblclickRow(rowsOf(view)[0]);
+    await openDrawerViaClick(view);
     const root = view.containerEl as unknown as ElLike;
     const bar = findByClass(root, "paper-notes-library-actions-bar")[0];
     expect(bar).toBeDefined();
@@ -514,22 +632,285 @@ describe("Batch 1 library shell", () => {
       expect.arrayContaining([
         "Open main",
         "Open PDF",
-        "Reading: unread → unread",
+        "Open Folder",
         "Attach PDF",
         "Rename key",
         "Delete",
       ]),
     );
+    expect(texts.some((t) => t.startsWith("Reading:"))).toBe(false);
+    expect(findByClass(bar, "paper-notes-library-action-status")).toHaveLength(0);
     // The bar must live OUTSIDE the scrollable body (sibling, not child),
     // so a long abstract can never scroll it away.
     const body = findByClass(root, "paper-notes-library-drawer-body")[0];
     expect(findByClass(body, "paper-notes-library-actions-bar")).toHaveLength(0);
   });
 
+  it("Open Folder reveals the Canonical Paper Directory in the file explorer", async () => {
+    const revealed: string[] = [];
+    const explorerView = {
+      revealInFolder: (file: { path: string }) => {
+        revealed.push(file.path);
+      },
+    };
+    const explorerLeaf = {
+      view: explorerView,
+      setViewState: async () => {},
+    };
+    const view = new PaperNotesLibraryView({} as WorkspaceLeaf, makeSource());
+    (view as unknown as { app: unknown }).app = {
+      vault: {
+        adapter: { getBasePath: () => "/vault" },
+        getAbstractFileByPath: (path: string) =>
+          path === "05 Literature/alpha2024" ? { path } : null,
+      },
+      workspace: {
+        getLeavesOfType: (type: string) =>
+          type === "file-explorer" ? [explorerLeaf] : [],
+        revealLeaf: () => {},
+        getLeaf: () => ({ openFile: async () => {} }),
+      },
+      plugins: {
+        plugins: {
+          "paper-notes": {
+            getCliClient: () => ({}),
+            settings: {},
+          },
+        },
+      },
+    };
+    await view.onOpen();
+    await openDrawerViaClick(view);
+    const root = view.containerEl as unknown as ElLike;
+    const bar = findByClass(root, "paper-notes-library-actions-bar")[0];
+    const folderBtn = findByClass(bar, "paper-notes-library-action-open-folder")[0];
+    expect(folderBtn?.textContent).toBe("Open Folder");
+    folderBtn.listeners["click"]?.(undefined);
+    await Promise.resolve();
+    expect(revealed).toEqual(["05 Literature/alpha2024"]);
+    expect(mockNotices).toHaveLength(0);
+  });
+
+  it("Open Folder style C awaits setViewState before reveal when explorer is closed", async () => {
+    const revealed: string[] = [];
+    const order: string[] = [];
+    const explorerView = {
+      revealInFolder: (file: { path: string }) => {
+        order.push("reveal");
+        revealed.push(file.path);
+      },
+    };
+    // Leaf starts without a view; setViewState mounts the explorer view.
+    const leftLeaf: {
+      view?: { revealInFolder: (file: { path: string }) => void };
+      setViewState: (state: { type: string }) => Promise<void>;
+    } = {
+      setViewState: async (state: { type: string }) => {
+        order.push("setViewState");
+        expect(state.type).toBe("file-explorer");
+        // Simulate async mount: view appears only after await resolves.
+        await Promise.resolve();
+        leftLeaf.view = explorerView;
+      },
+    };
+    let explorerMounted = false;
+    const view = new PaperNotesLibraryView({} as WorkspaceLeaf, makeSource());
+    (view as unknown as { app: unknown }).app = {
+      vault: {
+        adapter: { getBasePath: () => "/vault" },
+        getAbstractFileByPath: (path: string) =>
+          path === "05 Literature/alpha2024" ? { path } : null,
+      },
+      workspace: {
+        getLeavesOfType: (type: string) => {
+          if (type !== "file-explorer") {
+            return [];
+          }
+          // Empty until setViewState mounts the leaf.
+          return explorerMounted && leftLeaf.view !== undefined
+            ? [leftLeaf]
+            : [];
+        },
+        getLeftLeaf: () => leftLeaf,
+        revealLeaf: () => {
+          order.push("revealLeaf");
+        },
+        getLeaf: () => ({ openFile: async () => {} }),
+      },
+      plugins: {
+        plugins: {
+          "paper-notes": {
+            getCliClient: () => ({}),
+            settings: {},
+          },
+        },
+      },
+    };
+    // Wrap setViewState so getLeavesOfType sees the leaf after await.
+    const originalSet = leftLeaf.setViewState.bind(leftLeaf);
+    leftLeaf.setViewState = async (state) => {
+      await originalSet(state);
+      explorerMounted = true;
+    };
+    await view.onOpen();
+    await openDrawerViaClick(view);
+    const root = view.containerEl as unknown as ElLike;
+    const bar = findByClass(root, "paper-notes-library-actions-bar")[0];
+    findByClass(bar, "paper-notes-library-action-open-folder")[0].listeners[
+      "click"
+    ]?.(undefined);
+    // Allow the async openPaperFolderAsync chain to finish.
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(order[0]).toBe("setViewState");
+    expect(order).toContain("reveal");
+    expect(order.indexOf("setViewState")).toBeLessThan(order.indexOf("reveal"));
+    expect(revealed).toEqual(["05 Literature/alpha2024"]);
+    expect(mockNotices).toHaveLength(0);
+  });
+
+  it("Open Folder shows a Notice when the explorer reveal API is missing", async () => {
+    const view = new PaperNotesLibraryView({} as WorkspaceLeaf, makeSource());
+    (view as unknown as { app: unknown }).app = {
+      vault: {
+        adapter: { getBasePath: () => "/vault" },
+        getAbstractFileByPath: (path: string) =>
+          path === "05 Literature/alpha2024" ? { path } : null,
+      },
+      workspace: {
+        getLeavesOfType: () => [{ view: {} }], // no revealInFolder
+        revealLeaf: () => {},
+        getLeaf: () => ({ openFile: async () => {} }),
+      },
+      plugins: {
+        plugins: {
+          "paper-notes": {
+            getCliClient: () => ({}),
+            settings: {},
+          },
+        },
+      },
+    };
+    await view.onOpen();
+    await openDrawerViaClick(view);
+    const root = view.containerEl as unknown as ElLike;
+    const bar = findByClass(root, "paper-notes-library-actions-bar")[0];
+    findByClass(bar, "paper-notes-library-action-open-folder")[0].listeners[
+      "click"
+    ]?.(undefined);
+    await Promise.resolve();
+    expect(
+      mockNotices.some((n) => /reveal is unavailable/i.test(n)),
+    ).toBe(true);
+  });
+
+  it("table and drawer reading chips cycle via item update without row activation", async () => {
+    const { readFileSync } = await import("node:fs");
+    const cliCalls: string[][] = [];
+    const patchPayloads: unknown[] = [];
+    // No frontmatter → display unread; first click must advance to reading.
+    const source = makeSource();
+    source.getFrontmatter = () => undefined;
+    const view = new PaperNotesLibraryView({} as WorkspaceLeaf, source);
+    (view as unknown as { app: unknown }).app = {
+      vault: { adapter: { getBasePath: () => "/vault" } },
+      workspace: { getLeaf: () => ({ openFile: async () => {} }) },
+      plugins: {
+        plugins: {
+          "paper-notes": {
+            getCliClient: () => ({
+              run: async (args: string[]) => {
+                cliCalls.push([...args]);
+                const patchIdx = args.indexOf("--patch");
+                if (patchIdx >= 0) {
+                  const path = args[patchIdx + 1];
+                  patchPayloads.push(JSON.parse(readFileSync(path, "utf8")));
+                }
+                return {
+                  envelope: {
+                    status: "success",
+                    data: {},
+                    errors: [],
+                    warnings: [],
+                  },
+                };
+              },
+            }),
+            settings: {},
+          },
+        },
+      },
+    };
+    await view.onOpen();
+    const root = view.containerEl as unknown as ElLike;
+    const tableChips = findStatusChips(root);
+    expect(tableChips.length).toBeGreaterThan(0);
+    const tableChip = tableChips[0];
+    expect(tableChip.textContent).toBe("unread");
+    expect(tableChip.cls).toContain("is-clickable");
+    const stop = vi.fn();
+    const prevent = vi.fn();
+    tableChip.listeners["click"]?.({
+      preventDefault: prevent,
+      stopPropagation: stop,
+    });
+    expect(stop).toHaveBeenCalled();
+    expect(prevent).toHaveBeenCalled();
+    // Let the async cycleReadingStatus finish (fake timers + microtasks).
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(cliCalls.length).toBeGreaterThan(0);
+    expect(cliCalls[0]).toEqual(
+      expect.arrayContaining(["item", "update", "--key", "alpha2024", "--patch"]),
+    );
+    expect(patchPayloads[0]).toEqual({ reading_status: "reading" });
+    // Chip click must not open the drawer.
+    await flushRowClickDelay();
+    expect(
+      findByClass(
+        view.containerEl as unknown as ElLike,
+        "paper-notes-library-drawer-panel",
+      ),
+    ).toHaveLength(0);
+
+    // Drawer chip: open drawer, click header chip, assert next cycle target.
+    // After the first success the view refresh() re-queries frontmatter
+    // (still undefined in this stub) so the next click also targets reading.
+    // Use an explicit unread frontmatter for the drawer path assertion.
+    source.getFrontmatter = () => ({ reading_status: "unread" });
+    // Force actions cache to stay; re-render by opening drawer.
+    await openDrawerViaClick(view);
+    const panel = drawerPanel(view);
+    const drawerChips = findStatusChips(panel);
+    expect(drawerChips.length).toBeGreaterThan(0);
+    const drawerStop = vi.fn();
+    drawerChips[0].listeners["click"]?.({
+      preventDefault: vi.fn(),
+      stopPropagation: drawerStop,
+    });
+    expect(drawerStop).toHaveBeenCalled();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(patchPayloads.at(-1)).toEqual({ reading_status: "reading" });
+
+    // Keyboard Enter on a chip is equivalent to click (a11y).
+    const keyStop = vi.fn();
+    drawerChips[0].listeners["keydown"]?.({
+      key: "Enter",
+      preventDefault: vi.fn(),
+      stopPropagation: keyStop,
+    });
+    expect(keyStop).toHaveBeenCalled();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(patchPayloads.length).toBeGreaterThanOrEqual(3);
+  });
+
   it("shows the CLI-unavailable hint in the top bar when read-only", async () => {
     const view = new PaperNotesLibraryView({} as WorkspaceLeaf, makeSource());
     await view.onOpen();
-    dblclickRow(rowsOf(view)[0]);
+    await openDrawerViaClick(view);
     const root = view.containerEl as unknown as ElLike;
     const bar = findByClass(root, "paper-notes-library-actions-bar")[0];
     expect(bar).toBeDefined();
@@ -546,7 +927,7 @@ describe("Batch 1 library shell", () => {
       makeSource([{ ...makeRecord(), abstract: long }]),
     );
     await view.onOpen();
-    dblclickRow(rowsOf(view)[0]);
+    await openDrawerViaClick(view);
     let panel = drawerPanel(view);
     const truncated = findByClass(panel, "paper-notes-detail-abstract")[0];
     expect(truncated.textContent.length).toBeLessThan(long.length);
@@ -565,7 +946,7 @@ describe("Batch 1 library shell", () => {
   it("does not truncate short abstracts and shows no Expand toggle", async () => {
     const view = new PaperNotesLibraryView({} as WorkspaceLeaf, makeSource());
     await view.onOpen();
-    dblclickRow(rowsOf(view)[0]);
+    await openDrawerViaClick(view);
     const panel = drawerPanel(view);
     expect(
       findByClass(panel, "paper-notes-detail-abstract")[0]?.textContent,
@@ -598,7 +979,8 @@ describe("Batch 1 library shell", () => {
       docListeners["pointermove"]?.({ clientX: 200, preventDefault() {} });
       expect(titleTh.style.width).toBe("440px"); // live update while dragging
       docListeners["pointerup"]?.({ clientX: 200, preventDefault() {} });
-      await new Promise((resolve) => setTimeout(resolve, 0));
+      await vi.advanceTimersByTimeAsync(0);
+      await Promise.resolve();
       // Re-rendered table keeps the new width.
       expect(headerCells(view)[0].style.width).toBe("440px");
       expect(saved).toHaveLength(1);
@@ -632,7 +1014,8 @@ describe("Batch 1 library shell", () => {
       });
       docListeners["pointermove"]?.({ clientX: 60, preventDefault() {} });
       docListeners["pointerup"]?.({ clientX: 60, preventDefault() {} });
-      await new Promise((resolve) => setTimeout(resolve, 0));
+      await vi.advanceTimersByTimeAsync(0);
+      await Promise.resolve();
       const titleAfter = headerCells(view)[0];
       expect(titleAfter.cls).not.toContain("sorted-asc");
       expect(titleAfter.cls).not.toContain("sorted-desc");
@@ -665,7 +1048,8 @@ describe("Batch 1 library shell", () => {
       docListeners["pointermove"]?.({ clientX: 200000, preventDefault() {} });
       expect(titleTh.style.width).toBe("100000px");
       docListeners["pointerup"]?.({ clientX: 2500, preventDefault() {} });
-      await new Promise((resolve) => setTimeout(resolve, 0));
+      await vi.advanceTimersByTimeAsync(0);
+      await Promise.resolve();
       expect(headerCells(view)[0].style.width).toBe("2740px");
       // Table width follows the sum of the visible column widths.
       const root = view.containerEl as unknown as ElLike;

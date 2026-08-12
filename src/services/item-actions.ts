@@ -285,10 +285,20 @@ export interface OpenTarget {
   path: string;
 }
 
+/**
+ * Canonical Paper Directory for a main-note path
+ * (`05 Literature/<key>/`). Empty string when the path has no parent.
+ */
+export function paperDirectoryOf(notePath: string): string {
+  const slash = notePath.lastIndexOf("/");
+  return slash <= 0 ? "" : notePath.slice(0, slash);
+}
+
 /** Vault-relative path of a paper asset derived from the main-note path. */
 export function assetPathOf(kind: OpenAssetKind, notePath: string): string {
-  const dir = notePath.slice(0, notePath.lastIndexOf("/"));
-  const basename = notePath.slice(dir.length + 1);
+  const dir = paperDirectoryOf(notePath);
+  const basename =
+    dir.length === 0 ? notePath : notePath.slice(dir.length + 1);
   const key = basename.endsWith(".md") ? basename.slice(0, -3) : basename;
   switch (kind) {
     case "main":
@@ -341,12 +351,18 @@ export function openCard(notePath: string, cardName: string): OpenTarget | undef
 
 const READING_CYCLE: ReadingStatus[] = ["unread", "reading", "read"];
 
-/** Cycling reading status: unset → unread → reading → read → unread. */
+/**
+ * Next reading status in the chip cycle.
+ * Missing frontmatter displays as `unread` in the UI, so `undefined` is
+ * treated the same as `unread` and advances to `reading` (CONSENSUS:
+ * unread → reading → read → unread). Never no-ops on the first click.
+ */
 export function nextReadingStatus(current?: ReadingStatus): ReadingStatus {
-  if (current === undefined) {
-    return "unread";
-  }
-  const index = READING_CYCLE.indexOf(current);
+  const effective: ReadingStatus =
+    current !== undefined && READING_CYCLE.includes(current)
+      ? current
+      : "unread";
+  const index = READING_CYCLE.indexOf(effective);
   return READING_CYCLE[(index + 1) % READING_CYCLE.length];
 }
 
