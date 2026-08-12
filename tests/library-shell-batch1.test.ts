@@ -976,7 +976,7 @@ describe("Batch 1 library shell", () => {
     expect(patchPayloads.length).toBeGreaterThanOrEqual(3);
   });
 
-  it("keeps the latest optimistic reading status across an earlier metadata event", async () => {
+  it("keeps a wrapped optimistic reading status across older metadata events", async () => {
     const { readFileSync } = await import("node:fs");
     const resolveRuns: Array<() => void> = [];
     const patchPayloads: unknown[] = [];
@@ -1006,8 +1006,9 @@ describe("Batch 1 library shell", () => {
     };
     await view.onOpen();
     const chip = findStatusChips(view.containerEl as unknown as ElLike)[0];
-    chip.listeners["click"]?.({ preventDefault() {}, stopPropagation() {} });
-    chip.listeners["click"]?.({ preventDefault() {}, stopPropagation() {} });
+    for (let index = 0; index < 4; index += 1) {
+      chip.listeners["click"]?.({ preventDefault() {}, stopPropagation() {} });
+    }
     await Promise.resolve();
     await Promise.resolve();
     expect(patchPayloads).toEqual([{ reading_status: "unread" }]);
@@ -1017,8 +1018,19 @@ describe("Batch 1 library shell", () => {
       { reading_status: "unread" },
       { reading_status: "reading" },
     ]);
-    // Obsidian publishes the first completed write while the second is pending.
+    // An older event can have the same status as the fourth optimistic update.
+    // It must not acknowledge that later update while the write lane is active.
     sourceStatus = "unread";
+    view.refresh();
+    expect(findStatusChips(view.containerEl as unknown as ElLike)[0]?.textContent).toBe("unread");
+    resolveRuns.shift()!();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(patchPayloads).toEqual([
+      { reading_status: "unread" },
+      { reading_status: "reading" },
+      { reading_status: "read" },
+    ]);
+    sourceStatus = "reading";
     view.refresh();
     findStatusChips(view.containerEl as unknown as ElLike)[0].listeners["click"]?.({
       preventDefault() {},
@@ -1030,11 +1042,26 @@ describe("Batch 1 library shell", () => {
       { reading_status: "unread" },
       { reading_status: "reading" },
       { reading_status: "read" },
+      { reading_status: "unread" },
     ]);
     sourceStatus = "read";
+    view.refresh();
     resolveRuns.shift()!();
     await vi.advanceTimersByTimeAsync(0);
-    expect(findStatusChips(view.containerEl as unknown as ElLike)[0]?.textContent).toBe("read");
+    expect(patchPayloads).toEqual([
+      { reading_status: "unread" },
+      { reading_status: "reading" },
+      { reading_status: "read" },
+      { reading_status: "unread" },
+      { reading_status: "reading" },
+    ]);
+    sourceStatus = "unread";
+    view.refresh();
+    resolveRuns.shift()!();
+    await vi.advanceTimersByTimeAsync(0);
+    sourceStatus = "reading";
+    view.refresh();
+    expect(findStatusChips(view.containerEl as unknown as ElLike)[0]?.textContent).toBe("reading");
   });
 
   it("shows the CLI-unavailable hint in the top bar when read-only", async () => {

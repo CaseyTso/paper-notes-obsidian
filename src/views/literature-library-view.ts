@@ -240,6 +240,11 @@ export class PaperNotesLibraryView extends ItemView {
     string,
     { status: "unread" | "reading" | "read"; generation: number }
   >();
+  /** Successful writes awaiting their matching source metadata event. */
+  private readonly readingStatusAcknowledgements = new Map<
+    string,
+    Array<{ status: "unread" | "reading" | "read"; generation: number }>
+  >();
   /** Monotonic ids prevent a failed older write from clearing a newer click. */
   private readingStatusGeneration = 0;
   /** One CLI write lane per paper prevents read-modify-write races. */
@@ -663,15 +668,30 @@ export class PaperNotesLibraryView extends ItemView {
     return buildLibraryItems(records, invalidRecords, {
       frontmatter: (path) => {
         const frontmatter = this.source.getFrontmatter(path);
-        const override = this.readingStatusOverrides.get(path);
         const sourceStatus = frontmatter?.reading_status;
-        if (override === undefined) {
-          return frontmatter;
+        const acknowledgements = this.readingStatusAcknowledgements.get(path);
+        const acknowledgement = acknowledgements?.[0];
+        // Source metadata has no revision id, so consume successful writes in
+        // order. This distinguishes a stale matching value after the reading
+        // cycle wraps from the latest optimistic generation.
+        if (
+          acknowledgements !== undefined &&
+          acknowledgement !== undefined &&
+          acknowledgement.status === sourceStatus
+        ) {
+          acknowledgements.shift();
+          if (acknowledgements.length === 0) {
+            this.readingStatusAcknowledgements.delete(path);
+          }
+          if (
+            this.readingStatusOverrides.get(path)?.generation ===
+            acknowledgement.generation
+          ) {
+            this.readingStatusOverrides.delete(path);
+          }
         }
-        // A vault event may acknowledge an earlier queued CLI write. Keep the
-        // latest local value until the source reports that exact value.
-        if (sourceStatus === override.status) {
-          this.readingStatusOverrides.delete(path);
+        const override = this.readingStatusOverrides.get(path);
+        if (override === undefined) {
           return frontmatter;
         }
         return { ...frontmatter, reading_status: override.status };
@@ -2000,6 +2020,9 @@ export class PaperNotesLibraryView extends ItemView {
     const operation = prior.then(async () => {
       const outcome = await actions.updateReadingStatus(item.key, next);
       if (outcome.status === "success") {
+        const acknowledgements = this.readingStatusAcknowledgements.get(item.path) ?? [];
+        acknowledgements.push({ status: next, generation });
+        this.readingStatusAcknowledgements.set(item.path, acknowledgements);
         this.notify(`Reading status → ${next}`);
         this.refresh();
       } else if (this.readingStatusOverrides.get(item.path)?.generation === generation) {
