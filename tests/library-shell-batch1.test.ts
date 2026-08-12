@@ -32,6 +32,8 @@ vi.mock("obsidian", () => {
     selected = false;
     disabled = false;
     clientWidth = 1000;
+    scrollLeft = 0;
+    scrollTop = 0;
     style: Record<string, string> = {};
     children: El[] = [];
     listeners: Record<string, (event?: unknown) => void> = {};
@@ -150,6 +152,8 @@ interface ElLike {
   children: ElLike[];
   listeners: Record<string, (event?: unknown) => void>;
   clientWidth?: number;
+  scrollLeft?: number;
+  scrollTop?: number;
 }
 
 function findByClass(root: ElLike, cls: string): ElLike[] {
@@ -557,6 +561,36 @@ describe("Batch 1 library shell", () => {
     ).toBe("Alpha cells");
   });
 
+  it("swaps the open drawer to the newly selected row without a second click", async () => {
+    const view = new PaperNotesLibraryView(
+      {} as WorkspaceLeaf,
+      makeSource([makeRecord(), makeRecord("Beta cells", 2025, NOTE_PATH_B)]),
+    );
+    await view.onOpen();
+    await openDrawerViaClick(view);
+    // Default sort is year descending, so Beta renders before Alpha.
+    clickRow(rowsOf(view)[0]);
+    const root = view.containerEl as unknown as ElLike;
+    expect(findByClass(root, "paper-notes-library-drawer-panel")).toHaveLength(1);
+    expect(
+      findByClass(root, "paper-notes-library-detail-title")[0]?.textContent,
+    ).toBe("Beta cells");
+  });
+
+  it("preserves table scroll coordinates when re-rendering rows", async () => {
+    const view = new PaperNotesLibraryView({} as WorkspaceLeaf, makeSource());
+    await view.onOpen();
+    const host = findByClass(
+      view.containerEl as unknown as ElLike,
+      "paper-notes-library-table-host",
+    )[0];
+    host.scrollLeft = 280;
+    host.scrollTop = 96;
+    clickRow(rowsOf(view)[0]);
+    expect(host.scrollLeft).toBe(280);
+    expect(host.scrollTop).toBe(96);
+  });
+
   it("preserves an open drawer across a full re-render (filter toggle)", async () => {
     const view = new PaperNotesLibraryView({} as WorkspaceLeaf, makeSource());
     await view.onOpen();
@@ -845,6 +879,9 @@ describe("Batch 1 library shell", () => {
     await view.onOpen();
     const root = view.containerEl as unknown as ElLike;
     const tableChips = findStatusChips(root);
+    const tableHost = findByClass(root, "paper-notes-library-table-host")[0];
+    tableHost.scrollLeft = 280;
+    tableHost.scrollTop = 96;
     expect(tableChips.length).toBeGreaterThan(0);
     const tableChip = tableChips[0];
     expect(tableChip.textContent).toBe("unread");
@@ -860,6 +897,8 @@ describe("Batch 1 library shell", () => {
     // Let the async cycleReadingStatus finish (fake timers + microtasks).
     await Promise.resolve();
     await Promise.resolve();
+    expect(tableHost.scrollLeft).toBe(280);
+    expect(tableHost.scrollTop).toBe(96);
     expect(cliCalls.length).toBeGreaterThan(0);
     expect(cliCalls[0]).toEqual(
       expect.arrayContaining(["item", "update", "--key", "alpha2024", "--patch"]),
@@ -902,9 +941,52 @@ describe("Batch 1 library shell", () => {
       stopPropagation: keyStop,
     });
     expect(keyStop).toHaveBeenCalled();
-    await Promise.resolve();
-    await Promise.resolve();
+    await vi.advanceTimersByTimeAsync(0);
     expect(patchPayloads.length).toBeGreaterThanOrEqual(3);
+  });
+
+  it("serializes rapid reading-chip updates using the optimistic status", async () => {
+    const { readFileSync } = await import("node:fs");
+    const resolveRuns: Array<() => void> = [];
+    const patchPayloads: unknown[] = [];
+    const source = makeSource();
+    source.getFrontmatter = () => ({ reading_status: "read" });
+    const view = new PaperNotesLibraryView({} as WorkspaceLeaf, source);
+    (view as unknown as { app: unknown }).app = {
+      vault: { adapter: { getBasePath: () => "/vault" } },
+      plugins: {
+        plugins: {
+          "paper-notes": {
+            getCliClient: () => ({
+              run: async (args: string[]) => {
+                const patchIdx = args.indexOf("--patch");
+                patchPayloads.push(JSON.parse(readFileSync(args[patchIdx + 1], "utf8")));
+                await new Promise<void>((resolve) => resolveRuns.push(resolve));
+                return {
+                  envelope: { status: "success", data: {}, errors: [], warnings: [] },
+                };
+              },
+            }),
+            settings: {},
+          },
+        },
+      },
+    };
+    await view.onOpen();
+    const chip = findStatusChips(view.containerEl as unknown as ElLike)[0];
+    chip.listeners["click"]?.({ preventDefault() {}, stopPropagation() {} });
+    chip.listeners["click"]?.({ preventDefault() {}, stopPropagation() {} });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(patchPayloads).toEqual([{ reading_status: "unread" }]);
+    resolveRuns.shift()!();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(patchPayloads).toEqual([
+      { reading_status: "unread" },
+      { reading_status: "reading" },
+    ]);
+    resolveRuns.shift()!();
+    await Promise.resolve();
   });
 
   it("shows the CLI-unavailable hint in the top bar when read-only", async () => {

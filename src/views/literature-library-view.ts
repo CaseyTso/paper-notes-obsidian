@@ -235,6 +235,15 @@ export class PaperNotesLibraryView extends ItemView {
   private selectedPath: string | undefined;
   private isOpen = false;
   private tableHost: HTMLElement | null = null;
+  /** Local snapshots bridge rapid chip activation until vault events arrive. */
+  private readonly readingStatusOverrides = new Map<string, "unread" | "reading" | "read">();
+  /** Source state captured before each optimistic write, used to detect a vault update. */
+  private readonly readingStatusSources = new Map<
+    string,
+    "unread" | "reading" | "read" | undefined
+  >();
+  /** One CLI write lane per paper prevents read-modify-write races. */
+  private readonly readingStatusQueues = new Map<string, Promise<void>>();
   /** Lazily resolved CLI-backed item actions (Task 25). */
   private itemActions: ItemActions | undefined;
   private actionsResolved = false;
@@ -344,6 +353,7 @@ export class PaperNotesLibraryView extends ItemView {
   }
 
   private render(): void {
+    const scrollPosition = this.tableScrollPosition();
     const container = this.containerEl;
     container.empty();
     container.addClass("paper-notes-library");
@@ -379,6 +389,15 @@ export class PaperNotesLibraryView extends ItemView {
       text: "Create item",
     });
     create.addEventListener("click", () => void this.runCreate());
+    const refreshMetrics = toolbar.createEl("button", {
+      cls: "paper-notes-library-refresh-metrics",
+      text: "Refresh metrics",
+      attr: {
+        type: "button",
+        "aria-label": "Refresh all expired journal metrics",
+      },
+    });
+    refreshMetrics.addEventListener("click", () => void this.refreshAllExpired(true));
 
     this.renderFilterBar(container);
 
@@ -400,6 +419,7 @@ export class PaperNotesLibraryView extends ItemView {
     }
 
     this.renderResults();
+    this.restoreTableScrollPosition(scrollPosition);
   }
 
   private renderFilterBar(container: HTMLElement): void {
@@ -641,7 +661,32 @@ export class PaperNotesLibraryView extends ItemView {
   ): LibraryItem[] {
     const cache = this.getMetricsCache();
     return buildLibraryItems(records, invalidRecords, {
-      frontmatter: (path) => this.source.getFrontmatter(path),
+      frontmatter: (path) => {
+        const frontmatter = this.source.getFrontmatter(path);
+        const override = this.readingStatusOverrides.get(path);
+        const sourceStatus = frontmatter?.reading_status;
+        const sourceBeforeWrite = this.readingStatusSources.get(path);
+        if (
+          override !== undefined &&
+          (sourceStatus === "unread" ||
+            sourceStatus === "reading" ||
+            sourceStatus === "read") &&
+          sourceStatus !== sourceBeforeWrite
+        ) {
+          this.readingStatusOverrides.delete(path);
+          this.readingStatusSources.delete(path);
+          return frontmatter;
+        }
+        if (override === undefined) {
+          return frontmatter;
+        }
+        if (sourceStatus === override) {
+          this.readingStatusOverrides.delete(path);
+          this.readingStatusSources.delete(path);
+          return frontmatter;
+        }
+        return { ...frontmatter, reading_status: override };
+      },
       listDirectory: (dir) => this.source.listDirectory(dir),
       metrics: (paperId) => {
         const record = this.recordsById.get(paperId);
@@ -761,6 +806,7 @@ export class PaperNotesLibraryView extends ItemView {
     if (this.tableHost === null) {
       return;
     }
+    const scrollPosition = this.tableScrollPosition();
     this.tableHost.empty();
     if (this.fullTextSearching) {
       // Lightweight in-flight indicator for the on-demand MinerU pass.
@@ -857,6 +903,7 @@ export class PaperNotesLibraryView extends ItemView {
         this.openPrimaryPdf(item);
       });
     }
+    this.restoreTableScrollPosition(scrollPosition);
   }
 
   private renderDetail(): void {
@@ -1143,6 +1190,11 @@ export class PaperNotesLibraryView extends ItemView {
     this.selectedPath = item.path;
     // Selection highlight only — never rebuild the whole shell here.
     this.renderTable();
+    if (this.drawerOpen) {
+      this.abstractExpanded = false;
+      this.renderDetailDrawer();
+      return;
+    }
     this.rowClickTimer = setTimeout(() => {
       this.rowClickTimer = undefined;
       if (!this.isOpen || this.selectedPath !== item.path) {
@@ -1306,7 +1358,7 @@ export class PaperNotesLibraryView extends ItemView {
     bridge.addCommand({
       id: REFRESH_ALL_COMMAND,
       name: "Refresh all expired metrics",
-      callback: () => void this.refreshAllExpired(),
+      callback: () => void this.refreshAllExpired(true),
     });
   }
 
@@ -1429,14 +1481,41 @@ export class PaperNotesLibraryView extends ItemView {
   }
 
   /** Background/command refresh of every missing or expired journal. */
-  private async refreshAllExpired(): Promise<void> {
+  private async refreshAllExpired(notify = false): Promise<void> {
     const cache = this.getMetricsCache();
     if (cache === undefined) {
       return;
     }
-    await cache.refreshExpired(this.source.getRecords());
+    const results = await cache.refreshExpired(this.source.getRecords());
     if (this.isOpen) {
       this.render();
+    }
+    if (notify) {
+      const refreshed = results.filter((result) => result.status === "refreshed").length;
+      const failed = results.filter((result) => result.status === "failed").length;
+      const backedOff = results.filter((result) => result.status === "backoff").length;
+      this.notify(
+        results.length === 0
+          ? "No expired journal metrics to refresh."
+          : `Metrics refresh complete: ${refreshed} refreshed, ${failed} failed, ${backedOff} on backoff.`,
+      );
+    }
+  }
+
+  /** Preserve table position across local table and full-shell re-renders. */
+  private tableScrollPosition(): { left: number; top: number } | undefined {
+    if (this.tableHost === null) {
+      return undefined;
+    }
+    return { left: this.tableHost.scrollLeft, top: this.tableHost.scrollTop };
+  }
+
+  private restoreTableScrollPosition(
+    position: { left: number; top: number } | undefined,
+  ): void {
+    if (this.tableHost !== null && position !== undefined) {
+      this.tableHost.scrollLeft = position.left;
+      this.tableHost.scrollTop = position.top;
     }
   }
 
@@ -1879,14 +1958,45 @@ export class PaperNotesLibraryView extends ItemView {
     if (actions === undefined || item.invalid !== undefined) {
       return;
     }
-    const next = nextReadingStatus(item.readingStatus);
-    const outcome = await actions.updateReadingStatus(item.key, next);
-    if (outcome.status === "success") {
-      this.notify(`Reading status → ${next}`);
-      this.refresh();
-    } else {
-      this.notify(this.outcomeMessage(outcome));
-    }
+    const prior = this.readingStatusQueues.get(item.path) ?? Promise.resolve();
+    const operation = prior.then(async () => {
+      const sourceStatus = this.source.getFrontmatter(item.path)?.reading_status;
+      const current =
+        this.readingStatusOverrides.get(item.path) ??
+        (sourceStatus === "unread" ||
+        sourceStatus === "reading" ||
+        sourceStatus === "read"
+          ? sourceStatus
+          : item.readingStatus);
+      const next = nextReadingStatus(current);
+      this.readingStatusOverrides.set(item.path, next);
+      this.readingStatusSources.set(
+        item.path,
+        sourceStatus === "unread" ||
+          sourceStatus === "reading" ||
+          sourceStatus === "read"
+          ? sourceStatus
+          : undefined,
+      );
+      this.renderResults();
+      const outcome = await actions.updateReadingStatus(item.key, next);
+      if (outcome.status === "success") {
+        this.notify(`Reading status → ${next}`);
+        this.refresh();
+      } else {
+        this.readingStatusOverrides.delete(item.path);
+        this.readingStatusSources.delete(item.path);
+        this.renderResults();
+        this.notify(this.outcomeMessage(outcome));
+      }
+    });
+    this.readingStatusQueues.set(item.path, operation);
+    void operation.finally(() => {
+      if (this.readingStatusQueues.get(item.path) === operation) {
+        this.readingStatusQueues.delete(item.path);
+      }
+    });
+    await operation;
   }
 
   private async startAttach(item: LibraryItem): Promise<void> {

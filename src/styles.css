@@ -33,7 +33,7 @@
   --pn-accent-softer: color-mix(in srgb, var(--interactive-accent) 8%, transparent);
   --pn-shadow-soft: 0 1px 2px color-mix(in srgb, var(--background-modifier-box-shadow, #000) 18%, transparent);
   /* Keep the table host's horizontal scrollbar above Obsidian's status bar. */
-  --pn-scroll-safe-bottom: 28px;
+  --pn-scroll-safe-bottom: 40px;
   /* Metric rank / scale tones (css-polish; class names from metrics-engine). */
   --pn-metric-p1: #dc2626;
   --pn-metric-p2: #ea580c;
@@ -249,6 +249,8 @@
   overflow: auto;
   scrollbar-gutter: stable;
   box-sizing: border-box;
+  /* The flex margin moves the native scrollbar itself above the status bar. */
+  margin-bottom: var(--pn-scroll-safe-bottom, 40px);
   padding-bottom: var(--pn-scroll-safe-bottom, 28px);
 }
 

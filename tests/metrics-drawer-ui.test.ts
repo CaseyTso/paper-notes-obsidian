@@ -498,6 +498,37 @@ describe("Drawer Metrics section UI", () => {
     ).toBe("5.5");
   });
 
+  it("toolbar Refresh metrics calls refreshExpired and reports its outcome", async () => {
+    const run = vi.fn(async (): Promise<CliRunResult> => ({
+      envelope: successEnvelope({
+        cas_partition: "中科院2区",
+        jcr_partition: "Q2",
+        if: 5.5,
+        jci: 1.1,
+      }),
+      exitCode: 0,
+      stderr: "",
+    }));
+    const { cache } = makeCache({ run });
+    await cache.initialize();
+    const refreshExpired = vi.spyOn(cache, "refreshExpired");
+    const view = new PaperNotesLibraryView({} as WorkspaceLeaf, makeSource());
+    injectCache(view, cache);
+    await view.onOpen();
+    refreshExpired.mockClear();
+    const refresh = findByClass(
+      view.containerEl as unknown as ElLike,
+      "paper-notes-library-refresh-metrics",
+    )[0];
+    expect(refresh?.textContent).toBe("Refresh metrics");
+    refresh.listeners["click"]?.(undefined);
+    await vi.runAllTimersAsync();
+    expect(refreshExpired).toHaveBeenCalledWith([makeRecord()]);
+    expect(
+      mockNotices.some((notice) => /metrics refresh complete|no expired/i.test(notice)),
+    ).toBe(true);
+  });
+
   it("command palette refresh still works alongside drawer Refresh", async () => {
     const commands: Array<{ id: string; name: string; callback: () => void }> =
       [];
