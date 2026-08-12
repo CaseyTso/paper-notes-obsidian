@@ -27,6 +27,7 @@ import {
 import { CliClient } from "../services/cli-client";
 import {
   MetricsCache,
+  isExpired,
   type CachedMetricsEntry,
   type RefreshResult,
 } from "../services/metrics-cache";
@@ -113,6 +114,68 @@ const METRIC_COLUMN_KINDS: Partial<Record<LibraryColumnId, MetricKind>> = {
   if: "if",
   jci: "jci",
 };
+
+/** Visible drawer Metrics status kinds (css-polish tokens). */
+export type DrawerMetricsStatusKind =
+  | "empty"
+  | "ok"
+  | "stale"
+  | "failure"
+  | "backoff";
+
+export interface DrawerMetricsStatus {
+  kind: DrawerMetricsStatusKind;
+  text: string;
+}
+
+const METRIC_ERROR_LABELS: Record<string, string> = {
+  rate_limited: "rate limited",
+  cli_error: "CLI error",
+  empty: "empty response",
+};
+
+/**
+ * Pure status line for the drawer Metrics section. Priority:
+ * backoff > failure (stale+error) > stale/expired > ok > empty.
+ */
+export function drawerMetricsStatusOf(
+  entry: CachedMetricsEntry | undefined,
+  cache: Pick<MetricsCache, "isBackedOff"> | undefined,
+  now: number,
+  ttlDays = 30,
+): DrawerMetricsStatus {
+  if (entry === undefined) {
+    return { kind: "empty", text: "No journal metrics cached yet." };
+  }
+  if (cache?.isBackedOff(entry, now) === true) {
+    const retryAt =
+      entry.retryAfterMs !== undefined
+        ? new Date(entry.retryAfterMs).toISOString()
+        : "soon";
+    return {
+      kind: "backoff",
+      text: `On backoff until ${retryAt}; last error: ${METRIC_ERROR_LABELS[entry.lastErrorCode ?? ""] ?? entry.lastErrorCode ?? "error"}.`,
+    };
+  }
+  if (entry.stale && entry.lastErrorCode !== undefined) {
+    return {
+      kind: "failure",
+      text: `Refresh failed (${METRIC_ERROR_LABELS[entry.lastErrorCode] ?? entry.lastErrorCode}); showing cached values.`,
+    };
+  }
+  if (entry.stale || isExpired(entry, now, ttlDays)) {
+    return {
+      kind: "stale",
+      text: entry.stale
+        ? "Cached metrics are stale; refresh to update."
+        : "Cached metrics expired; refresh to update.",
+    };
+  }
+  return {
+    kind: "ok",
+    text: `Cached ${new Date(entry.fetchedAtMs).toISOString()}.`,
+  };
+}
 
 /** Plugin-side bridge the view resolves lazily from the app registry. */
 interface PluginBridge {
@@ -910,28 +973,10 @@ export class PaperNotesLibraryView extends ItemView {
       row.createEl("th", { text: field.label });
       row.createEl("td", { text: field.value });
     }
-    // Metrics section: one badge per present metric (UI-only, same badge
-    // classes as the table so both surfaces share the token styling).
-    if (detail.metrics.length > 0) {
-      const metricsSection = host.createDiv({
-        cls: "paper-notes-detail-section detail-section-metrics",
-      });
-      metricsSection.createEl("h4", {
-        cls: "paper-notes-detail-section-heading",
-        text: "Metrics",
-      });
-      const row = metricsSection.createDiv({
-        cls: "paper-notes-detail-metrics-row",
-      });
-      for (const metric of detail.metrics) {
-        const kind = metric.label.toLowerCase();
-        row.createEl("span", {
-          cls: `paper-notes-metric-badge paper-notes-metric-badge--${kind}`,
-          text: metric.value,
-          attr: { "aria-label": `${metric.label}: ${metric.value}` },
-        });
-      }
-    }
+    // Metrics section: always present so Refresh + empty/stale/failure/
+    // backoff states stay visible (metrics-drawer-ui). Badges reuse the
+    // table renderer (tone + stale classes); never writes paper YAML.
+    this.renderDetailMetricsSection(host, selected);
     // Attachments section: PDF/MinerU/Figure presence chips.
     const attachments = host.createDiv({
       cls: "paper-notes-detail-section detail-section-artifacts",
@@ -1274,12 +1319,95 @@ export class PaperNotesLibraryView extends ItemView {
         return "Metrics refresh is on backoff (previous attempt failed).";
       case "failed":
         return "Metrics refresh failed; cached values were kept.";
+      case "disabled":
+        return "Journal metrics are disabled in settings.";
+      case "no_key":
+        return "No journal or ISSN to refresh metrics for.";
       default:
         return "Nothing to refresh for this paper.";
     }
   }
 
-  /** Command: refresh metrics for the currently selected paper's journal. */
+  /**
+   * Drawer Metrics block: heading + Refresh, status line (empty / stale /
+   * failure / backoff), and metric badges via `renderMetricBadge`.
+   */
+  private renderDetailMetricsSection(
+    host: HTMLElement,
+    item: LibraryItem,
+  ): void {
+    const metricsSection = host.createDiv({
+      cls: "paper-notes-detail-section detail-section-metrics",
+    });
+    const headingRow = metricsSection.createDiv({
+      cls: "paper-notes-detail-metrics-heading-row paper-notes-chip-row",
+    });
+    headingRow.createEl("h4", {
+      cls: "paper-notes-detail-section-heading",
+      text: "Metrics",
+    });
+    const canRefresh = item.record !== undefined;
+    const refresh = headingRow.createEl("button", {
+      cls: "paper-notes-detail-metrics-refresh",
+      text: "Refresh",
+      attr: {
+        type: "button",
+        "aria-label": "Refresh journal metrics",
+        ...(canRefresh ? {} : { disabled: "true" }),
+      },
+    });
+    if (canRefresh) {
+      refresh.addEventListener("click", (event: MouseEvent) => {
+        event.preventDefault();
+        event.stopPropagation();
+        void this.refreshCurrentJournal();
+      });
+    }
+
+    const entry = this.metricEntryOf(item);
+    const now = Date.now();
+    const ttlDays = this.metricTtlDays();
+    const cache = this.metricsCache;
+    const status = drawerMetricsStatusOf(entry, cache, now, ttlDays);
+    metricsSection.createDiv({
+      cls: `paper-notes-metrics-status paper-notes-metrics-status--${status.kind}`,
+      text: status.text,
+      attr: { role: "status", "aria-live": "polite" },
+    });
+
+    const kinds: MetricKind[] = ["cas", "jcr", "if", "jci"];
+    const row = metricsSection.createDiv({
+      cls: "paper-notes-detail-metrics-row",
+    });
+    let rendered = 0;
+    for (const kind of kinds) {
+      const badge = metricBadgeStateOf(kind, entry, now, ttlDays);
+      if (badge !== undefined) {
+        renderMetricBadge(row, badge);
+        rendered += 1;
+        continue;
+      }
+      // Fallback: session/source metrics without a cache entry (tests +
+      // legacy providers). Kind class only; no tone/stale (no entry).
+      const raw = item.metrics?.[kind];
+      if (raw === undefined) {
+        continue;
+      }
+      const value = typeof raw === "number" ? String(raw) : raw;
+      const label = kind.toUpperCase();
+      row.createEl("span", {
+        cls: `paper-notes-metric-badge paper-notes-metric-badge--${kind}`,
+        text: value,
+        attr: { "aria-label": `${label}: ${value}` },
+      });
+      rendered += 1;
+    }
+    if (rendered === 0) {
+      row.addClass("is-empty");
+    }
+  }
+
+  /** Command + drawer Refresh: metrics for the selected paper's journal. */
   private async refreshCurrentJournal(): Promise<void> {
     const cache = this.getMetricsCache();
     if (cache === undefined) {
