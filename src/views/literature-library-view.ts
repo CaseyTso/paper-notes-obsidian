@@ -850,7 +850,9 @@ export class PaperNotesLibraryView extends ItemView {
         .addClass("paper-notes-library-empty");
     }
     for (const item of items) {
-      const row = body.createEl("tr");
+      const row = body.createEl("tr", {
+        attr: { "data-paper-notes-library-path": item.path },
+      });
       if (item.path === this.selectedPath) {
         row.addClass("selected");
       }
@@ -914,7 +916,14 @@ export class PaperNotesLibraryView extends ItemView {
     const backdrop = this.drawerHost.createDiv({
       cls: "paper-notes-library-drawer-backdrop",
     });
-    backdrop.addEventListener("click", () => this.closeDetailDrawer());
+    backdrop.addEventListener("click", (event: MouseEvent) => {
+      const item = this.itemBehindDrawerBackdrop(backdrop, event);
+      if (item !== undefined) {
+        this.scheduleRowActivation(item);
+        return;
+      }
+      this.closeDetailDrawer();
+    });
     const panel = this.drawerHost.createDiv({
       cls: "paper-notes-library-drawer-panel",
     });
@@ -1159,6 +1168,33 @@ export class PaperNotesLibraryView extends ItemView {
       this.drawerHost.empty();
       this.drawerHost.addClass("is-hidden");
     }
+  }
+
+  /**
+   * The overlay backdrop visually covers the table. When its click lands on
+   * a visible row behind it, forward that activation instead of closing the
+   * drawer; clicks on empty backdrop space still close it.
+   */
+  private itemBehindDrawerBackdrop(
+    backdrop: HTMLElement,
+    event: MouseEvent,
+  ): LibraryItem | undefined {
+    if (
+      typeof document === "undefined" ||
+      !Number.isFinite(event.clientX) ||
+      !Number.isFinite(event.clientY)
+    ) {
+      return undefined;
+    }
+    const previousPointerEvents = backdrop.style.pointerEvents;
+    backdrop.style.pointerEvents = "none";
+    const target = document.elementFromPoint(event.clientX, event.clientY);
+    backdrop.style.pointerEvents = previousPointerEvents;
+    const row = target?.closest?.("tr[data-paper-notes-library-path]");
+    const path = row?.getAttribute("data-paper-notes-library-path");
+    return path === null || path === undefined
+      ? undefined
+      : this.queryItems().find((item) => item.path === path);
   }
 
   /** Cancel a pending single-click → drawer open (used by dblclick / close). */

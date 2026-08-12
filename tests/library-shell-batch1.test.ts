@@ -154,6 +154,7 @@ interface ElLike {
   clientWidth?: number;
   scrollLeft?: number;
   scrollTop?: number;
+  getAttribute?: (name: string) => string | null;
 }
 
 function findByClass(root: ElLike, cls: string): ElLike[] {
@@ -573,12 +574,35 @@ describe("Batch 1 library shell", () => {
     expect(findByClass(root, "paper-notes-library-detail-title")[0]?.textContent).toBe(
       "Alpha cells",
     );
-    clickRow(rowsOf(view)[0]);
-    root = view.containerEl as unknown as ElLike;
-    expect(findByClass(root, "paper-notes-library-drawer-panel")).toHaveLength(1);
-    expect(
-      findByClass(root, "paper-notes-library-detail-title")[0]?.textContent,
-    ).toBe("Beta cells");
+    const betaRow = rowsOf(view)[0];
+    const backdrop = findByClass(root, "paper-notes-library-drawer-backdrop")[0];
+    const originalDocument = globalThis.document;
+    Object.defineProperty(globalThis, "document", {
+      configurable: true,
+      value: {
+        elementFromPoint: () => ({ closest: () => betaRow }),
+      },
+    });
+    try {
+      // The Drawer backdrop receives the browser click before the covered row.
+      // It must forward the hit-tested Beta row instead of closing the Drawer.
+      backdrop.listeners["click"]?.({ clientX: 32, clientY: 32 });
+      await flushRowClickDelay();
+      root = view.containerEl as unknown as ElLike;
+      expect(findByClass(root, "paper-notes-library-drawer-panel")).toHaveLength(1);
+      expect(
+        findByClass(root, "paper-notes-library-detail-title")[0]?.textContent,
+      ).toBe("Beta cells");
+    } finally {
+      if (originalDocument === undefined) {
+        delete (globalThis as Record<string, unknown>).document;
+      } else {
+        Object.defineProperty(globalThis, "document", {
+          configurable: true,
+          value: originalDocument,
+        });
+      }
+    }
   });
 
   it("preserves table scroll coordinates when re-rendering rows", async () => {
