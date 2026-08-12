@@ -422,8 +422,9 @@ describe("ItemActions.updateReadingStatus", () => {
     }
   });
 
-  it("cycles reading status unset → unread → reading → read → unread", () => {
-    expect(nextReadingStatus(undefined)).toBe("unread");
+  it("cycles reading status missing/unread → reading → read → unread", () => {
+    // Missing frontmatter displays as unread; first click advances to reading.
+    expect(nextReadingStatus(undefined)).toBe("reading");
     expect(nextReadingStatus("unread")).toBe("reading");
     expect(nextReadingStatus("reading")).toBe("read");
     expect(nextReadingStatus("read")).toBe("unread");

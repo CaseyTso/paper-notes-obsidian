@@ -686,6 +686,86 @@ describe("Batch 1 library shell", () => {
     const folderBtn = findByClass(bar, "paper-notes-library-action-open-folder")[0];
     expect(folderBtn?.textContent).toBe("Open Folder");
     folderBtn.listeners["click"]?.(undefined);
+    await Promise.resolve();
+    expect(revealed).toEqual(["05 Literature/alpha2024"]);
+    expect(mockNotices).toHaveLength(0);
+  });
+
+  it("Open Folder style C awaits setViewState before reveal when explorer is closed", async () => {
+    const revealed: string[] = [];
+    const order: string[] = [];
+    const explorerView = {
+      revealInFolder: (file: { path: string }) => {
+        order.push("reveal");
+        revealed.push(file.path);
+      },
+    };
+    // Leaf starts without a view; setViewState mounts the explorer view.
+    const leftLeaf: {
+      view?: { revealInFolder: (file: { path: string }) => void };
+      setViewState: (state: { type: string }) => Promise<void>;
+    } = {
+      setViewState: async (state: { type: string }) => {
+        order.push("setViewState");
+        expect(state.type).toBe("file-explorer");
+        // Simulate async mount: view appears only after await resolves.
+        await Promise.resolve();
+        leftLeaf.view = explorerView;
+      },
+    };
+    let explorerMounted = false;
+    const view = new PaperNotesLibraryView({} as WorkspaceLeaf, makeSource());
+    (view as unknown as { app: unknown }).app = {
+      vault: {
+        adapter: { getBasePath: () => "/vault" },
+        getAbstractFileByPath: (path: string) =>
+          path === "05 Literature/alpha2024" ? { path } : null,
+      },
+      workspace: {
+        getLeavesOfType: (type: string) => {
+          if (type !== "file-explorer") {
+            return [];
+          }
+          // Empty until setViewState mounts the leaf.
+          return explorerMounted && leftLeaf.view !== undefined
+            ? [leftLeaf]
+            : [];
+        },
+        getLeftLeaf: () => leftLeaf,
+        revealLeaf: () => {
+          order.push("revealLeaf");
+        },
+        getLeaf: () => ({ openFile: async () => {} }),
+      },
+      plugins: {
+        plugins: {
+          "paper-notes": {
+            getCliClient: () => ({}),
+            settings: {},
+          },
+        },
+      },
+    };
+    // Wrap setViewState so getLeavesOfType sees the leaf after await.
+    const originalSet = leftLeaf.setViewState.bind(leftLeaf);
+    leftLeaf.setViewState = async (state) => {
+      await originalSet(state);
+      explorerMounted = true;
+    };
+    await view.onOpen();
+    await openDrawerViaClick(view);
+    const root = view.containerEl as unknown as ElLike;
+    const bar = findByClass(root, "paper-notes-library-actions-bar")[0];
+    findByClass(bar, "paper-notes-library-action-open-folder")[0].listeners[
+      "click"
+    ]?.(undefined);
+    // Allow the async openPaperFolderAsync chain to finish.
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(order[0]).toBe("setViewState");
+    expect(order).toContain("reveal");
+    expect(order.indexOf("setViewState")).toBeLessThan(order.indexOf("reveal"));
     expect(revealed).toEqual(["05 Literature/alpha2024"]);
     expect(mockNotices).toHaveLength(0);
   });
@@ -719,15 +799,19 @@ describe("Batch 1 library shell", () => {
     findByClass(bar, "paper-notes-library-action-open-folder")[0].listeners[
       "click"
     ]?.(undefined);
+    await Promise.resolve();
     expect(
       mockNotices.some((n) => /reveal is unavailable/i.test(n)),
     ).toBe(true);
   });
 
   it("table and drawer reading chips cycle via item update without row activation", async () => {
-    const patches: unknown[] = [];
+    const { readFileSync } = await import("node:fs");
+    const cliCalls: string[][] = [];
+    const patchPayloads: unknown[] = [];
+    // No frontmatter → display unread; first click must advance to reading.
     const source = makeSource();
-    source.getFrontmatter = () => ({ reading_status: "unread" });
+    source.getFrontmatter = () => undefined;
     const view = new PaperNotesLibraryView({} as WorkspaceLeaf, source);
     (view as unknown as { app: unknown }).app = {
       vault: { adapter: { getBasePath: () => "/vault" } },
@@ -737,10 +821,11 @@ describe("Batch 1 library shell", () => {
           "paper-notes": {
             getCliClient: () => ({
               run: async (args: string[]) => {
-                // Capture the patch payload path and fake a success envelope.
+                cliCalls.push([...args]);
                 const patchIdx = args.indexOf("--patch");
                 if (patchIdx >= 0) {
-                  patches.push(args[patchIdx + 1]);
+                  const path = args[patchIdx + 1];
+                  patchPayloads.push(JSON.parse(readFileSync(path, "utf8")));
                 }
                 return {
                   envelope: {
@@ -757,9 +842,6 @@ describe("Batch 1 library shell", () => {
         },
       },
     };
-    // Force ItemActions to use in-memory IO so we don't need real temp files
-    // for the assertion path — the view constructs ItemActions itself; we
-    // only need the CLI call to succeed. refresh() will re-query source.
     await view.onOpen();
     const root = view.containerEl as unknown as ElLike;
     const tableChips = findStatusChips(root);
@@ -769,14 +851,21 @@ describe("Batch 1 library shell", () => {
     expect(tableChip.cls).toContain("is-clickable");
     const stop = vi.fn();
     const prevent = vi.fn();
-    // Chip click must stopPropagation so the row activation timer never starts.
     tableChip.listeners["click"]?.({
       preventDefault: prevent,
       stopPropagation: stop,
     });
     expect(stop).toHaveBeenCalled();
     expect(prevent).toHaveBeenCalled();
-    // No drawer from the chip click (timer never scheduled / delay not enough).
+    // Let the async cycleReadingStatus finish (fake timers + microtasks).
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(cliCalls.length).toBeGreaterThan(0);
+    expect(cliCalls[0]).toEqual(
+      expect.arrayContaining(["item", "update", "--key", "alpha2024", "--patch"]),
+    );
+    expect(patchPayloads[0]).toEqual({ reading_status: "reading" });
+    // Chip click must not open the drawer.
     await flushRowClickDelay();
     expect(
       findByClass(
@@ -784,6 +873,38 @@ describe("Batch 1 library shell", () => {
         "paper-notes-library-drawer-panel",
       ),
     ).toHaveLength(0);
+
+    // Drawer chip: open drawer, click header chip, assert next cycle target.
+    // After the first success the view refresh() re-queries frontmatter
+    // (still undefined in this stub) so the next click also targets reading.
+    // Use an explicit unread frontmatter for the drawer path assertion.
+    source.getFrontmatter = () => ({ reading_status: "unread" });
+    // Force actions cache to stay; re-render by opening drawer.
+    await openDrawerViaClick(view);
+    const panel = drawerPanel(view);
+    const drawerChips = findStatusChips(panel);
+    expect(drawerChips.length).toBeGreaterThan(0);
+    const drawerStop = vi.fn();
+    drawerChips[0].listeners["click"]?.({
+      preventDefault: vi.fn(),
+      stopPropagation: drawerStop,
+    });
+    expect(drawerStop).toHaveBeenCalled();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(patchPayloads.at(-1)).toEqual({ reading_status: "reading" });
+
+    // Keyboard Enter on a chip is equivalent to click (a11y).
+    const keyStop = vi.fn();
+    drawerChips[0].listeners["keydown"]?.({
+      key: "Enter",
+      preventDefault: vi.fn(),
+      stopPropagation: keyStop,
+    });
+    expect(keyStop).toHaveBeenCalled();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(patchPayloads.length).toBeGreaterThanOrEqual(3);
   });
 
   it("shows the CLI-unavailable hint in the top bar when read-only", async () => {

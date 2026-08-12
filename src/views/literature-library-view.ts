@@ -995,9 +995,9 @@ export class PaperNotesLibraryView extends ItemView {
   /**
    * Reading-status chip (table cell + drawer header). Always shown so the
    * cycle control exists even when frontmatter has no `reading_status`
-   * yet (display falls back to `unread`). Clicks are chip-local:
-   * `stopPropagation` prevents the row activation path from opening or
-   * swapping the Detail Drawer.
+   * yet (display falls back to `unread`). Activation is chip-local:
+   * click and Enter/Space call `stopPropagation` so the row activation
+   * path never opens or swaps the Detail Drawer.
    */
   private renderReadingStatusChip(host: HTMLElement, item: LibraryItem): void {
     const display = item.readingStatus ?? "unread";
@@ -1009,7 +1009,7 @@ export class PaperNotesLibraryView extends ItemView {
       text: display,
       attr: {
         "aria-label": clickable
-          ? `Reading status: ${display}. Click to cycle.`
+          ? `Reading status: ${display}. Activate to cycle.`
           : `Reading status: ${display}`,
         role: clickable ? "button" : "status",
         tabindex: clickable ? "0" : "-1",
@@ -1018,10 +1018,16 @@ export class PaperNotesLibraryView extends ItemView {
     if (!clickable) {
       return;
     }
-    chip.addEventListener("click", (event: MouseEvent) => {
+    const activate = (event: Event): void => {
       event.preventDefault();
       event.stopPropagation();
       void this.cycleReadingStatus(item);
+    };
+    chip.addEventListener("click", activate);
+    chip.addEventListener("keydown", (event: KeyboardEvent) => {
+      if (event.key === "Enter" || event.key === " ") {
+        activate(event);
+      }
     });
   }
 
@@ -1408,9 +1414,14 @@ export class PaperNotesLibraryView extends ItemView {
    * Open Folder (CONSENSUS API style C): reveal the Canonical Paper
    * Directory (`05 Literature/<key>/`) in Obsidian's in-app file explorer.
    * Never falls back to the OS Finder. Missing folder / unavailable
-   * explorer API → Notice only.
+   * explorer API → Notice only. When no explorer leaf is mounted yet,
+   * awaits `setViewState` before reveal so the view is actually ready.
    */
   private openPaperFolder(item: LibraryItem): void {
+    void this.openPaperFolderAsync(item);
+  }
+
+  private async openPaperFolderAsync(item: LibraryItem): Promise<void> {
     const dir = paperDirectoryOf(item.path);
     if (dir.length === 0) {
       this.notify("Paper folder path could not be resolved.");
@@ -1431,8 +1442,18 @@ export class PaperNotesLibraryView extends ItemView {
       // Style C: open the file explorer leaf when none is mounted yet.
       const leaf = workspace.getLeftLeaf?.(false) ?? null;
       if (leaf !== null && typeof leaf.setViewState === "function") {
-        void leaf.setViewState({ type: "file-explorer" });
-        leaves = workspace.getLeavesOfType?.("file-explorer") ?? [leaf];
+        try {
+          await leaf.setViewState({ type: "file-explorer" });
+        } catch {
+          this.notify("Could not open the file explorer.");
+          return;
+        }
+        // Re-query after the view has mounted (setViewState may attach
+        // the explorer asynchronously onto a different leaf list).
+        leaves = workspace.getLeavesOfType?.("file-explorer") ?? [];
+        if (leaves.length === 0) {
+          leaves = [leaf];
+        }
       }
     }
     if (leaves.length === 0) {
