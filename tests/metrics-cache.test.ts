@@ -40,8 +40,13 @@ import {
   type CachedMetricsEntry,
 } from "../src/services/metrics-cache";
 import {
+  casPartitionToneClass,
+  ifScaleToneClass,
+  jciScaleToneClass,
+  jcrQuartileToneClass,
   metricBadgeStateOf,
   metricLabelOf,
+  metricToneClassesOf,
   renderMetricBadge,
   type MetricBadgeState,
 } from "../src/components/metric-cell";
@@ -669,6 +674,82 @@ describe("CLI contract: only `metrics query`, never a paper write", () => {
     });
   });
 
+  it("aligns with the live CLI success shape (adapter wrapper + nested metrics)", () => {
+    // paper-notes --json metrics query --journal Nature
+    const liveAdapterPayload = {
+      source: "easyscholar",
+      journal: "Nature",
+      abbreviation: null,
+      issn: null,
+      level: null,
+      metrics: {
+        if: 56.1,
+        if5: 56.7,
+        jci: 10.84,
+        jcr_partition: "Q1",
+        cas_partition: "综合性期刊1区",
+      },
+      queried_at: "2026-08-12T06:25:53.485180+00:00",
+    };
+    expect(metricsFromEnvelope(liveAdapterPayload)).toEqual({
+      cas: "综合性期刊1区",
+      jcr: "Q1",
+      if: 56.1,
+      jci: 10.84,
+    });
+    // Flat partition object (no wrapper) still maps.
+    expect(
+      metricsFromEnvelope({
+        if: 12,
+        jcr_partition: "Q2",
+        cas_partition: "2区",
+      }),
+    ).toEqual({ cas: "2区", jcr: "Q2", if: 12 });
+    // Full envelope.data (double-wrapped) still maps via deepest metrics block.
+    expect(
+      metricsFromEnvelope({
+        metrics: liveAdapterPayload,
+      }),
+    ).toEqual({
+      cas: "综合性期刊1区",
+      jcr: "Q1",
+      if: 56.1,
+      jci: 10.84,
+    });
+  });
+
+  it("persists a refreshed journal into a serializable cache payload", async () => {
+    const { cache, save, run } = makeCache();
+    const result = await cache.refresh({ journal: "Nature Medicine" });
+    expect(result.status).toBe("refreshed");
+    expect(run).toHaveBeenCalledWith([
+      "metrics",
+      "query",
+      "--journal",
+      "Nature Medicine",
+    ]);
+    expect(save).toHaveBeenCalledTimes(1);
+    const persisted = save.mock.calls[0][0] as {
+      version: number;
+      entries: Array<Record<string, unknown>>;
+    };
+    expect(persisted.version).toBe(1);
+    expect(persisted.entries).toHaveLength(1);
+    expect(persisted.entries[0]).toMatchObject({
+      key: "journal:nature medicine",
+      journal: "nature medicine",
+      metrics: { cas: "中科院1区", jcr: "Q1", if: 82.9, jci: 8.1 },
+      stale: false,
+    });
+    // Round-trip: a cold cache loading the saved payload serves badges immediately.
+    const cold = makeCache({ load: async () => persisted });
+    await cold.cache.initialize();
+    expect(cold.cache.getEntryFor({ journal: "Nature Medicine" })?.metrics.if).toBe(
+      82.9,
+    );
+    expect(cold.run).not.toHaveBeenCalled();
+  });
+
   it("spawns the real CLI once and maps its envelope (offline fake CLI)", async () => {
     const directory = mkdtempSync(join(tmpdir(), "hermes-verify-"));
     try {
@@ -812,11 +893,15 @@ describe("metric cell badges", () => {
       value: "82.9",
       stale: true,
       tooltip: "Stale — cached 2027-01-01",
+      toneClasses: ["paper-notes-metric-badge--if-ge20"],
     });
     expect(badge).toBe(host.children[0]);
     expect(host.children[0].textContent).toBe("82.9");
     expect(host.children[0].classes).toContain("paper-notes-metric-badge");
     expect(host.children[0].classes).toContain("paper-notes-metric-badge--if");
+    expect(host.children[0].classes).toContain(
+      "paper-notes-metric-badge--if-ge20",
+    );
     expect(host.children[0].classes).toContain("paper-notes-metric-badge-stale");
     expect(host.children[0].title).toBe("Stale — cached 2027-01-01");
 
@@ -827,10 +912,76 @@ describe("metric cell badges", () => {
       value: "中科院1区",
       stale: false,
       tooltip: "Cached 2027-01-01",
+      toneClasses: ["paper-notes-metric-badge--cas-p1"],
     });
     expect(freshHost.children[0].classes).toContain("paper-notes-metric-badge--cas");
+    expect(freshHost.children[0].classes).toContain(
+      "paper-notes-metric-badge--cas-p1",
+    );
     expect(freshHost.children[0].classes).not.toContain(
       "paper-notes-metric-badge-stale",
     );
+  });
+
+  it("emits stable partition and IF-scale tone classes for css-polish", () => {
+    expect(casPartitionToneClass("中科院1区")).toBe(
+      "paper-notes-metric-badge--cas-p1",
+    );
+    expect(casPartitionToneClass("综合性期刊2区")).toBe(
+      "paper-notes-metric-badge--cas-p2",
+    );
+    expect(casPartitionToneClass("3区")).toBe(
+      "paper-notes-metric-badge--cas-p3",
+    );
+    expect(casPartitionToneClass("unknown")).toBeUndefined();
+
+    expect(jcrQuartileToneClass("Q1")).toBe("paper-notes-metric-badge--jcr-q1");
+    expect(jcrQuartileToneClass("q3")).toBe("paper-notes-metric-badge--jcr-q3");
+    expect(jcrQuartileToneClass("SCI Q2")).toBe(
+      "paper-notes-metric-badge--jcr-q2",
+    );
+    expect(jcrQuartileToneClass("none")).toBeUndefined();
+
+    expect(ifScaleToneClass(0.5)).toBe("paper-notes-metric-badge--if-lt1");
+    expect(ifScaleToneClass(2.1)).toBe("paper-notes-metric-badge--if-1-3");
+    expect(ifScaleToneClass(4)).toBe("paper-notes-metric-badge--if-3-5");
+    expect(ifScaleToneClass(7.5)).toBe("paper-notes-metric-badge--if-5-10");
+    expect(ifScaleToneClass(15)).toBe("paper-notes-metric-badge--if-10-20");
+    expect(ifScaleToneClass(82.9)).toBe("paper-notes-metric-badge--if-ge20");
+    expect(ifScaleToneClass(-1)).toBeUndefined();
+
+    expect(jciScaleToneClass(0.4)).toBe("paper-notes-metric-badge--jci-lt1");
+    expect(jciScaleToneClass(2)).toBe("paper-notes-metric-badge--jci-1-3");
+    expect(jciScaleToneClass(4.2)).toBe("paper-notes-metric-badge--jci-3-5");
+    expect(jciScaleToneClass(8.1)).toBe("paper-notes-metric-badge--jci-ge5");
+  });
+
+  it("attaches toneClasses on metricBadgeStateOf for every kind", () => {
+    const cached = entry();
+    expect(metricToneClassesOf("cas", cached)).toEqual([
+      "paper-notes-metric-badge--cas-p1",
+    ]);
+    expect(metricToneClassesOf("jcr", cached)).toEqual([
+      "paper-notes-metric-badge--jcr-q1",
+    ]);
+    expect(metricToneClassesOf("if", cached)).toEqual([
+      "paper-notes-metric-badge--if-ge20",
+    ]);
+    expect(metricToneClassesOf("jci", cached)).toEqual([
+      "paper-notes-metric-badge--jci-ge5",
+    ]);
+
+    const state = metricBadgeStateOf("if", cached, NOW, TTL_DAYS);
+    expect(state?.toneClasses).toEqual(["paper-notes-metric-badge--if-ge20"]);
+    expect(state?.stale).toBe(false);
+
+    const unranked = entry({
+      metrics: { cas: "未收录", jcr: "N/A", if: 0.2, jci: 0.5 },
+    });
+    expect(metricToneClassesOf("cas", unranked)).toEqual([]);
+    expect(metricToneClassesOf("jcr", unranked)).toEqual([]);
+    expect(metricToneClassesOf("if", unranked)).toEqual([
+      "paper-notes-metric-badge--if-lt1",
+    ]);
   });
 });

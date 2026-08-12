@@ -124,6 +124,16 @@ export default class PaperNotesPlugin extends Plugin {
   private metadataRescanTimer: ReturnType<typeof setTimeout> | undefined;
 
   async onload(): Promise<void> {
+    // Library view extracts loadData/saveData as free functions for the
+    // MetricsCache merge-save bridge. Bind them to this plugin instance so
+    // those extractions still write plugin data.json (empty metricsCache root
+    // cause: unbound save threw, MetricsCache.persist swallowed the error).
+    if (typeof this.loadData === "function") {
+      this.loadData = this.loadData.bind(this);
+    }
+    if (typeof this.saveData === "function") {
+      this.saveData = this.saveData.bind(this);
+    }
     this.registerView(VIEW_TYPE_PAPER_NOTES, (leaf) => {
       this.libraryView = new PaperNotesLibraryView(
         leaf,
@@ -308,7 +318,10 @@ export default class PaperNotesPlugin extends Plugin {
         listDir(`${dir}/cards`)
           .filter((name) => name.endsWith(".md"))
           .sort(),
-      // EasyScholar metrics arrive with Task 26; until then there are none.
+      // Volatile EasyScholar metrics live in MetricsCache (data.json
+      // metricsCache), not on the index source. The library view reads the
+      // cache first and only falls back here; keep this undefined so the
+      // cache remains the single source of truth.
       getMetrics: () => undefined,
       // On-demand MinerU full-text search (design spec §9.4; Repair: Task
       // 23 R7): the view calls this after its debounce; the index skips
