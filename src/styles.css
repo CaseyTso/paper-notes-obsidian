@@ -32,6 +32,29 @@
   --pn-accent-soft: color-mix(in srgb, var(--interactive-accent) 14%, transparent);
   --pn-accent-softer: color-mix(in srgb, var(--interactive-accent) 8%, transparent);
   --pn-shadow-soft: 0 1px 2px color-mix(in srgb, var(--background-modifier-box-shadow, #000) 18%, transparent);
+  /* Keep the table host's horizontal scrollbar above Obsidian's status bar. */
+  --pn-scroll-safe-bottom: 28px;
+  /* Metric rank / scale tones (css-polish; class names from metrics-engine). */
+  --pn-metric-p1: #dc2626;
+  --pn-metric-p2: #ea580c;
+  --pn-metric-p3: #ca8a04;
+  --pn-metric-p4: #64748b;
+  --pn-metric-q1: #dc2626;
+  --pn-metric-q2: #ea580c;
+  --pn-metric-q3: #ca8a04;
+  --pn-metric-q4: #2563eb;
+  --pn-metric-if-lt1: #94a3b8;
+  --pn-metric-if-1-3: #0d9488;
+  --pn-metric-if-3-5: #2563eb;
+  --pn-metric-if-5-10: #7c3aed;
+  --pn-metric-if-10-20: #ea580c;
+  --pn-metric-if-ge20: #dc2626;
+  --pn-metric-jci-lt1: #94a3b8;
+  --pn-metric-jci-1-3: #6366f1;
+  --pn-metric-jci-3-5: #7c3aed;
+  --pn-metric-jci-ge5: #6d28d9;
+  --pn-metric-stale: #a16207;
+  --pn-metric-failure: #dc2626;
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -216,12 +239,17 @@
 /* Batch 3: overflow:auto carries BOTH scrollbars — vertical for long
    lists, horizontal once the table's column-width sum exceeds the host's
    client width (bottom scrollbar reaches the right-hand columns). Never
-   clip the horizontal bar here. */
+   clip the horizontal bar here.
+   css-polish: bottom padding is the Horizontal Scroll Safe Area so the
+   native scrollbar stays above Obsidian's status bar (~22–28px) and
+   remains clickable (G11 / CONTEXT). */
 .paper-notes-library-table-host {
   flex: 1;
   min-width: 0;
   overflow: auto;
   scrollbar-gutter: stable;
+  box-sizing: border-box;
+  padding-bottom: var(--pn-scroll-safe-bottom, 28px);
 }
 
 /* ── Full-text status ───────────────────────────────────────────────── */
@@ -392,7 +420,20 @@
   font-size: var(--font-ui-small);
 }
 
-/* ── Metric badges ──────────────────────────────────────────────────── */
+/* ── Metric badges ────────────────────────────────────────────────────
+ *
+ * Class contract (metrics-engine → css-polish):
+ *   base:  .paper-notes-metric-badge
+ *   kind:  --cas | --jcr | --if | --jci   (fallback when no tone)
+ *   tone:  --cas-p1…p4 | --jcr-q1…q4
+ *          --if-lt1 | --if-1-3 | --if-3-5 | --if-5-10 | --if-10-20 | --if-ge20
+ *          --jci-lt1 | --jci-1-3 | --jci-3-5 | --jci-ge5
+ *   state: .paper-notes-metric-badge-stale
+ *   failure surface (drawer reuse): .paper-notes-metrics-status--failure
+ *
+ * Meaning is never color-only: value text stays visible; stale appends
+ * " · stale"; rank is also in the cell text (Q1 / 1区 / numeric IF).
+ */
 
 .paper-notes-metric-badge {
   display: inline-flex;
@@ -410,21 +451,14 @@
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  transition: opacity var(--pn-transition), border-color var(--pn-transition);
+  transition:
+    opacity var(--pn-transition),
+    border-color var(--pn-transition),
+    background-color var(--pn-transition),
+    color var(--pn-transition);
 }
 
-.paper-notes-metric-badge-stale {
-  opacity: 0.72;
-  border-style: dashed;
-  color: var(--text-muted);
-}
-
-.paper-notes-metric-badge-stale::after {
-  content: " · stale";
-  font-size: 10px;
-  color: var(--text-faint);
-}
-
+/* Kind fallbacks — used when tone class is absent (unparseable rank). */
 .paper-notes-metric-badge--cas {
   border-color: color-mix(in srgb, #0d9488 35%, var(--pn-border));
   background: color-mix(in srgb, #0d9488 12%, transparent);
@@ -443,6 +477,184 @@
 .paper-notes-metric-badge--jci {
   border-color: color-mix(in srgb, #7c3aed 35%, var(--pn-border));
   background: color-mix(in srgb, #7c3aed 12%, transparent);
+}
+
+/* CAS partition 1–4 区 (tone overrides kind). */
+.paper-notes-metric-badge--cas-p1 {
+  border-color: color-mix(in srgb, var(--pn-metric-p1) 42%, var(--pn-border));
+  background: color-mix(in srgb, var(--pn-metric-p1) 16%, transparent);
+  color: color-mix(in srgb, var(--pn-metric-p1) 72%, var(--text-normal));
+}
+
+.paper-notes-metric-badge--cas-p2 {
+  border-color: color-mix(in srgb, var(--pn-metric-p2) 42%, var(--pn-border));
+  background: color-mix(in srgb, var(--pn-metric-p2) 16%, transparent);
+  color: color-mix(in srgb, var(--pn-metric-p2) 72%, var(--text-normal));
+}
+
+.paper-notes-metric-badge--cas-p3 {
+  border-color: color-mix(in srgb, var(--pn-metric-p3) 42%, var(--pn-border));
+  background: color-mix(in srgb, var(--pn-metric-p3) 16%, transparent);
+  color: color-mix(in srgb, var(--pn-metric-p3) 72%, var(--text-normal));
+}
+
+.paper-notes-metric-badge--cas-p4 {
+  border-color: color-mix(in srgb, var(--pn-metric-p4) 42%, var(--pn-border));
+  background: color-mix(in srgb, var(--pn-metric-p4) 14%, transparent);
+  color: color-mix(in srgb, var(--pn-metric-p4) 70%, var(--text-normal));
+}
+
+/* JCR quartile Q1–Q4. */
+.paper-notes-metric-badge--jcr-q1 {
+  border-color: color-mix(in srgb, var(--pn-metric-q1) 42%, var(--pn-border));
+  background: color-mix(in srgb, var(--pn-metric-q1) 16%, transparent);
+  color: color-mix(in srgb, var(--pn-metric-q1) 72%, var(--text-normal));
+}
+
+.paper-notes-metric-badge--jcr-q2 {
+  border-color: color-mix(in srgb, var(--pn-metric-q2) 42%, var(--pn-border));
+  background: color-mix(in srgb, var(--pn-metric-q2) 16%, transparent);
+  color: color-mix(in srgb, var(--pn-metric-q2) 72%, var(--text-normal));
+}
+
+.paper-notes-metric-badge--jcr-q3 {
+  border-color: color-mix(in srgb, var(--pn-metric-q3) 42%, var(--pn-border));
+  background: color-mix(in srgb, var(--pn-metric-q3) 16%, transparent);
+  color: color-mix(in srgb, var(--pn-metric-q3) 72%, var(--text-normal));
+}
+
+.paper-notes-metric-badge--jcr-q4 {
+  border-color: color-mix(in srgb, var(--pn-metric-q4) 42%, var(--pn-border));
+  background: color-mix(in srgb, var(--pn-metric-q4) 14%, transparent);
+  color: color-mix(in srgb, var(--pn-metric-q4) 70%, var(--text-normal));
+}
+
+/* IF numeric scale bands. */
+.paper-notes-metric-badge--if-lt1 {
+  border-color: color-mix(in srgb, var(--pn-metric-if-lt1) 40%, var(--pn-border));
+  background: color-mix(in srgb, var(--pn-metric-if-lt1) 12%, transparent);
+  color: color-mix(in srgb, var(--pn-metric-if-lt1) 68%, var(--text-normal));
+}
+
+.paper-notes-metric-badge--if-1-3 {
+  border-color: color-mix(in srgb, var(--pn-metric-if-1-3) 40%, var(--pn-border));
+  background: color-mix(in srgb, var(--pn-metric-if-1-3) 14%, transparent);
+  color: color-mix(in srgb, var(--pn-metric-if-1-3) 70%, var(--text-normal));
+}
+
+.paper-notes-metric-badge--if-3-5 {
+  border-color: color-mix(in srgb, var(--pn-metric-if-3-5) 40%, var(--pn-border));
+  background: color-mix(in srgb, var(--pn-metric-if-3-5) 14%, transparent);
+  color: color-mix(in srgb, var(--pn-metric-if-3-5) 70%, var(--text-normal));
+}
+
+.paper-notes-metric-badge--if-5-10 {
+  border-color: color-mix(in srgb, var(--pn-metric-if-5-10) 42%, var(--pn-border));
+  background: color-mix(in srgb, var(--pn-metric-if-5-10) 14%, transparent);
+  color: color-mix(in srgb, var(--pn-metric-if-5-10) 72%, var(--text-normal));
+}
+
+.paper-notes-metric-badge--if-10-20 {
+  border-color: color-mix(in srgb, var(--pn-metric-if-10-20) 42%, var(--pn-border));
+  background: color-mix(in srgb, var(--pn-metric-if-10-20) 16%, transparent);
+  color: color-mix(in srgb, var(--pn-metric-if-10-20) 72%, var(--text-normal));
+}
+
+.paper-notes-metric-badge--if-ge20 {
+  border-color: color-mix(in srgb, var(--pn-metric-if-ge20) 46%, var(--pn-border));
+  background: color-mix(in srgb, var(--pn-metric-if-ge20) 18%, transparent);
+  color: color-mix(in srgb, var(--pn-metric-if-ge20) 74%, var(--text-normal));
+  font-weight: var(--font-semibold);
+}
+
+/* JCI readable scale (coarser than IF; cool indigo/violet). */
+.paper-notes-metric-badge--jci-lt1 {
+  border-color: color-mix(in srgb, var(--pn-metric-jci-lt1) 40%, var(--pn-border));
+  background: color-mix(in srgb, var(--pn-metric-jci-lt1) 12%, transparent);
+  color: color-mix(in srgb, var(--pn-metric-jci-lt1) 68%, var(--text-normal));
+}
+
+.paper-notes-metric-badge--jci-1-3 {
+  border-color: color-mix(in srgb, var(--pn-metric-jci-1-3) 42%, var(--pn-border));
+  background: color-mix(in srgb, var(--pn-metric-jci-1-3) 14%, transparent);
+  color: color-mix(in srgb, var(--pn-metric-jci-1-3) 70%, var(--text-normal));
+}
+
+.paper-notes-metric-badge--jci-3-5 {
+  border-color: color-mix(in srgb, var(--pn-metric-jci-3-5) 42%, var(--pn-border));
+  background: color-mix(in srgb, var(--pn-metric-jci-3-5) 14%, transparent);
+  color: color-mix(in srgb, var(--pn-metric-jci-3-5) 72%, var(--text-normal));
+}
+
+.paper-notes-metric-badge--jci-ge5 {
+  border-color: color-mix(in srgb, var(--pn-metric-jci-ge5) 46%, var(--pn-border));
+  background: color-mix(in srgb, var(--pn-metric-jci-ge5) 16%, transparent);
+  color: color-mix(in srgb, var(--pn-metric-jci-ge5) 74%, var(--text-normal));
+  font-weight: var(--font-semibold);
+}
+
+/* Stale: dashed border + amber tint + explicit " · stale" label (not color-only). */
+.paper-notes-metric-badge-stale {
+  opacity: 0.82;
+  border-style: dashed;
+  border-color: color-mix(in srgb, var(--pn-metric-stale) 45%, var(--pn-border));
+  background: color-mix(
+    in srgb,
+    var(--pn-metric-stale) 10%,
+    color-mix(in srgb, var(--background-primary) 70%, transparent)
+  );
+  color: color-mix(in srgb, var(--pn-metric-stale) 55%, var(--text-muted));
+}
+
+.paper-notes-metric-badge-stale::after {
+  content: " · stale";
+  font-size: 10px;
+  font-weight: var(--font-medium);
+  color: color-mix(in srgb, var(--pn-metric-stale) 70%, var(--text-faint));
+  letter-spacing: 0.01em;
+}
+
+/* Drawer / metrics surface status tokens (reusable by metrics-drawer-ui). */
+.paper-notes-metrics-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--font-ui-smaller);
+  line-height: 1.4;
+  color: var(--text-muted);
+}
+
+.paper-notes-metrics-status--stale {
+  color: color-mix(in srgb, var(--pn-metric-stale) 75%, var(--text-normal));
+}
+
+.paper-notes-metrics-status--stale::before {
+  content: "";
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--pn-metric-stale);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--pn-metric-stale) 22%, transparent);
+  flex: none;
+}
+
+.paper-notes-metrics-status--failure {
+  color: color-mix(in srgb, var(--pn-metric-failure) 80%, var(--text-normal));
+}
+
+.paper-notes-metrics-status--failure::before {
+  content: "";
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--pn-metric-failure);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--pn-metric-failure) 22%, transparent);
+  flex: none;
+}
+
+.paper-notes-metrics-status--empty {
+  color: var(--text-faint);
+  font-style: italic;
 }
 
 /* ── Reading status + artifact chips ────────────────────────────────── */
@@ -470,6 +682,22 @@
 .paper-notes-status-chip {
   font-weight: var(--font-medium);
   text-transform: capitalize;
+  cursor: pointer;
+  transition:
+    background-color var(--pn-transition),
+    border-color var(--pn-transition),
+    color var(--pn-transition),
+    box-shadow var(--pn-transition);
+}
+
+.paper-notes-status-chip:hover {
+  filter: brightness(1.05);
+  border-color: var(--pn-border-strong);
+}
+
+.paper-notes-status-chip:focus-visible {
+  outline: 2px solid var(--pn-accent);
+  outline-offset: 1px;
 }
 
 .paper-notes-status-chip--unread {
