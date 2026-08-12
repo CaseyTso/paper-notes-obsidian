@@ -362,7 +362,7 @@ export function serializeCache(
 export class MetricsCache {
   private readonly entries = new Map<string, CachedMetricsEntry>();
   private readonly inFlight = new Map<string, Promise<RefreshResult>>();
-  private initialized = false;
+  private initialization: Promise<void> | undefined;
 
   constructor(private readonly options: MetricsCacheOptions) {}
 
@@ -379,18 +379,19 @@ export class MetricsCache {
    * malformed payload leaves the cache empty (volatile data).
    */
   async initialize(): Promise<void> {
-    if (this.initialized) {
-      return;
+    if (this.initialization === undefined) {
+      this.initialization = (async () => {
+        try {
+          const loaded = await this.options.load();
+          for (const entry of parsePersistedCache(loaded)) {
+            this.entries.set(entry.key, entry);
+          }
+        } catch {
+          // Volatile UI data: never let a read failure break the library.
+        }
+      })();
     }
-    this.initialized = true;
-    try {
-      const loaded = await this.options.load();
-      for (const entry of parsePersistedCache(loaded)) {
-        this.entries.set(entry.key, entry);
-      }
-    } catch {
-      // Volatile UI data: never let a read failure break the library.
-    }
+    await this.initialization;
   }
 
   /**
@@ -442,7 +443,13 @@ export class MetricsCache {
     if (pending !== undefined) {
       return pending;
     }
-    const promise = this.runRefresh(key, target);
+    const promise = this.initialize().then(() => {
+      const persisted = this.entries.get(key);
+      if (persisted !== undefined && this.isBackedOff(persisted, this.now())) {
+        return { key, status: "backoff" as const, entry: persisted };
+      }
+      return this.runRefresh(key, target);
+    });
     this.inFlight.set(key, promise);
     void promise.finally(() => {
       this.inFlight.delete(key);
@@ -524,6 +531,7 @@ export class MetricsCache {
   async refreshExpired(
     targets: readonly MetricQueryTarget[],
   ): Promise<RefreshResult[]> {
+    await this.initialize();
     const now = this.now();
     const results: RefreshResult[] = [];
     for (const target of targets) {

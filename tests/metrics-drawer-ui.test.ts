@@ -330,6 +330,14 @@ function makeCache(options: {
   return { cache, run };
 }
 
+function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
+}
+
 describe("drawerMetricsStatusOf (pure)", () => {
   const cacheStub = {
     isBackedOff: (e: CachedMetricsEntry, now: number) =>
@@ -527,6 +535,33 @@ describe("Drawer Metrics section UI", () => {
     expect(
       mockNotices.some((notice) => /metrics refresh complete|no expired/i.test(notice)),
     ).toBe(true);
+  });
+
+  it("gates onOpen and toolbar refresh until persisted backoff is loaded", async () => {
+    const prior = entry({
+      fetchedAtMs: NOW - 31 * DAY,
+      stale: true,
+      lastErrorCode: "rate_limited",
+      retryAfterMs: NOW + 45_000,
+    });
+    const loading = deferred<unknown>();
+    const { cache, run } = makeCache({
+      load: () => loading.promise,
+    });
+    const view = new PaperNotesLibraryView({} as WorkspaceLeaf, makeSource());
+    injectCache(view, cache);
+    await view.onOpen();
+    const refresh = findByClass(
+      view.containerEl as unknown as ElLike,
+      "paper-notes-library-refresh-metrics",
+    )[0];
+    refresh.listeners["click"]?.(undefined);
+    await Promise.resolve();
+    expect(run).not.toHaveBeenCalled();
+
+    loading.resolve(serializeCache([prior]));
+    await vi.runAllTimersAsync();
+    expect(run).not.toHaveBeenCalled();
   });
 
   it("command palette refresh still works alongside drawer Refresh", async () => {

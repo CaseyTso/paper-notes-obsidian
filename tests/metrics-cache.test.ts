@@ -446,6 +446,27 @@ describe("rate-limit backoff", () => {
     expect(results).toEqual([]);
     expect(run).not.toHaveBeenCalled();
   });
+
+  it("waits for persisted backoff before refreshing an expired journal", async () => {
+    const prior = entry({
+      key: "journal:nature",
+      fetchedAtMs: NOW - 31 * DAY,
+      retryAfterMs: NOW + 60_000,
+      lastErrorCode: "rate_limited",
+      stale: true,
+    });
+    const load = deferred<unknown>();
+    const { cache, run } = makeCache({ load: () => load.promise });
+
+    const initialization = cache.initialize();
+    const refresh = cache.refreshExpired([{ journal: "Nature" }]);
+    expect(run).not.toHaveBeenCalled();
+
+    load.resolve(serializeCache([prior]));
+    await initialization;
+    await expect(refresh).resolves.toEqual([]);
+    expect(run).not.toHaveBeenCalled();
+  });
 });
 
 describe("stale values retained on failure", () => {

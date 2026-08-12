@@ -567,10 +567,14 @@ describe("Batch 1 library shell", () => {
       makeSource([makeRecord(), makeRecord("Beta cells", 2025, NOTE_PATH_B)]),
     );
     await view.onOpen();
-    await openDrawerViaClick(view);
-    // Default sort is year descending, so Beta renders before Alpha.
+    // Default sort is year descending: open Alpha at row 1, then switch to Beta.
+    await openDrawerViaClick(view, 1);
+    let root = view.containerEl as unknown as ElLike;
+    expect(findByClass(root, "paper-notes-library-detail-title")[0]?.textContent).toBe(
+      "Alpha cells",
+    );
     clickRow(rowsOf(view)[0]);
-    const root = view.containerEl as unknown as ElLike;
+    root = view.containerEl as unknown as ElLike;
     expect(findByClass(root, "paper-notes-library-drawer-panel")).toHaveLength(1);
     expect(
       findByClass(root, "paper-notes-library-detail-title")[0]?.textContent,
@@ -895,10 +899,14 @@ describe("Batch 1 library shell", () => {
     expect(stop).toHaveBeenCalled();
     expect(prevent).toHaveBeenCalled();
     // Let the async cycleReadingStatus finish (fake timers + microtasks).
-    await Promise.resolve();
-    await Promise.resolve();
-    expect(tableHost.scrollLeft).toBe(280);
-    expect(tableHost.scrollTop).toBe(96);
+    await vi.runAllTimersAsync();
+    const liveTableHost = findByClass(
+      view.containerEl as unknown as ElLike,
+      "paper-notes-library-table-host",
+    )[0];
+    expect(liveTableHost).not.toBe(tableHost);
+    expect(liveTableHost.scrollLeft).toBe(280);
+    expect(liveTableHost.scrollTop).toBe(96);
     expect(cliCalls.length).toBeGreaterThan(0);
     expect(cliCalls[0]).toEqual(
       expect.arrayContaining(["item", "update", "--key", "alpha2024", "--patch"]),
@@ -913,10 +921,9 @@ describe("Batch 1 library shell", () => {
       ),
     ).toHaveLength(0);
 
-    // Drawer chip: open drawer, click header chip, assert next cycle target.
-    // After the first success the view refresh() re-queries frontmatter
-    // (still undefined in this stub) so the next click also targets reading.
-    // Use an explicit unread frontmatter for the drawer path assertion.
+    // Drawer chip: open drawer, click header chip, assert the next cycle target.
+    // The first optimistic click is still visible because this source does not
+    // publish metadata updates, so the next click advances reading → read.
     source.getFrontmatter = () => ({ reading_status: "unread" });
     // Force actions cache to stay; re-render by opening drawer.
     await openDrawerViaClick(view);
@@ -931,7 +938,7 @@ describe("Batch 1 library shell", () => {
     expect(drawerStop).toHaveBeenCalled();
     await Promise.resolve();
     await Promise.resolve();
-    expect(patchPayloads.at(-1)).toEqual({ reading_status: "reading" });
+    expect(patchPayloads.at(-1)).toEqual({ reading_status: "read" });
 
     // Keyboard Enter on a chip is equivalent to click (a11y).
     const keyStop = vi.fn();
@@ -945,12 +952,13 @@ describe("Batch 1 library shell", () => {
     expect(patchPayloads.length).toBeGreaterThanOrEqual(3);
   });
 
-  it("serializes rapid reading-chip updates using the optimistic status", async () => {
+  it("keeps the latest optimistic reading status across an earlier metadata event", async () => {
     const { readFileSync } = await import("node:fs");
     const resolveRuns: Array<() => void> = [];
     const patchPayloads: unknown[] = [];
     const source = makeSource();
-    source.getFrontmatter = () => ({ reading_status: "read" });
+    let sourceStatus: "unread" | "reading" | "read" = "read";
+    source.getFrontmatter = () => ({ reading_status: sourceStatus });
     const view = new PaperNotesLibraryView({} as WorkspaceLeaf, source);
     (view as unknown as { app: unknown }).app = {
       vault: { adapter: { getBasePath: () => "/vault" } },
@@ -985,8 +993,24 @@ describe("Batch 1 library shell", () => {
       { reading_status: "unread" },
       { reading_status: "reading" },
     ]);
+    // Obsidian publishes the first completed write while the second is pending.
+    sourceStatus = "unread";
+    view.refresh();
+    findStatusChips(view.containerEl as unknown as ElLike)[0].listeners["click"]?.({
+      preventDefault() {},
+      stopPropagation() {},
+    });
     resolveRuns.shift()!();
-    await Promise.resolve();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(patchPayloads).toEqual([
+      { reading_status: "unread" },
+      { reading_status: "reading" },
+      { reading_status: "read" },
+    ]);
+    sourceStatus = "read";
+    resolveRuns.shift()!();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(findStatusChips(view.containerEl as unknown as ElLike)[0]?.textContent).toBe("read");
   });
 
   it("shows the CLI-unavailable hint in the top bar when read-only", async () => {

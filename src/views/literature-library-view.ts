@@ -236,12 +236,12 @@ export class PaperNotesLibraryView extends ItemView {
   private isOpen = false;
   private tableHost: HTMLElement | null = null;
   /** Local snapshots bridge rapid chip activation until vault events arrive. */
-  private readonly readingStatusOverrides = new Map<string, "unread" | "reading" | "read">();
-  /** Source state captured before each optimistic write, used to detect a vault update. */
-  private readonly readingStatusSources = new Map<
+  private readonly readingStatusOverrides = new Map<
     string,
-    "unread" | "reading" | "read" | undefined
+    { status: "unread" | "reading" | "read"; generation: number }
   >();
+  /** Monotonic ids prevent a failed older write from clearing a newer click. */
+  private readingStatusGeneration = 0;
   /** One CLI write lane per paper prevents read-modify-write races. */
   private readonly readingStatusQueues = new Map<string, Promise<void>>();
   /** Lazily resolved CLI-backed item actions (Task 25). */
@@ -665,27 +665,16 @@ export class PaperNotesLibraryView extends ItemView {
         const frontmatter = this.source.getFrontmatter(path);
         const override = this.readingStatusOverrides.get(path);
         const sourceStatus = frontmatter?.reading_status;
-        const sourceBeforeWrite = this.readingStatusSources.get(path);
-        if (
-          override !== undefined &&
-          (sourceStatus === "unread" ||
-            sourceStatus === "reading" ||
-            sourceStatus === "read") &&
-          sourceStatus !== sourceBeforeWrite
-        ) {
-          this.readingStatusOverrides.delete(path);
-          this.readingStatusSources.delete(path);
-          return frontmatter;
-        }
         if (override === undefined) {
           return frontmatter;
         }
-        if (sourceStatus === override) {
+        // A vault event may acknowledge an earlier queued CLI write. Keep the
+        // latest local value until the source reports that exact value.
+        if (sourceStatus === override.status) {
           this.readingStatusOverrides.delete(path);
-          this.readingStatusSources.delete(path);
           return frontmatter;
         }
-        return { ...frontmatter, reading_status: override };
+        return { ...frontmatter, reading_status: override.status };
       },
       listDirectory: (dir) => this.source.listDirectory(dir),
       metrics: (paperId) => {
@@ -1958,34 +1947,27 @@ export class PaperNotesLibraryView extends ItemView {
     if (actions === undefined || item.invalid !== undefined) {
       return;
     }
+    const sourceStatus = this.source.getFrontmatter(item.path)?.reading_status;
+    const current =
+      this.readingStatusOverrides.get(item.path)?.status ??
+      (sourceStatus === "unread" ||
+      sourceStatus === "reading" ||
+      sourceStatus === "read"
+        ? sourceStatus
+        : item.readingStatus);
+    const next = nextReadingStatus(current);
+    const generation = ++this.readingStatusGeneration;
+    this.readingStatusOverrides.set(item.path, { status: next, generation });
+    this.renderResults();
+
     const prior = this.readingStatusQueues.get(item.path) ?? Promise.resolve();
     const operation = prior.then(async () => {
-      const sourceStatus = this.source.getFrontmatter(item.path)?.reading_status;
-      const current =
-        this.readingStatusOverrides.get(item.path) ??
-        (sourceStatus === "unread" ||
-        sourceStatus === "reading" ||
-        sourceStatus === "read"
-          ? sourceStatus
-          : item.readingStatus);
-      const next = nextReadingStatus(current);
-      this.readingStatusOverrides.set(item.path, next);
-      this.readingStatusSources.set(
-        item.path,
-        sourceStatus === "unread" ||
-          sourceStatus === "reading" ||
-          sourceStatus === "read"
-          ? sourceStatus
-          : undefined,
-      );
-      this.renderResults();
       const outcome = await actions.updateReadingStatus(item.key, next);
       if (outcome.status === "success") {
         this.notify(`Reading status → ${next}`);
         this.refresh();
-      } else {
+      } else if (this.readingStatusOverrides.get(item.path)?.generation === generation) {
         this.readingStatusOverrides.delete(item.path);
-        this.readingStatusSources.delete(item.path);
         this.renderResults();
         this.notify(this.outcomeMessage(outcome));
       }
