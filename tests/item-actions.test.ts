@@ -37,6 +37,7 @@ import {
   nextReadingStatus,
   openCard,
   parseCreateInput,
+  paperDirectoryOf,
   renderCandidateLines,
   renderPlanLines,
   resolveOpenTarget,
@@ -421,8 +422,9 @@ describe("ItemActions.updateReadingStatus", () => {
     }
   });
 
-  it("cycles reading status unset → unread → reading → read → unread", () => {
-    expect(nextReadingStatus(undefined)).toBe("unread");
+  it("cycles reading status missing/unread → reading → read → unread", () => {
+    // Missing frontmatter displays as unread; first click advances to reading.
+    expect(nextReadingStatus(undefined)).toBe("reading");
     expect(nextReadingStatus("unread")).toBe("reading");
     expect(nextReadingStatus("reading")).toBe("read");
     expect(nextReadingStatus("read")).toBe("unread");
@@ -626,6 +628,11 @@ describe("ItemActions delete preview/confirm", () => {
 });
 
 describe("asset open targets (main/PDF/MinerU/Figure/cards)", () => {
+  it("resolves the Canonical Paper Directory from a main-note path", () => {
+    expect(paperDirectoryOf(NOTE_PATH)).toBe("05 Literature/alpha2024");
+    expect(paperDirectoryOf("orphan.md")).toBe("");
+  });
+
   it("resolves main, PDF, MinerU and Figure paths from the note path", () => {
     expect(resolveOpenTarget("main", NOTE_PATH)).toEqual({ kind: "main", path: NOTE_PATH });
     expect(resolveOpenTarget("pdf", NOTE_PATH)).toEqual({

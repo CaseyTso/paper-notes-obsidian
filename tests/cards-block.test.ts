@@ -8,7 +8,7 @@
  * exact card through the shared `openCard()` entry — and disappears
  * entirely when the paper has no cards. A future in-panel card view
  * (user long-term plan) reuses the same `getCards`/`openCard` entries.
- * The block renders inside the double-click detail drawer (Batch 1
+ * The block renders inside the single-click Detail Drawer (Batch 1
  * full-width shell: no resident detail pane).
  *
  * The obsidian mock provides a recording element stub plus a fake vault
@@ -186,17 +186,27 @@ function collectTexts(root: ElLike): string[] {
 /**
  * Render the detail panel with the only paper selected. Since the Batch 1
  * full-width shell the detail body (Cards block, action bar) lives in the
- * double-click drawer, so the helper opens it before returning.
+ * Detail Drawer opened by single-click (after the row activation delay),
+ * so the helper opens it before returning.
  */
 async function renderedView(cards: string[]): Promise<PaperNotesLibraryView> {
-  const view = new PaperNotesLibraryView({} as WorkspaceLeaf, makeSource(cards));
-  (view as unknown as { selectedPath: string }).selectedPath = NOTE_PATH;
-  await view.onOpen();
-  const root = view.containerEl as unknown as ElLike;
-  const table = findByClass(root, "paper-notes-library-table")[0];
-  const tbody = table.children.find((child) => child.tag === "tbody");
-  tbody?.children[0]?.listeners["dblclick"]?.({ preventDefault() {} });
-  return view;
+  vi.useFakeTimers();
+  try {
+    const view = new PaperNotesLibraryView({} as WorkspaceLeaf, makeSource(cards));
+    (view as unknown as { selectedPath: string }).selectedPath = NOTE_PATH;
+    await view.onOpen();
+    const root = view.containerEl as unknown as ElLike;
+    const table = findByClass(root, "paper-notes-library-table")[0];
+    const tbody = table.children.find((child) => child.tag === "tbody");
+    tbody?.children[0]?.listeners["click"]?.({});
+    await vi.advanceTimersByTimeAsync(300);
+    return view;
+  } finally {
+    // Keep fake timers only for the open path; subsequent opens in the same
+    // test re-enter this helper. Real timers restored by the caller suite
+    // afterEach if present — here we leave them real for openFile awaits.
+    vi.useRealTimers();
+  }
 }
 
 function installFakeVaultAndWorkspace(): void {
