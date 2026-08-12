@@ -1,0 +1,246 @@
+{
+  "batch": "library-ux-metrics-2026-08-12",
+  "board": "paper-notes",
+  "consensus": "docs/planning/CONSENSUS_2026-08-12.md",
+  "glossary": "CONTEXT.md",
+  "repos": {
+    "plugin": "/Users/juicewrld/Downloads/Hermes Agent/paper-notes-obsidian",
+    "core": "/Users/juicewrld/Downloads/Hermes Agent/paper-notes",
+    "vault_manual_only": "/Users/juicewrld/Downloads/obsidian/知识库"
+  },
+  "rules": {
+    "no_create_until_user_confirms_seed": true,
+    "same_card_reviewer": "dev-reviewer",
+    "no_metrics_in_markdown": true,
+    "no_push_publish": true,
+    "independent_worktrees_from_reading_notes": true,
+    "language": "kanban Chinese; code paths English"
+  },
+  "profiles": {
+    "frontend": "dev-frontend",
+    "coder": "dev-coder",
+    "reviewer": "dev-reviewer",
+    "integrator": "dev-integrator",
+    "orchestrator": "dev-orchestrator"
+  },
+  "tasks": [
+    {
+      "id": "ux-interaction",
+      "title": "Library：单击开 Drawer / 双击 PDF / Reading chip / Open Folder",
+      "assignee": "dev-frontend",
+      "layer": 0,
+      "parents": [],
+      "workspace": {
+        "kind": "worktree",
+        "repo": "plugin",
+        "note": "独立 branch；禁止与 reading-notes 或其它卡共享 worktree"
+      },
+      "skills": [],
+      "file_allowlist": [
+        "src/views/literature-library-view.ts",
+        "src/services/item-actions.ts",
+        "tests/library-shell-batch1.test.ts",
+        "tests/cards-block.test.ts",
+        "tests/item-actions.test.ts"
+      ],
+      "hotspots": ["src/views/literature-library-view.ts"],
+      "acceptance": [
+        "单击行：选中并打开 Detail Drawer",
+        "双击行：仅打开 Primary PDF；无 PDF 时 Notice，不打开 Drawer/Figure",
+        "移除 action bar「Reading: x → y」按钮",
+        "表与 Drawer 的 reading chip 可点击，循环 unread→reading→read→unread，经 CLI item update",
+        "chip 点击 stopPropagation，不触发 row activation",
+        "Drawer 提供 Open Folder：Obsidian file explorer reveal Canonical Paper Directory（非 Finder）",
+        "npm test / typecheck 相关用例绿；更新仍假设 dblclick→drawer 的测试"
+      ],
+      "out_of_scope": [
+        "metrics cache",
+        "badge 配色",
+        "横滑 padding",
+        "SKILL.md"
+      ],
+      "reviewer": "dev-reviewer"
+    },
+    {
+      "id": "metrics-engine",
+      "title": "Metrics：空 cache 诊断修复 + badge 分区/IF 状态逻辑",
+      "assignee": "dev-frontend",
+      "layer": 0,
+      "parents": [],
+      "workspace": {
+        "kind": "worktree",
+        "repo": "plugin"
+      },
+      "skills": [],
+      "file_allowlist": [
+        "src/services/metrics-cache.ts",
+        "src/components/metric-cell.ts",
+        "tests/metrics-cache.test.ts",
+        "src/services/library-index.ts",
+        "src/types/paper.ts",
+        "src/main.ts"
+      ],
+      "file_allowlist_notes": "library-index/paper.ts/main.ts 仅在诊断证明必要时最小改动；默认只动 metrics-cache + metric-cell + tests",
+      "hotspots": ["src/services/metrics-cache.ts", "src/components/metric-cell.ts"],
+      "acceptance": [
+        "给出空 metricsCache 根因（卡评论）：key/bridge/envelope/persist/enabled 之一并修复",
+        "对含 journal 的记录，refresh/refreshExpired 能写入可序列化 cache 条目",
+        "metricsFromEnvelope 与 CLI success shape 对齐；单测覆盖",
+        "metricBadgeStateOf/render 支持分区色与 IF 刻度所需 state（CSS class 名稳定，供 css-polish）",
+        "仍只调用 metrics query；失败保留旧值 + stale；不写 Markdown",
+        "tests/metrics-cache.test.ts 绿"
+      ],
+      "out_of_scope": [
+        "literature-library-view.ts",
+        "styles.css",
+        "Drawer Refresh 按钮 UI（属 metrics-drawer-ui）"
+      ],
+      "reviewer": "dev-reviewer"
+    },
+    {
+      "id": "css-polish",
+      "title": "CSS：横滑 safe area + metric 分区/IF 视觉",
+      "assignee": "dev-frontend",
+      "layer": 0,
+      "parents": [],
+      "workspace": {
+        "kind": "worktree",
+        "repo": "plugin"
+      },
+      "skills": [],
+      "file_allowlist": ["src/styles.css"],
+      "hotspots": ["src/styles.css"],
+      "acceptance": [
+        ".paper-notes-library-table-host 底部留白，横滑条不被 Obsidian status bar 挡住",
+        "CAS/JCR 按分区档位着色；IF 按数值刻度着色；JCI 有可读样式",
+        "stale badge 仍可区分；不引入写回 Markdown 的任何钩子",
+        "与 metric-cell 输出的 class 约定一致（在卡 body 写明 class 表；若 engine 未合入则先按约定写好 token）"
+      ],
+      "out_of_scope": ["任何 .ts", "核心仓"],
+      "reviewer": "dev-reviewer"
+    },
+    {
+      "id": "skill-docs",
+      "title": "文档：SKILL 同步 Library UX + Metrics 交互",
+      "assignee": "dev-coder",
+      "layer": 0,
+      "parents": [],
+      "workspace": {
+        "kind": "worktree",
+        "repo": "core",
+        "path": "/Users/juicewrld/Downloads/Hermes Agent/paper-notes"
+      },
+      "skills": [],
+      "file_allowlist": ["SKILL.md", "README.md", "README.zh-CN.md"],
+      "hotspots": ["SKILL.md"],
+      "acceptance": [
+        "描述 Row Activation（单击 Drawer / 双击 PDF / 缺 PDF Notice）",
+        "描述 Open Folder = 应用内 explorer，非 Finder",
+        "描述 Reading chip cycle + item update；不再强调 Reading 快捷按钮",
+        "重申 Journal Metrics UI-only、EasyScholar、与 zotero-style 同源、不写 Markdown",
+        "不新增 Python 行为；不泄露 SecretKey"
+      ],
+      "out_of_scope": ["paper_notes/**", "插件 src"],
+      "reviewer": "dev-reviewer"
+    },
+    {
+      "id": "metrics-drawer-ui",
+      "title": "Drawer：Refresh metrics + stale/failure 可见",
+      "assignee": "dev-frontend",
+      "layer": 1,
+      "parents": ["ux-interaction", "metrics-engine", "css-polish"],
+      "workspace": {
+        "kind": "worktree",
+        "repo": "plugin",
+        "note": "基于已 review 的父分支或 integrator 中期合并点；禁止与未完成父卡抢 view 文件"
+      },
+      "skills": [],
+      "file_allowlist": [
+        "src/views/literature-library-view.ts",
+        "tests/library-shell-batch1.test.ts",
+        "tests/metrics-drawer-ui.test.ts"
+      ],
+      "hotspots": ["src/views/literature-library-view.ts"],
+      "acceptance": [
+        "Detail Drawer Metrics 区有 Refresh 控件，调用现有 cache.refresh(current journal)",
+        "无 metrics / stale / failure / backoff 有可见状态（文案或 badge class）",
+        "不破坏 ux-interaction 的 click/chip/folder 行为",
+        "命令面板既有 refresh 命令仍可用",
+        "相关单测绿"
+      ],
+      "out_of_scope": ["metrics-cache 算法大改", "SKILL.md"],
+      "reviewer": "dev-reviewer"
+    },
+    {
+      "id": "integrate-library-ux",
+      "title": "集成：合并 Library UX + Metrics 并 verify",
+      "assignee": "dev-integrator",
+      "layer": 2,
+      "parents": [
+        "ux-interaction",
+        "metrics-engine",
+        "css-polish",
+        "skill-docs",
+        "metrics-drawer-ui"
+      ],
+      "workspace": {
+        "kind": "dir",
+        "path": "/Users/juicewrld/Downloads/Hermes Agent/paper-notes-obsidian"
+      },
+      "skills": [],
+      "file_allowlist": ["*"],
+      "file_allowlist_notes": "仅合并与 build 产物；语义冲突按 FILE_OWNERSHIP/CONSENSUS 裁决",
+      "acceptance": [
+        "全部父卡 done（含 dev-reviewer 通过）",
+        "插件：npm run test && npm run typecheck && npm run build 通过",
+        "无 metrics 写入 Markdown 的代码路径",
+        "main.js/styles.css 与 src 构建一致",
+        "核心 SKILL 变更已在核心仓分支可合并或已合并说明"
+      ],
+      "out_of_scope": ["GUI 主观代劳", "push/发布"],
+      "reviewer": "dev-reviewer"
+    },
+    {
+      "id": "gui-gate-library-ux",
+      "title": "Gate：用户 GUI 验收 Library UX + Metrics",
+      "assignee": "dev-orchestrator",
+      "layer": 3,
+      "parents": ["integrate-library-ux"],
+      "workspace": {
+        "kind": "dir",
+        "path": "/Users/juicewrld/Downloads/Hermes Agent/paper-notes-obsidian"
+      },
+      "skills": [],
+      "initial_status_hint": "blocked",
+      "block_kind": "needs_input",
+      "gate": "human-visual-review-required",
+      "file_allowlist": [],
+      "acceptance": [
+        "用户按 ACCEPTANCE.md GUI 清单逐项点验",
+        "DeepSeek/非视觉模型不得代点或代判通过",
+        "全部 GUI 项通过后才可关闭本 Gate"
+      ],
+      "out_of_scope": ["改代码"],
+      "reviewer": null
+    }
+  ],
+  "parallel_groups": [
+    {
+      "layer": 0,
+      "task_ids": [
+        "ux-interaction",
+        "metrics-engine",
+        "css-polish",
+        "skill-docs"
+      ]
+    }
+  ],
+  "seed_checklist": [
+    "用户明确回复「确认播种」",
+    "核对 hermes profile list 含 dev-frontend/dev-coder/dev-reviewer/dev-integrator",
+    "每卡 body 粘贴 CONSENSUS 要点 + 本 manifest 对应 acceptance + FILE_OWNERSHIP allowlist",
+    "实现卡 model/provider/reasoning 留空（同卡 review 路由）",
+    "创建后 link 依赖边与本 JSON parents 一致",
+    "勿与 reading-notes running worktree 冲突"
+  ]
+}
