@@ -285,10 +285,20 @@ export interface OpenTarget {
   path: string;
 }
 
+/**
+ * Canonical Paper Directory for a main-note path
+ * (`05 Literature/<key>/`). Empty string when the path has no parent.
+ */
+export function paperDirectoryOf(notePath: string): string {
+  const slash = notePath.lastIndexOf("/");
+  return slash <= 0 ? "" : notePath.slice(0, slash);
+}
+
 /** Vault-relative path of a paper asset derived from the main-note path. */
 export function assetPathOf(kind: OpenAssetKind, notePath: string): string {
-  const dir = notePath.slice(0, notePath.lastIndexOf("/"));
-  const basename = notePath.slice(dir.length + 1);
+  const dir = paperDirectoryOf(notePath);
+  const basename =
+    dir.length === 0 ? notePath : notePath.slice(dir.length + 1);
   const key = basename.endsWith(".md") ? basename.slice(0, -3) : basename;
   switch (kind) {
     case "main":

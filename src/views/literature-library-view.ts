@@ -40,6 +40,7 @@ import {
   buildDeletePreview,
   nextReadingStatus,
   openCard,
+  paperDirectoryOf,
   renderPlanLines,
   resolveOpenTarget,
   type ActionOutcome,
@@ -96,6 +97,14 @@ const REFRESH_ALL_COMMAND = "paper-notes-refresh-all-metrics";
 
 /** Long abstracts in the drawer truncate at this many characters. */
 const ABSTRACT_TRUNCATE_CHARS = 600;
+
+/**
+ * Delay before a row single-click opens the Detail Drawer. Browsers fire
+ * two `click` events before `dblclick`; without this window a double-click
+ * that should only open the Primary PDF would briefly flash the drawer
+ * (CONSENSUS / RISKS R5). 280ms sits in the approved 250–300ms band.
+ */
+const ROW_CLICK_DELAY_MS = 280;
 
 /** Map the four metric columns onto their badge kinds. */
 const METRIC_COLUMN_KINDS: Partial<Record<LibraryColumnId, MetricKind>> = {
@@ -194,6 +203,8 @@ export class PaperNotesLibraryView extends ItemView {
   private drawerHost: HTMLElement | null = null;
   private drawerOpen = false;
   private boundDrawerKey: ((event: KeyboardEvent) => void) | null = null;
+  /** Pending single-click → drawer timer (cleared on dblclick / close). */
+  private rowClickTimer: ReturnType<typeof setTimeout> | undefined;
   /** Long-abstract Expand toggle inside the drawer (per-open state). */
   private abstractExpanded = false;
   /**
@@ -241,6 +252,7 @@ export class PaperNotesLibraryView extends ItemView {
   async onClose(): Promise<void> {
     this.isOpen = false;
     this.cancelFullTextSearch();
+    this.clearRowClickTimer();
     this.detachDrawerKeyHandler();
     this.columnResize = null;
     if (typeof document !== "undefined") {
@@ -308,8 +320,10 @@ export class PaperNotesLibraryView extends ItemView {
     this.renderFilterBar(container);
 
     // Full-width table shell: no resident detail pane, no splitter. The
-    // detail surface is the overlay drawer, opened by double-clicking a
-    // row and closed via Esc / backdrop / Close (any leaf width).
+    // detail surface is the overlay drawer, opened by single-clicking a
+    // row (after a short click/dblclick disambiguation delay) and closed
+    // via Esc / backdrop / Close (any leaf width). Double-click opens
+    // only the Primary PDF.
     this.tableHost = container.createDiv({
       cls: "paper-notes-library-table-host",
     });
@@ -768,15 +782,16 @@ export class PaperNotesLibraryView extends ItemView {
         }
       }
       row.addEventListener("click", () => {
-        // Selection highlight only; the detail surface is the drawer,
-        // opened on double-click. Never re-render the whole shell here.
-        this.selectedPath = item.path;
-        this.renderTable();
+        // Select immediately; open the Detail Drawer after a short delay
+        // so a following dblclick can cancel and open the Primary PDF only.
+        this.scheduleRowActivation(item);
       });
       row.addEventListener("dblclick", (event: MouseEvent) => {
         event.preventDefault();
+        this.clearRowClickTimer();
         this.selectedPath = item.path;
-        this.openDetailDrawer();
+        this.renderTable();
+        this.openPrimaryPdf(item);
       });
     }
   }
@@ -868,9 +883,8 @@ export class PaperNotesLibraryView extends ItemView {
         text: detail.key,
       });
     }
-    if (detail.readingStatus !== undefined) {
-      this.renderReadingStatusChip(header, detail.readingStatus);
-    }
+    // Reading chip is always present and clickable (cycle via CLI).
+    this.renderReadingStatusChip(header, selected);
     if (detail.invalid !== undefined) {
       const diagnostics = host.createDiv({
         cls: "paper-notes-library-diagnostics",
@@ -966,7 +980,7 @@ export class PaperNotesLibraryView extends ItemView {
     columnId: LibraryColumnId,
   ): void {
     if (columnId === "readingStatus") {
-      this.renderReadingStatusChip(cell, item.readingStatus);
+      this.renderReadingStatusChip(cell, item);
       return;
     }
     if (columnId === "artifacts") {
@@ -978,17 +992,36 @@ export class PaperNotesLibraryView extends ItemView {
     cell.textContent = formatColumnValue(item, columnId);
   }
 
-  private renderReadingStatusChip(
-    host: HTMLElement,
-    status: LibraryItem["readingStatus"],
-  ): void {
-    if (status === undefined) {
+  /**
+   * Reading-status chip (table cell + drawer header). Always shown so the
+   * cycle control exists even when frontmatter has no `reading_status`
+   * yet (display falls back to `unread`). Clicks are chip-local:
+   * `stopPropagation` prevents the row activation path from opening or
+   * swapping the Detail Drawer.
+   */
+  private renderReadingStatusChip(host: HTMLElement, item: LibraryItem): void {
+    const display = item.readingStatus ?? "unread";
+    const clickable = item.invalid === undefined;
+    const chip = host.createEl("span", {
+      cls: clickable
+        ? `paper-notes-status-chip paper-notes-status-chip--${display} is-clickable`
+        : `paper-notes-status-chip paper-notes-status-chip--${display}`,
+      text: display,
+      attr: {
+        "aria-label": clickable
+          ? `Reading status: ${display}. Click to cycle.`
+          : `Reading status: ${display}`,
+        role: clickable ? "button" : "status",
+        tabindex: clickable ? "0" : "-1",
+      },
+    });
+    if (!clickable) {
       return;
     }
-    host.createEl("span", {
-      cls: `paper-notes-status-chip paper-notes-status-chip--${status}`,
-      text: status,
-      attr: { "aria-label": `Reading status: ${status}` },
+    chip.addEventListener("click", (event: MouseEvent) => {
+      event.preventDefault();
+      event.stopPropagation();
+      void this.cycleReadingStatus(item);
     });
   }
 
@@ -1033,11 +1066,39 @@ export class PaperNotesLibraryView extends ItemView {
   private closeDetailDrawer(): void {
     this.drawerOpen = false;
     this.abstractExpanded = false;
+    this.clearRowClickTimer();
     this.detachDrawerKeyHandler();
     if (this.drawerHost !== null) {
       this.drawerHost.empty();
       this.drawerHost.addClass("is-hidden");
     }
+  }
+
+  /** Cancel a pending single-click → drawer open (used by dblclick / close). */
+  private clearRowClickTimer(): void {
+    if (this.rowClickTimer !== undefined) {
+      clearTimeout(this.rowClickTimer);
+      this.rowClickTimer = undefined;
+    }
+  }
+
+  /**
+   * Row activation (CONSENSUS): select the row immediately, then open the
+   * Detail Drawer after {@link ROW_CLICK_DELAY_MS}. A double-click clears
+   * the timer and opens only the Primary PDF instead.
+   */
+  private scheduleRowActivation(item: LibraryItem): void {
+    this.clearRowClickTimer();
+    this.selectedPath = item.path;
+    // Selection highlight only — never rebuild the whole shell here.
+    this.renderTable();
+    this.rowClickTimer = setTimeout(() => {
+      this.rowClickTimer = undefined;
+      if (!this.isOpen || this.selectedPath !== item.path) {
+        return;
+      }
+      this.openDetailDrawer();
+    }, ROW_CLICK_DELAY_MS);
   }
 
   private attachDrawerKeyHandler(): void {
@@ -1322,6 +1383,79 @@ export class PaperNotesLibraryView extends ItemView {
   }
 
   /**
+   * Double-click row activation: open only the Primary PDF. Missing PDF
+   * → Notice only; never open the Detail Drawer or the Figure note.
+   */
+  private openPrimaryPdf(item: LibraryItem): void {
+    if (!item.artifacts.pdf) {
+      this.notify("Primary PDF not found for this paper.");
+      return;
+    }
+    const target = resolveOpenTarget("pdf", item.path);
+    if (target === undefined) {
+      this.notify("Primary PDF not found for this paper.");
+      return;
+    }
+    const file = this.app.vault.getAbstractFileByPath(target.path);
+    if (file === null || typeof file !== "object" || !("path" in file)) {
+      this.notify("Primary PDF not found for this paper.");
+      return;
+    }
+    void this.app.workspace.getLeaf(false)?.openFile(file as TFile);
+  }
+
+  /**
+   * Open Folder (CONSENSUS API style C): reveal the Canonical Paper
+   * Directory (`05 Literature/<key>/`) in Obsidian's in-app file explorer.
+   * Never falls back to the OS Finder. Missing folder / unavailable
+   * explorer API → Notice only.
+   */
+  private openPaperFolder(item: LibraryItem): void {
+    const dir = paperDirectoryOf(item.path);
+    if (dir.length === 0) {
+      this.notify("Paper folder path could not be resolved.");
+      return;
+    }
+    const folder = this.app.vault.getAbstractFileByPath(dir);
+    if (folder === null || typeof folder !== "object") {
+      this.notify("Paper folder not found in the vault.");
+      return;
+    }
+    const workspace = this.app.workspace as unknown as {
+      getLeavesOfType?: (type: string) => WorkspaceLeaf[];
+      getLeftLeaf?: (split: boolean) => WorkspaceLeaf | null;
+      revealLeaf?: (leaf: WorkspaceLeaf) => void | Promise<void>;
+    };
+    let leaves = workspace.getLeavesOfType?.("file-explorer") ?? [];
+    if (leaves.length === 0) {
+      // Style C: open the file explorer leaf when none is mounted yet.
+      const leaf = workspace.getLeftLeaf?.(false) ?? null;
+      if (leaf !== null && typeof leaf.setViewState === "function") {
+        void leaf.setViewState({ type: "file-explorer" });
+        leaves = workspace.getLeavesOfType?.("file-explorer") ?? [leaf];
+      }
+    }
+    if (leaves.length === 0) {
+      this.notify("Could not open the file explorer.");
+      return;
+    }
+    const explorerLeaf = leaves[0];
+    const view = (explorerLeaf as unknown as { view?: unknown }).view as
+      | { revealInFolder?: (file: unknown) => void }
+      | undefined;
+    if (view === undefined || typeof view.revealInFolder !== "function") {
+      this.notify(
+        "File explorer reveal is unavailable in this Obsidian version.",
+      );
+      return;
+    }
+    view.revealInFolder(folder);
+    if (typeof workspace.revealLeaf === "function") {
+      void workspace.revealLeaf(explorerLeaf);
+    }
+  }
+
+  /**
    * Open one specific card note (Gate D R3 interface reservation): the
    * future in-panel card view reuses this entry; the detail Cards block
    * is wired through it today. The shared `openCard()` helper keeps this
@@ -1416,19 +1550,22 @@ export class PaperNotesLibraryView extends ItemView {
     open("pdf", "Open PDF", item.artifacts.pdf);
     open("minerU", "Open MinerU", item.artifacts.minerU);
     open("figure", "Open Figure", item.artifacts.figure);
+    // Open Folder: Canonical Paper Directory in the in-app explorer.
+    const openFolder = openGroup.createEl("button", {
+      cls: "paper-notes-library-action-open-folder",
+      text: "Open Folder",
+      attr: { type: "button", "aria-label": "Reveal paper folder in file explorer" },
+    });
+    openFolder.addEventListener("click", () => this.openPaperFolder(item));
     // Invalid-metadata rows have no canonical key to mutate.
     if (item.invalid !== undefined) {
       return;
     }
-    // Status group: reading cycle, attach, rename.
+    // Status group: attach + rename. Reading status is cycled from the
+    // table/drawer chips (the old "Reading: x → y" action-bar button is gone).
     const statusGroup = bar.createDiv({
       cls: "paper-notes-library-action-group actions-status",
     });
-    const status = statusGroup.createEl("button", {
-      cls: "paper-notes-library-action-status",
-      text: `Reading: ${item.readingStatus ?? "unread"} → ${nextReadingStatus(item.readingStatus)}`,
-    });
-    status.addEventListener("click", () => void this.cycleReadingStatus(item));
     const attach = statusGroup.createEl("button", { text: "Attach PDF" });
     attach.addEventListener("click", () => void this.startAttach(item));
     const rename = statusGroup.createEl("button", { text: "Rename key" });
