@@ -749,9 +749,19 @@
   color: var(--text-normal);
 }
 
+/* Key + Reading Status share one aligned metadata row under the title. */
+.paper-notes-library-detail-metadata {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
 .paper-notes-library-detail-key {
-  display: inline-block;
-  margin: -4px 0 12px;
+  display: inline-flex;
+  align-items: center;
+  margin: 0;
   padding: 1px 8px;
   border-radius: 999px;
   border: 1px solid var(--pn-border);
@@ -848,25 +858,55 @@
   outline-offset: 1px;
 }
 
-/* ── Detail action bar ──────────────────────────────────────────────── */
+/* ── Drawer header actions (⋯ + Close) ──────────────────────────────── */
 
-.paper-notes-library-actions {
+.paper-notes-library-drawer-header-actions {
   display: flex;
-  flex-wrap: wrap;
+  align-items: center;
   gap: 6px;
-  margin-top: 14px;
-  padding-top: 12px;
-  border-top: 1px solid var(--pn-border);
 }
 
-.paper-notes-library-actions button {
-  min-height: 30px;
-  padding: 0 10px;
+.paper-notes-library-drawer-more {
+  min-height: 28px;
+  min-width: 30px;
+  padding: 0 6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   border-radius: var(--pn-radius-md);
   border: 1px solid var(--pn-border);
   background: var(--background-primary);
   color: var(--text-normal);
-  font-size: var(--font-ui-smaller);
+  cursor: pointer;
+  transition:
+    background-color var(--pn-transition),
+    border-color var(--pn-transition),
+    color var(--pn-transition);
+}
+
+.paper-notes-library-drawer-more:hover {
+  background: var(--background-modifier-hover);
+  border-color: var(--pn-border-strong);
+}
+
+.paper-notes-library-drawer-more:focus-visible {
+  outline: 2px solid var(--pn-accent);
+  outline-offset: 1px;
+}
+
+/* ── Drawer Metrics Refresh (icon-only, spins while in flight) ──────── */
+
+.paper-notes-detail-metrics-refresh {
+  min-height: 22px;
+  min-width: 22px;
+  padding: 0 5px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--pn-radius-sm);
+  border: 1px solid var(--pn-border);
+  background: var(--background-primary);
+  color: var(--text-muted);
   cursor: pointer;
   transition:
     background-color var(--pn-transition),
@@ -875,76 +915,36 @@
     opacity var(--pn-transition);
 }
 
-.paper-notes-library-actions button:hover:not(:disabled) {
+.paper-notes-detail-metrics-refresh:hover:not(:disabled) {
   background: var(--background-modifier-hover);
   border-color: var(--pn-border-strong);
+  color: var(--text-normal);
 }
 
-.paper-notes-library-actions button:focus-visible {
+.paper-notes-detail-metrics-refresh:focus-visible {
   outline: 2px solid var(--pn-accent);
   outline-offset: 1px;
 }
 
-.paper-notes-library-actions button:disabled {
+.paper-notes-detail-metrics-refresh:disabled {
   opacity: 0.45;
   cursor: not-allowed;
 }
 
-.paper-notes-library-actions button.mod-warning {
-  color: var(--text-error);
-  border-color: color-mix(in srgb, var(--text-error) 35%, var(--pn-border));
-  background: color-mix(in srgb, var(--text-error) 8%, transparent);
+.paper-notes-detail-metrics-refresh.is-loading svg {
+  animation: paper-notes-spin 0.8s linear infinite;
 }
 
-.paper-notes-library-actions button.mod-warning:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--text-error) 14%, transparent);
+@keyframes paper-notes-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
-.paper-notes-library-actions-hint {
-  color: var(--text-muted);
-  font-size: var(--font-ui-smaller);
-  font-style: italic;
-}
-
-/* Batch 2 (A): grouped top action bar inside the drawer. The bar is a
-   flex sibling of the scrollable body (never inside it), so it stays
-   pinned above the abstract no matter the scroll position. */
-.paper-notes-library-actions-bar {
-  flex: none;
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px 10px;
-  margin-top: 0;
-  padding: 8px 14px;
-  border-top: none;
-  border-bottom: 1px solid var(--pn-border);
-  background: var(--pn-surface-alt);
-}
-
-.paper-notes-library-action-group {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 6px;
-}
-
-.paper-notes-library-action-group + .paper-notes-library-action-group {
-  margin-left: 2px;
-  padding-left: 10px;
-  border-left: 1px solid var(--pn-border);
-}
-
-.paper-notes-library-actions-bar .paper-notes-library-actions-hint {
-  padding: 2px 0;
-}
-
-.paper-notes-library-action-open {
-  border-color: color-mix(in srgb, var(--pn-accent) 28%, var(--pn-border));
-}
-
-.paper-notes-library-action-status {
-  font-weight: var(--font-medium);
+@media (prefers-reduced-motion: reduce) {
+  .paper-notes-detail-metrics-refresh.is-loading svg {
+    animation: none;
+  }
 }
 
 /* ── Citation picker ────────────────────────────────────────────────── */

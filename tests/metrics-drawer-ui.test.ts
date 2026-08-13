@@ -116,8 +116,13 @@ vi.mock("obsidian", () => {
     }
   }
 
-  return { ItemView, WorkspaceLeaf, Notice };
+  return { ItemView, WorkspaceLeaf, Notice, setIcon };
 });
+
+/** Record the icon name Obsidian `setIcon` would have rendered. */
+function setIcon(el: { attrs: Record<string, string> }, icon: string): void {
+  el.attrs["data-icon"] = icon;
+}
 
 const NOTE_PATH = "05 Literature/alpha2024/alpha2024.md";
 const NOW = Date.UTC(2026, 7, 12, 12, 0, 0);
@@ -409,10 +414,59 @@ describe("Drawer Metrics section UI", () => {
     const section = metricsSection(view);
     expect(section).toBeDefined();
     const refresh = findByClass(section, "paper-notes-detail-metrics-refresh")[0];
-    expect(refresh?.textContent).toBe("Refresh");
+    // Icon-only compact button with tooltip/aria (no text label).
+    expect(refresh?.textContent).toBe("");
     expect(refresh?.attrs?.["aria-label"]).toBe("Refresh journal metrics");
+    expect(refresh?.attrs?.["title"]).toBe("Refresh journal metrics");
+    expect(refresh?.attrs?.["data-icon"]).toBe("refresh-cw");
     const status = findByClass(section, "paper-notes-metrics-status--empty")[0];
     expect(status?.textContent.toLowerCase()).toContain("no journal metrics");
+  });
+
+  it("Refresh disables and spins while in flight, then recovers on failure", async () => {
+    const gate = deferred<CliRunResult>();
+    const run = vi.fn(() => gate.promise);
+    const { cache } = makeCache({ run });
+    await cache.initialize();
+    const view = new PaperNotesLibraryView({} as WorkspaceLeaf, makeSource());
+    installMetricsBridge(view, { run });
+    injectCache(view, cache);
+    await view.onOpen();
+    await openDrawer(view);
+    const section = metricsSection(view);
+    const refresh = findByClass(section, "paper-notes-detail-metrics-refresh")[0];
+    refresh.listeners["click"]?.({
+      preventDefault() {},
+      stopPropagation() {},
+    });
+    await Promise.resolve();
+    // In flight: disabled + loading spinner class; repeat activation is a no-op.
+    const inFlight = findByClass(
+      metricsSection(view),
+      "paper-notes-detail-metrics-refresh",
+    )[0];
+    expect(inFlight.attrs?.["disabled"]).toBe("true");
+    expect(inFlight.cls).toContain("is-loading");
+    inFlight.listeners["click"]?.({
+      preventDefault() {},
+      stopPropagation() {},
+    });
+    await Promise.resolve();
+    expect(run).toHaveBeenCalledTimes(1);
+    // Settle with a failure: the button must recover (enabled, no spinner).
+    gate.resolve({
+      envelope: errorEnvelope("cli_error"),
+      exitCode: 1,
+      stderr: "boom",
+    });
+    await vi.runAllTimersAsync();
+    const settled = findByClass(
+      metricsSection(view),
+      "paper-notes-detail-metrics-refresh",
+    )[0];
+    expect(settled.attrs?.["disabled"]).toBeUndefined();
+    expect(settled.cls).not.toContain("is-loading");
+    expect(mockNotices.some((n) => /failed/i.test(n))).toBe(true);
   });
 
   it("shows cache badges with tone + stale class and failure status", async () => {

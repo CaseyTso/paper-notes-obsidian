@@ -48,6 +48,14 @@ _Avoid_: floating scrollbar, detached scroll track (unless padding fails)
 Single-click selects a row and opens its Detail Drawer; double-click opens only the Primary PDF (missing PDF → notice only).
 _Avoid_: double-click for drawer, double-click opens Figure note
 
+**Item Context Menu**:
+The shared native-style menu opened either by right-clicking a Literature Library row or by the Detail Drawer’s `⋯` button. It contains row-scoped Open, Copy, Manage, and Delete actions; unavailable artifacts stay visible but disabled, and right-click selects the target row without opening a closed Drawer.
+_Avoid_: Detail Drawer action bar, row action buttons, hidden unavailable actions
+
+**Deletion Preview**:
+The confirmation surface for permanently deleting a Canonical Paper Directory; it opens immediately in a scanning state, then shows the file count, total size, and external references before enabling Delete.
+_Avoid_: citation-key typing gate, silent deletion scan, list-only deletion
+
 **Chip-Local Click**:
 A click on a Reading Status chip cycles status only and does not open the Detail Drawer or change row selection beyond the chip’s row if already selected; event does not bubble as a row activation.
 _Avoid_: chip click opens drawer

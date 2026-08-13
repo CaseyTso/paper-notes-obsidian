@@ -16,7 +16,14 @@
  * only and every CLI call is the read-only `metrics query`.
  */
 
-import { ItemView, Notice, WorkspaceLeaf, type TFile } from "obsidian";
+import {
+  ItemView,
+  Menu,
+  Notice,
+  WorkspaceLeaf,
+  setIcon,
+  type TFile,
+} from "obsidian";
 
 import type { InvalidRecord, PaperRecord } from "../types/paper";
 import {
@@ -38,7 +45,6 @@ import {
 } from "../components/metric-cell";
 import {
   ItemActions,
-  buildDeletePreview,
   nextReadingStatus,
   openCard,
   paperDirectoryOf,
@@ -284,6 +290,8 @@ export class PaperNotesLibraryView extends ItemView {
   private rowClickTimer: ReturnType<typeof setTimeout> | undefined;
   /** Long-abstract Expand toggle inside the drawer (per-open state). */
   private abstractExpanded = false;
+  /** Selected-journal metrics refresh in flight (drawer Refresh button). */
+  private journalRefreshInFlight = false;
   /**
    * Per-column width customizations (Batch 2 D). Seeded once from the
    * plugin settings (data.json `columnWidths`); the drag handler updates
@@ -913,6 +921,18 @@ export class PaperNotesLibraryView extends ItemView {
         this.renderTable();
         this.openPrimaryPdf(item);
       });
+      // Shared Item Context Menu: right-click selects the target row; the
+      // Drawer updates if open, stays closed if closed. The menu is the same
+      // one the Drawer ⋯ button opens.
+      row.addEventListener("contextmenu", (event: MouseEvent) => {
+        event.preventDefault();
+        this.selectedPath = item.path;
+        this.renderTable();
+        if (this.drawerOpen) {
+          this.renderDetailDrawer();
+        }
+        this.openItemMenu(item, event);
+      });
     }
     this.restoreTableScrollPosition(scrollPosition);
   }
@@ -944,6 +964,20 @@ export class PaperNotesLibraryView extends ItemView {
       }
       this.closeDetailDrawer();
     });
+    // Drawer-open double-click on a row behind the backdrop opens only that
+    // row's Primary PDF (same contract as the row dblclick handler), without
+    // closing or switching the Drawer as a double-click side effect.
+    backdrop.addEventListener("dblclick", (event: MouseEvent) => {
+      event.preventDefault();
+      const item = this.itemBehindDrawerBackdrop(backdrop, event);
+      if (item === undefined) {
+        return;
+      }
+      this.clearRowClickTimer();
+      this.selectedPath = item.path;
+      this.renderTable();
+      this.openPrimaryPdf(item);
+    });
     const panel = this.drawerHost.createDiv({
       cls: "paper-notes-library-drawer-panel",
     });
@@ -952,21 +986,36 @@ export class PaperNotesLibraryView extends ItemView {
       cls: "paper-notes-library-drawer-title",
       text: "Details",
     });
-    const close = header.createEl("button", {
+    const headerActions = header.createDiv({
+      cls: "paper-notes-library-drawer-header-actions",
+    });
+    // Shared Item Context Menu trigger: identical menu to row right-click.
+    const more = headerActions.createEl("button", {
+      cls: "paper-notes-library-drawer-more",
+      attr: {
+        type: "button",
+        "aria-label": "Paper actions",
+        title: "Paper actions",
+      },
+    });
+    setIcon(more, "more-horizontal");
+    more.addEventListener("click", (event: MouseEvent) => {
+      event.stopPropagation();
+      const item = this.queryItems().find(
+        (candidate) => candidate.path === this.selectedPath,
+      );
+      if (item !== undefined) {
+        this.openItemMenu(item, event);
+      }
+    });
+    const close = headerActions.createEl("button", {
       cls: "paper-notes-library-drawer-close",
       text: "Close",
       attr: { type: "button", "aria-label": "Close details" },
     });
     close.addEventListener("click", () => this.closeDetailDrawer());
-    // Batch 2 (A): the grouped action bar is a top bar between the drawer
-    // header and the scrollable body — structurally outside the scroll
-    // area, so it never scrolls away with a long abstract.
-    const actionsBar = panel.createDiv({
-      cls: "paper-notes-library-actions paper-notes-library-actions-bar",
-    });
     const body = panel.createDiv({ cls: "paper-notes-library-drawer-body" });
-    const selected = this.renderDetailInto(body);
-    this.renderDetailActions(actionsBar, selected);
+    this.renderDetailInto(body);
     this.attachDrawerKeyHandler();
   }
 
@@ -997,7 +1046,8 @@ export class PaperNotesLibraryView extends ItemView {
       return undefined;
     }
     const detail = buildPaperDetail(selected);
-    // Header section: title + key + reading-status chip.
+    // Header section: title, then a dedicated metadata row holding the
+    // citation key pill and the Reading Status chip (aligned inline-flex).
     const header = host.createDiv({
       cls: "paper-notes-library-detail-header",
     });
@@ -1005,14 +1055,17 @@ export class PaperNotesLibraryView extends ItemView {
       cls: "paper-notes-library-detail-title",
       text: detail.title,
     });
+    const metadata = header.createDiv({
+      cls: "paper-notes-library-detail-metadata",
+    });
     if (detail.key.length > 0) {
-      header.createEl("div", {
+      metadata.createEl("div", {
         cls: "paper-notes-library-detail-key",
         text: detail.key,
       });
     }
     // Reading chip is always present and clickable (cycle via CLI).
-    this.renderReadingStatusChip(header, selected);
+    this.renderReadingStatusChip(metadata, selected);
     if (detail.invalid !== undefined) {
       const diagnostics = host.createDiv({
         cls: "paper-notes-library-diagnostics",
@@ -1444,20 +1497,26 @@ export class PaperNotesLibraryView extends ItemView {
       text: "Metrics",
     });
     const canRefresh = item.record !== undefined;
+    const refreshInFlight = this.journalRefreshInFlight;
     const refresh = headingRow.createEl("button", {
       cls: "paper-notes-detail-metrics-refresh",
-      text: "Refresh",
+      text: "",
       attr: {
         type: "button",
         "aria-label": "Refresh journal metrics",
-        ...(canRefresh ? {} : { disabled: "true" }),
+        title: "Refresh journal metrics",
+        ...(canRefresh && !refreshInFlight ? {} : { disabled: "true" }),
       },
     });
+    setIcon(refresh, "refresh-cw");
+    if (refreshInFlight) {
+      refresh.addClass("is-loading");
+    }
     if (canRefresh) {
       refresh.addEventListener("click", (event: MouseEvent) => {
         event.preventDefault();
         event.stopPropagation();
-        void this.refreshCurrentJournal();
+        void this.refreshSelectedJournal();
       });
     }
 
@@ -1523,6 +1582,29 @@ export class PaperNotesLibraryView extends ItemView {
       this.render();
     }
     this.notify(this.metricsNotice(result));
+  }
+
+  /**
+   * Drawer Refresh entry: tracks in-flight state so the icon button disables
+   * and spins until the attempt settles (success or failure), then restores
+   * the idle state.
+   */
+  private async refreshSelectedJournal(): Promise<void> {
+    if (this.journalRefreshInFlight) {
+      return;
+    }
+    this.journalRefreshInFlight = true;
+    if (this.isOpen) {
+      this.renderDetailDrawer();
+    }
+    try {
+      await this.refreshCurrentJournal();
+    } finally {
+      this.journalRefreshInFlight = false;
+      if (this.isOpen) {
+        this.renderDetailDrawer();
+      }
+    }
   }
 
   /** Background/command refresh of every missing or expired journal. */
@@ -1779,77 +1861,168 @@ export class PaperNotesLibraryView extends ItemView {
   }
 
   /**
-   * Batch 2 (A): grouped top action bar — Open | Status | Danger. The bar
-   * lives OUTSIDE the drawer's scrollable body (see renderDetailDrawer),
-   * so it stays visible no matter how long the Abstract gets. Read-only
-   * mode renders the CLI-unavailable hint instead of buttons.
+   * Shared Item Context Menu (CONTEXT: Item Context Menu). One construction
+   * path used by row right-click and the Drawer ⋯ button. Groups: Open |
+   * Copy | Manage | Danger. Unavailable artifacts/DOI stay visible but
+   * disabled; CLI mutations on read-only/invalid rows fail closed with
+   * explanatory titles.
    */
-  private renderDetailActions(
-    host: HTMLElement,
-    item: LibraryItem | undefined,
-  ): void {
+  private openItemMenu(item: LibraryItem, event: MouseEvent): void {
+    const menu = new Menu();
+    this.buildItemMenu(menu, item);
+    menu.showAtMouseEvent(event);
+  }
+
+  private buildItemMenu(menu: Menu, item: LibraryItem): void {
     const actions = this.getActions();
-    const bar = host.createDiv({ cls: "paper-notes-library-action-bar" });
-    if (actions === undefined || item === undefined) {
-      bar.createEl("span", {
-        cls: "paper-notes-library-actions-hint",
-        text: "paper-notes CLI unavailable — the library is read-only.",
-      });
-      return;
-    }
-    // Open group: asset openers (main is always available; artifacts only
-    // when the file exists). "Open cards" was replaced by the detail Cards
-    // block (Gate D R3): the block lists every card note and is the
-    // multi-card entry point.
-    const openGroup = bar.createDiv({
-      cls: "paper-notes-library-action-group actions-open",
-    });
-    const open = (
-      kind: OpenAssetKind,
-      label: string,
-      enabled: boolean,
-    ): void => {
-      const button = openGroup.createEl("button", {
-        cls: "paper-notes-library-action-open",
-        text: label,
-      });
+    const readOnly = actions === undefined;
+    const invalid = item.invalid !== undefined;
+    const doi = item.record?.identifiers?.doi;
+    const disabledReason = invalid
+      ? "invalid metadata"
+      : readOnly
+        ? "CLI unavailable"
+        : undefined;
+
+    // Open group (main always available; artifacts only when present).
+    this.addMenuItem(
+      menu,
+      "Open main",
+      "file-text",
+      true,
+      undefined,
+      () => this.openAsset("main", item),
+    );
+    this.addMenuItem(
+      menu,
+      "Open PDF",
+      "file",
+      item.artifacts.pdf,
+      undefined,
+      () => this.openAsset("pdf", item),
+    );
+    this.addMenuItem(
+      menu,
+      "Open MinerU",
+      "scan-line",
+      item.artifacts.minerU,
+      undefined,
+      () => this.openAsset("minerU", item),
+    );
+    this.addMenuItem(
+      menu,
+      "Open Figure",
+      "image",
+      item.artifacts.figure,
+      undefined,
+      () => this.openAsset("figure", item),
+    );
+    this.addMenuItem(
+      menu,
+      "Open Folder",
+      "folder-open",
+      true,
+      undefined,
+      () => this.openPaperFolder(item),
+    );
+    menu.addSeparator();
+
+    // Copy group (citation key is canonical metadata; DOI from the record).
+    this.addMenuItem(
+      menu,
+      "Copy citation key",
+      "copy",
+      !invalid && item.key.length > 0,
+      invalid ? "invalid metadata" : undefined,
+      () => void this.copyCitationKey(item),
+    );
+    this.addMenuItem(
+      menu,
+      "Copy DOI",
+      "link",
+      typeof doi === "string" && doi.length > 0,
+      undefined,
+      () => void this.copyDoi(doi as string),
+    );
+    menu.addSeparator();
+
+    // Manage group: CLI mutations disabled on read-only / invalid rows.
+    this.addMenuItem(
+      menu,
+      "Attach PDF",
+      "paperclip",
+      !invalid && !readOnly,
+      disabledReason,
+      () => void this.startAttach(item),
+    );
+    this.addMenuItem(
+      menu,
+      "Rename key",
+      "pencil",
+      !invalid && !readOnly,
+      disabledReason,
+      () => void this.startRename(item),
+    );
+    menu.addSeparator();
+
+    // Danger group: permanent deletion of the whole Canonical Paper Directory.
+    this.addMenuItem(
+      menu,
+      "Delete paper…",
+      "trash-2",
+      !invalid && !readOnly,
+      disabledReason,
+      () => this.startDelete(item),
+    );
+  }
+
+  /** One menu item; disabled entries append the reason to the title. */
+  private addMenuItem(
+    menu: Menu,
+    label: string,
+    icon: string,
+    enabled: boolean,
+    reason: string | undefined,
+    onClick: () => void,
+  ): void {
+    menu.addItem((item) => {
+      item.setTitle(
+        enabled ? label : reason === undefined ? label : `${label} (${reason})`,
+      );
+      item.setIcon(icon);
       if (!enabled) {
-        button.disabled = true;
-        button.title = `${label} unavailable`;
+        item.setDisabled(true);
       }
-      button.addEventListener("click", () => this.openAsset(kind, item));
-    };
-    open("main", "Open main", true);
-    open("pdf", "Open PDF", item.artifacts.pdf);
-    open("minerU", "Open MinerU", item.artifacts.minerU);
-    open("figure", "Open Figure", item.artifacts.figure);
-    // Open Folder: Canonical Paper Directory in the in-app explorer.
-    const openFolder = openGroup.createEl("button", {
-      cls: "paper-notes-library-action-open-folder",
-      text: "Open Folder",
-      attr: { type: "button", "aria-label": "Reveal paper folder in file explorer" },
+      item.onClick(onClick);
     });
-    openFolder.addEventListener("click", () => this.openPaperFolder(item));
-    // Invalid-metadata rows have no canonical key to mutate.
-    if (item.invalid !== undefined) {
+  }
+
+  /** Copy citation key → clipboard seam with visible success/failure. */
+  private async copyCitationKey(item: LibraryItem): Promise<void> {
+    if (item.key.length === 0) {
       return;
     }
-    // Status group: attach + rename. Reading status is cycled from the
-    // table/drawer chips (the old "Reading: x → y" action-bar button is gone).
-    const statusGroup = bar.createDiv({
-      cls: "paper-notes-library-action-group actions-status",
-    });
-    const attach = statusGroup.createEl("button", { text: "Attach PDF" });
-    attach.addEventListener("click", () => void this.startAttach(item));
-    const rename = statusGroup.createEl("button", { text: "Rename key" });
-    rename.addEventListener("click", () => void this.startRename(item));
-    // Danger group: destructive, always mod-warning styled.
-    const dangerGroup = bar.createDiv({
-      cls: "paper-notes-library-action-group actions-danger",
-    });
-    const remove = dangerGroup.createEl("button", { text: "Delete" });
-    remove.addClass("mod-warning");
-    remove.addEventListener("click", () => this.startDelete(item));
+    await this.copyText(item.key, "Citation key");
+  }
+
+  private async copyDoi(doi: string): Promise<void> {
+    await this.copyText(doi, "DOI");
+  }
+
+  /** Runtime clipboard seam: navigator.clipboard, Notice on success/failure. */
+  private async copyText(text: string, label: string): Promise<void> {
+    const navigatorApi = globalThis.navigator as
+      | { clipboard?: { writeText?: (value: string) => Promise<void> } }
+      | undefined;
+    try {
+      if (navigatorApi?.clipboard?.writeText === undefined) {
+        throw new Error("clipboard unavailable");
+      }
+      await navigatorApi.clipboard.writeText(text);
+      this.notify(`${label} copied.`);
+    } catch {
+      this.notify(`Copy failed (${label}).`);
+    }
   }
 
   /**
@@ -2175,28 +2348,23 @@ export class PaperNotesLibraryView extends ItemView {
     if (actions === undefined || item.invalid !== undefined) {
       return;
     }
-    void this.deletePreview(actions, item.key);
+    void this.openDeleteModal(actions, item.key);
   }
 
-  /** Deletion shows count/size/backlinks and requires the exact key (§8.3). */
-  private async deletePreview(
+  /**
+   * Deletion opens the preview modal immediately (scanning state); the modal
+   * runs the CLI dry-run itself and only enables Delete for a valid
+   * `needs_confirmation` preview/token. The CLI contract keeps its own
+   * confirm-time rescan and canonical `--confirm-key` validation.
+   */
+  private async openDeleteModal(
     actions: ItemActions,
     key: string,
   ): Promise<void> {
-    const outcome = await actions.previewDelete(key);
-    if (outcome.status !== "needs_confirmation") {
-      this.notify(this.outcomeMessage(outcome));
-      return;
-    }
-    const preview = buildDeletePreview(outcome.envelope.data);
-    if (preview.key.length === 0) {
-      this.notify("Cannot plan deletion: missing citation key.");
-      return;
-    }
-    const token = outcome.token;
     const { DeleteItemModal } = await this.loadModalClasses();
-    new DeleteItemModal(this.app, preview, {
-      confirm: () => this.confirmDelete(actions, key, token),
+    new DeleteItemModal(this.app, {
+      preview: () => actions.previewDelete(key),
+      confirm: (token: string) => this.confirmDelete(actions, key, token),
       notify: (message: string) => this.notify(message),
     }).open();
   }

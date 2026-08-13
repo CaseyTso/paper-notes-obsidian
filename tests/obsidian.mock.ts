@@ -70,3 +70,16 @@ export class Modal {
 export class Notice {
   constructor(_message: string) {}
 }
+
+export class Menu {
+  addItem(_cb: unknown): this {
+    return this;
+  }
+  addSeparator(): this {
+    return this;
+  }
+  showAtMouseEvent(_event: unknown): void {}
+  showAtPosition(_position: unknown): void {}
+}
+
+export function setIcon(_el: unknown, _icon: string): void {}

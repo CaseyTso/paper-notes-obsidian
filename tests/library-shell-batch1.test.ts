@@ -14,6 +14,16 @@ import {
 import type { PaperRecord } from "../src/types/paper";
 
 const mockNotices: string[] = [];
+/** Last-shown Item Context Menus (pushed by the Menu stub at show time). */
+const mockMenus: Array<{
+  items: Array<
+    | { title: string; disabled: boolean; onClick: (() => void) | null }
+    | "separator"
+  >;
+  shownWith: unknown;
+}> = [];
+/** Modals opened through the mocked `Modal` base class. */
+const mockModals: unknown[] = [];
 
 vi.mock("obsidian", () => {
   interface ElOpts {
@@ -60,6 +70,9 @@ vi.mock("obsidian", () => {
         .join(" ");
     }
     toggleClass(_cls: string, _on?: boolean): void {}
+    setText(text: string): void {
+      this.textContent = text;
+    }
     empty(): void {
       this.children = [];
     }
@@ -112,8 +125,97 @@ vi.mock("obsidian", () => {
     }
   }
 
-  return { ItemView, WorkspaceLeaf, Notice };
+  /** Recording Item Context Menu: only models the public methods the view uses. */
+  class MenuItem {
+    title = "";
+    disabled = false;
+    onClickFn: (() => void) | null = null;
+    setTitle(title: string): this {
+      this.title = title;
+      return this;
+    }
+    setIcon(_icon: string): this {
+      return this;
+    }
+    setDisabled(disabled: boolean): this {
+      this.disabled = disabled;
+      return this;
+    }
+    onClick(fn: () => void): this {
+      this.onClickFn = fn;
+      return this;
+    }
+  }
+  class Menu {
+    items: Array<MenuItem | "separator"> = [];
+    shownWith: unknown = null;
+    addItem(cb: (item: MenuItem) => void): this {
+      const item = new MenuItem();
+      cb(item);
+      this.items.push(item);
+      return this;
+    }
+    addSeparator(): this {
+      this.items.push("separator");
+      return this;
+    }
+    showAtMouseEvent(event: unknown): void {
+      this.shownWith = event;
+      mockMenus.push({
+        items: this.items.map((entry) =>
+          entry === "separator"
+            ? ("separator" as const)
+            : {
+                title: entry.title,
+                disabled: entry.disabled,
+                onClick: entry.onClickFn,
+              },
+        ),
+        shownWith: event,
+      });
+    }
+    showAtPosition(position: unknown): void {
+      this.shownWith = position;
+      mockMenus.push({
+        items: this.items.map((entry) =>
+          entry === "separator"
+            ? ("separator" as const)
+            : {
+                title: entry.title,
+                disabled: entry.disabled,
+                onClick: entry.onClickFn,
+              },
+        ),
+        shownWith: position,
+      });
+    }
+  }
+
+  /** Recording Modal base (DeleteItemModal etc. extend this). */
+  class Modal {
+    app: unknown;
+    contentEl: El;
+    titleEl: { setText: (text: string) => void };
+    constructor(app: unknown) {
+      this.app = app;
+      this.contentEl = new El("div");
+      this.titleEl = { setText: () => {} };
+      mockModals.push(this);
+    }
+    open(): void {
+      this.onOpen?.();
+    }
+    close(): void {}
+    onOpen?(): void {}
+  }
+
+  return { ItemView, WorkspaceLeaf, Notice, Menu, Modal, setIcon };
 });
+
+/** Record the icon name Obsidian `setIcon` would have rendered. */
+function setIcon(el: { attrs: Record<string, string> }, icon: string): void {
+  el.attrs["data-icon"] = icon;
+}
 
 const NOTE_PATH = "05 Literature/alpha2024/alpha2024.md";
 const NOTE_PATH_B = "05 Literature/beta2025/beta2025.md";
@@ -154,6 +256,7 @@ interface ElLike {
   clientWidth?: number;
   scrollLeft?: number;
   scrollTop?: number;
+  attrs?: Record<string, string>;
   getAttribute?: (name: string) => string | null;
 }
 
@@ -254,6 +357,65 @@ function installCliBridge(view: PaperNotesLibraryView): void {
   };
 }
 
+type RecordedMenuItem = {
+  title: string;
+  disabled: boolean;
+  onClick: (() => void) | null;
+};
+
+/** Fire the row's contextmenu listener (selects + shows the menu). */
+function rightClickRow(row: ElLike, x = 10, y = 10): void {
+  row.listeners["contextmenu"]?.({
+    preventDefault: vi.fn(),
+    clientX: x,
+    clientY: y,
+  });
+}
+
+/** The last shown Item Context Menu (either trigger pushes into mockMenus). */
+function lastMenu(): {
+  items: Array<RecordedMenuItem | "separator">;
+  shownWith: unknown;
+} {
+  const menu = mockMenus.at(-1);
+  if (menu === undefined) {
+    throw new Error("no menu was shown");
+  }
+  return menu;
+}
+
+/** Non-separator entries of the last shown menu. */
+function menuItems(): RecordedMenuItem[] {
+  return lastMenu().items.filter(
+    (entry): entry is RecordedMenuItem => entry !== "separator",
+  );
+}
+
+/** Menu titles grouped by separator (Open | Copy | Manage | Danger). */
+function groupedMenuTitles(): string[][] {
+  const groups: string[][] = [[]];
+  for (const entry of lastMenu().items) {
+    if (entry === "separator") {
+      groups.push([]);
+    } else {
+      groups[groups.length - 1].push(entry.title);
+    }
+  }
+  return groups;
+}
+
+/** Click the Drawer ⋯ button to show the Item Context Menu for the selection. */
+function openDrawerMenu(view: PaperNotesLibraryView): void {
+  const root = view.containerEl as unknown as ElLike;
+  const more = findByClass(root, "paper-notes-library-drawer-more")[0];
+  more.listeners["click"]?.({
+    preventDefault() {},
+    stopPropagation() {},
+    clientX: 0,
+    clientY: 0,
+  });
+}
+
 /** Minimal window stub so the drawer's Esc handler can be exercised. */
 let windowListeners: Record<string, (event: unknown) => void> = {};
 function installWindowStub(): void {
@@ -339,6 +501,8 @@ describe("Batch 1 library shell", () => {
   beforeEach(() => {
     vi.useFakeTimers();
     mockNotices.length = 0;
+    mockMenus.length = 0;
+    mockModals.length = 0;
   });
   afterEach(() => {
     vi.useRealTimers();
@@ -619,6 +783,133 @@ describe("Batch 1 library shell", () => {
     expect(host.scrollTop).toBe(96);
   });
 
+  it("Drawer-open double-click on the backdrop opens only the hit row's Primary PDF", async () => {
+    const opened: string[] = [];
+    const source = makeSource([
+      makeRecord("Alpha cells", 2024),
+      makeRecord("Beta cells", 2025, NOTE_PATH_B),
+    ]);
+    source.listDirectory = (dir: string) =>
+      dir.includes("beta2025") ? ["beta2025.pdf"] : ["alpha2024.pdf"];
+    const view = new PaperNotesLibraryView({} as WorkspaceLeaf, source);
+    (view as unknown as { app: unknown }).app = {
+      vault: {
+        adapter: { getBasePath: () => "/vault" },
+        getAbstractFileByPath: (path: string) =>
+          path.endsWith(".pdf") ? { path } : null,
+      },
+      workspace: {
+        getLeaf: () => ({
+          openFile: async (file: { path: string }) => {
+            opened.push(file.path);
+          },
+        }),
+      },
+      plugins: undefined,
+    };
+    await view.onOpen();
+    await openDrawerViaClick(view, 1); // Alpha cells (year desc → Beta first)
+    let root = view.containerEl as unknown as ElLike;
+    expect(
+      findByClass(root, "paper-notes-library-detail-title")[0]?.textContent,
+    ).toBe("Alpha cells");
+    const betaRow = rowsOf(view)[0];
+    const backdrop = findByClass(root, "paper-notes-library-drawer-backdrop")[0];
+    const originalDocument = globalThis.document;
+    Object.defineProperty(globalThis, "document", {
+      configurable: true,
+      value: {
+        elementFromPoint: () => ({ closest: () => betaRow }),
+      },
+    });
+    try {
+      backdrop.listeners["dblclick"]?.({
+        preventDefault: vi.fn(),
+        clientX: 32,
+        clientY: 32,
+      });
+      await flushRowClickDelay();
+      // Only the hit row's Primary PDF opens; the Drawer neither closes
+      // nor switches its content as a double-click side effect.
+      expect(opened).toEqual(["05 Literature/beta2025/beta2025.pdf"]);
+      root = view.containerEl as unknown as ElLike;
+      expect(findByClass(root, "paper-notes-library-drawer-panel")).toHaveLength(
+        1,
+      );
+      expect(
+        findByClass(root, "paper-notes-library-detail-title")[0]?.textContent,
+      ).toBe("Alpha cells");
+      // Selection highlight moved to the hit row.
+      expect(rowsOf(view)[0].cls).toContain("selected");
+      expect(mockNotices).toHaveLength(0);
+    } finally {
+      if (originalDocument === undefined) {
+        delete (globalThis as Record<string, unknown>).document;
+      } else {
+        Object.defineProperty(globalThis, "document", {
+          configurable: true,
+          value: originalDocument,
+        });
+      }
+    }
+  });
+
+  it("Drawer-open double-click with no PDF gives a Notice only", async () => {
+    const source = makeSource();
+    source.listDirectory = () => []; // no PDF basenames
+    const view = new PaperNotesLibraryView({} as WorkspaceLeaf, source);
+    (view as unknown as { app: unknown }).app = {
+      vault: {
+        adapter: { getBasePath: () => "/vault" },
+        getAbstractFileByPath: () => null,
+      },
+      workspace: {
+        getLeaf: () => ({ openFile: async () => {} }),
+      },
+      plugins: undefined,
+    };
+    await view.onOpen();
+    await openDrawerViaClick(view);
+    const root = view.containerEl as unknown as ElLike;
+    const backdrop = findByClass(root, "paper-notes-library-drawer-backdrop")[0];
+    const row = rowsOf(view)[0];
+    const originalDocument = globalThis.document;
+    Object.defineProperty(globalThis, "document", {
+      configurable: true,
+      value: {
+        elementFromPoint: () => ({ closest: () => row }),
+      },
+    });
+    try {
+      backdrop.listeners["dblclick"]?.({
+        preventDefault: vi.fn(),
+        clientX: 32,
+        clientY: 32,
+      });
+      await flushRowClickDelay();
+      // Notice only: no PDF, no Figure, no new Drawer switch.
+      expect(mockNotices.some((n) => /primary pdf not found/i.test(n))).toBe(
+        true,
+      );
+      const root2 = view.containerEl as unknown as ElLike;
+      expect(findByClass(root2, "paper-notes-library-drawer-panel")).toHaveLength(
+        1,
+      );
+      expect(
+        findByClass(root2, "paper-notes-library-detail-title")[0]?.textContent,
+      ).toBe("Alpha cells");
+    } finally {
+      if (originalDocument === undefined) {
+        delete (globalThis as Record<string, unknown>).document;
+      } else {
+        Object.defineProperty(globalThis, "document", {
+          configurable: true,
+          value: originalDocument,
+        });
+      }
+    }
+  });
+
   it("preserves an open drawer across a full re-render (filter toggle)", async () => {
     const view = new PaperNotesLibraryView({} as WorkspaceLeaf, makeSource());
     await view.onOpen();
@@ -656,6 +947,30 @@ describe("Batch 1 library shell", () => {
     ).toHaveLength(1);
   });
 
+  it("renders citation key and Reading Status on one aligned metadata row under the title", async () => {
+    const source = makeSource();
+    source.getFrontmatter = () => ({ reading_status: "reading" });
+    const view = new PaperNotesLibraryView({} as WorkspaceLeaf, source);
+    await view.onOpen();
+    await openDrawerViaClick(view);
+    const panel = drawerPanel(view);
+    const header = findByClass(panel, "paper-notes-library-detail-header")[0];
+    const metadata = findByClass(panel, "paper-notes-library-detail-metadata")[0];
+    expect(metadata).toBeDefined();
+    // Title, then the metadata row — both direct children of the header.
+    const title = findByClass(panel, "paper-notes-library-detail-title")[0];
+    expect(header.children[0]).toBe(title);
+    expect(header.children[1]).toBe(metadata);
+    // Key pill + Reading Status chip are siblings inside the row.
+    expect(metadata.children).toHaveLength(2);
+    expect(metadata.children[0].cls).toContain("paper-notes-library-detail-key");
+    expect(metadata.children[0].textContent).toBe("alpha2024");
+    expect(metadata.children[1].cls).toContain("paper-notes-status-chip");
+    // The key pill keeps its pill styling and participates in the flex row
+    // (no negative-margin compensation class).
+    expect(metadata.children[0].cls).toContain("paper-notes-library-detail-key");
+  });
+
   it("renders the detail body in sections with metric badges and attachments", async () => {
     const source = makeSource();
     source.getMetrics = () => ({ if: 8.1, jcr: "Q1", cas: "中科院一区" });
@@ -678,34 +993,314 @@ describe("Batch 1 library shell", () => {
     expect(findByClass(panel, "is-present")).toHaveLength(1); // pdf only
   });
 
-  it("renders the grouped action bar with Open Folder and without Reading button", async () => {
+  it("right-click selects the target row, prevents default, and keeps a closed Drawer closed", async () => {
+    const view = new PaperNotesLibraryView(
+      {} as WorkspaceLeaf,
+      makeSource([
+        makeRecord("Alpha cells", 2024),
+        makeRecord("Beta cells", 2025, NOTE_PATH_B),
+      ]),
+    );
+    await view.onOpen();
+    const rows = rowsOf(view);
+    expect(rows).toHaveLength(2);
+    const prevent = vi.fn();
+    rows[1].listeners["contextmenu"]?.({
+      preventDefault: prevent,
+      clientX: 42,
+      clientY: 43,
+    });
+    expect(prevent).toHaveBeenCalled();
+    const root = view.containerEl as unknown as ElLike;
+    // Selection moved to the right-clicked row; the closed Drawer stays closed.
+    expect(rowsOf(view)[1].cls).toContain("selected");
+    expect(findByClass(root, "paper-notes-library-drawer-panel")).toHaveLength(0);
+    // The shared Item Context Menu was shown at the mouse position.
+    expect(lastMenu().shownWith).toMatchObject({ clientX: 42, clientY: 43 });
+  });
+
+  it("right-click while the Drawer is open updates the Drawer to the target row", async () => {
+    const view = new PaperNotesLibraryView(
+      {} as WorkspaceLeaf,
+      makeSource([
+        makeRecord("Alpha cells", 2024),
+        makeRecord("Beta cells", 2025, NOTE_PATH_B),
+      ]),
+    );
+    await view.onOpen();
+    await openDrawerViaClick(view, 1); // Alpha cells (year desc → Beta first)
+    let root = view.containerEl as unknown as ElLike;
+    expect(
+      findByClass(root, "paper-notes-library-detail-title")[0]?.textContent,
+    ).toBe("Alpha cells");
+    rightClickRow(rowsOf(view)[0], 15, 16); // Beta row
+    root = view.containerEl as unknown as ElLike;
+    expect(findByClass(root, "paper-notes-library-drawer-panel")).toHaveLength(1);
+    expect(
+      findByClass(root, "paper-notes-library-detail-title")[0]?.textContent,
+    ).toBe("Beta cells");
+    expect(rowsOf(view)[0].cls).toContain("selected");
+    expect(lastMenu().shownWith).toMatchObject({ clientX: 15, clientY: 16 });
+  });
+
+  it("row right-click and Drawer ⋯ expose the same menu labels and grouping order", async () => {
     const view = new PaperNotesLibraryView({} as WorkspaceLeaf, makeSource());
     installCliBridge(view);
     await view.onOpen();
     await openDrawerViaClick(view);
+    // Row trigger.
+    rightClickRow(rowsOf(view)[0], 5, 5);
+    const rowGrouped = groupedMenuTitles();
+    // Drawer ⋯ trigger (accessible label + icon).
     const root = view.containerEl as unknown as ElLike;
-    const bar = findByClass(root, "paper-notes-library-actions-bar")[0];
-    expect(bar).toBeDefined();
-    expect(findByClass(bar, "actions-open")).toHaveLength(1);
-    expect(findByClass(bar, "actions-status")).toHaveLength(1);
-    expect(findByClass(bar, "actions-danger")).toHaveLength(1);
-    const texts = collectTexts(bar);
-    expect(texts).toEqual(
-      expect.arrayContaining([
-        "Open main",
-        "Open PDF",
-        "Open Folder",
-        "Attach PDF",
-        "Rename key",
-        "Delete",
-      ]),
+    const more = findByClass(root, "paper-notes-library-drawer-more")[0];
+    expect(more).toBeDefined();
+    expect(more.attrs?.["aria-label"]).toBe("Paper actions");
+    expect(more.attrs?.["title"]).toBe("Paper actions");
+    expect(more.attrs?.["data-icon"]).toBe("more-horizontal");
+    more.listeners["click"]?.({
+      preventDefault() {},
+      stopPropagation() {},
+      clientX: 100,
+      clientY: 100,
+    });
+    expect(groupedMenuTitles()).toEqual(rowGrouped);
+    // Group order: Open | Copy | Manage | Danger.
+    expect(rowGrouped).toEqual([
+      ["Open main", "Open PDF", "Open MinerU", "Open Figure", "Open Folder"],
+      ["Copy citation key", "Copy DOI"],
+      ["Attach PDF", "Rename key"],
+      ["Delete paper…"],
+    ]);
+    // The old Drawer action bar is gone entirely.
+    expect(findByClass(root, "paper-notes-library-actions-bar")).toHaveLength(0);
+    expect(findByClass(root, "paper-notes-library-actions-hint")).toHaveLength(0);
+  });
+
+  it("missing PDF/MinerU/Figure and DOI stay visible but disabled in the menu", async () => {
+    const source = makeSource();
+    source.listDirectory = () => []; // no artifacts at all
+    const view = new PaperNotesLibraryView(
+      {} as WorkspaceLeaf,
+      { ...source, getRecords: () => [{ ...makeRecord(), identifiers: {} }] },
     );
-    expect(texts.some((t) => t.startsWith("Reading:"))).toBe(false);
-    expect(findByClass(bar, "paper-notes-library-action-status")).toHaveLength(0);
-    // The bar must live OUTSIDE the scrollable body (sibling, not child),
-    // so a long abstract can never scroll it away.
-    const body = findByClass(root, "paper-notes-library-drawer-body")[0];
-    expect(findByClass(body, "paper-notes-library-actions-bar")).toHaveLength(0);
+    installCliBridge(view);
+    await view.onOpen();
+    await openDrawerViaClick(view);
+    const root = view.containerEl as unknown as ElLike;
+    const more = findByClass(root, "paper-notes-library-drawer-more")[0];
+    more.listeners["click"]?.({
+      preventDefault() {},
+      stopPropagation() {},
+      clientX: 0,
+      clientY: 0,
+    });
+    const items = menuItems();
+    const byTitle = new Map(items.map((item) => [item.title, item.disabled]));
+    // Unavailable artifacts/DOI remain visible but disabled.
+    expect(byTitle.get("Open PDF")).toBe(true);
+    expect(byTitle.get("Open MinerU")).toBe(true);
+    expect(byTitle.get("Open Figure")).toBe(true);
+    expect(byTitle.get("Copy DOI")).toBe(true);
+    // Available actions stay enabled.
+    expect(byTitle.get("Open main")).toBe(false);
+    expect(byTitle.get("Open Folder")).toBe(false);
+    expect(byTitle.get("Copy citation key")).toBe(false);
+    expect(byTitle.get("Attach PDF")).toBe(false);
+    expect(byTitle.get("Rename key")).toBe(false);
+    expect(byTitle.get("Delete paper…")).toBe(false);
+  });
+
+  it("Copy citation key and Copy DOI write to the clipboard with success feedback", async () => {
+    const writes: string[] = [];
+    const originalNavigator = Object.getOwnPropertyDescriptor(
+      globalThis,
+      "navigator",
+    );
+    Object.defineProperty(globalThis, "navigator", {
+      configurable: true,
+      value: {
+        clipboard: {
+          writeText: async (text: string) => {
+            writes.push(text);
+          },
+        },
+      },
+    });
+    try {
+      const view = new PaperNotesLibraryView({} as WorkspaceLeaf, makeSource());
+      installCliBridge(view);
+      await view.onOpen();
+      await openDrawerViaClick(view);
+      const root = view.containerEl as unknown as ElLike;
+      const more = findByClass(root, "paper-notes-library-drawer-more")[0];
+      more.listeners["click"]?.({
+        preventDefault() {},
+        stopPropagation() {},
+        clientX: 0,
+        clientY: 0,
+      });
+      const items = menuItems();
+      const byTitle = new Map(items.map((item) => [item.title, item]));
+      byTitle.get("Copy citation key")?.onClick?.();
+      await Promise.resolve();
+      expect(writes).toEqual(["alpha2024"]);
+      expect(mockNotices.some((n) => /citation key copied/i.test(n))).toBe(true);
+      byTitle.get("Copy DOI")?.onClick?.();
+      await Promise.resolve();
+      expect(writes).toEqual(["alpha2024", "10.1000/alpha"]);
+      expect(mockNotices.some((n) => /doi copied/i.test(n))).toBe(true);
+    } finally {
+      if (originalNavigator === undefined) {
+        delete (globalThis as Record<string, unknown>).navigator;
+      } else {
+        Object.defineProperty(globalThis, "navigator", originalNavigator);
+      }
+    }
+  });
+
+  it("Copy shows a failure notice when the clipboard write fails", async () => {
+    const originalNavigator = Object.getOwnPropertyDescriptor(
+      globalThis,
+      "navigator",
+    );
+    Object.defineProperty(globalThis, "navigator", {
+      configurable: true,
+      value: {
+        clipboard: {
+          writeText: async () => {
+            throw new Error("denied");
+          },
+        },
+      },
+    });
+    try {
+      const view = new PaperNotesLibraryView({} as WorkspaceLeaf, makeSource());
+      installCliBridge(view);
+      await view.onOpen();
+      await openDrawerViaClick(view);
+      const root = view.containerEl as unknown as ElLike;
+      const more = findByClass(root, "paper-notes-library-drawer-more")[0];
+      more.listeners["click"]?.({
+        preventDefault() {},
+        stopPropagation() {},
+        clientX: 0,
+        clientY: 0,
+      });
+      menuItems()
+        .find((item) => item.title === "Copy citation key")
+        ?.onClick?.();
+      await Promise.resolve();
+      expect(mockNotices.some((n) => /copy failed/i.test(n))).toBe(true);
+    } finally {
+      if (originalNavigator === undefined) {
+        delete (globalThis as Record<string, unknown>).navigator;
+      } else {
+        Object.defineProperty(globalThis, "navigator", originalNavigator);
+      }
+    }
+  });
+
+  it("menu disables CLI mutations with explanatory titles when the CLI is unavailable", async () => {
+    const view = new PaperNotesLibraryView({} as WorkspaceLeaf, makeSource());
+    await view.onOpen();
+    await openDrawerViaClick(view);
+    const root = view.containerEl as unknown as ElLike;
+    const more = findByClass(root, "paper-notes-library-drawer-more")[0];
+    more.listeners["click"]?.({
+      preventDefault() {},
+      stopPropagation() {},
+      clientX: 0,
+      clientY: 0,
+    });
+    const items = menuItems();
+    const byTitle = new Map(items.map((item) => [item.title, item.disabled]));
+    // Read-only: Open/Copy stay available where data exists.
+    expect(byTitle.get("Open main")).toBe(false);
+    expect(byTitle.get("Open Folder")).toBe(false);
+    expect(byTitle.get("Copy citation key")).toBe(false);
+    expect(byTitle.get("Copy DOI")).toBe(false);
+    // CLI mutations fail closed with explanatory titles.
+    expect(
+      items.some(
+        (item) => item.title === "Attach PDF (CLI unavailable)" && item.disabled,
+      ),
+    ).toBe(true);
+    expect(
+      items.some(
+        (item) => item.title === "Rename key (CLI unavailable)" && item.disabled,
+      ),
+    ).toBe(true);
+    expect(
+      items.some(
+        (item) =>
+          item.title === "Delete paper… (CLI unavailable)" && item.disabled,
+      ),
+    ).toBe(true);
+  });
+
+  it("Delete paper… from the menu opens the deletion preview modal and enables Delete after the scan", async () => {
+    // Real timers: the modal path uses dynamic imports that do not settle
+    // under fake-timer microtask flushing (vitest/vite-node module runner).
+    vi.useRealTimers();
+    const view = new PaperNotesLibraryView({} as WorkspaceLeaf, makeSource());
+    (view as unknown as { app: unknown }).app = {
+      vault: { adapter: { getBasePath: () => "/vault" } },
+      plugins: {
+        plugins: {
+          "paper-notes": {
+            getCliClient: () => ({
+              run: async () => ({
+                envelope: {
+                  protocol_version: 1,
+                  status: "needs_confirmation",
+                  data: {
+                    action: "delete",
+                    citation_key: "alpha2024",
+                    file_count: 3,
+                    total_bytes: 2048,
+                    occurrences: [],
+                    confirmation_token: "del-tok",
+                  },
+                  warnings: [],
+                  errors: [],
+                },
+                exitCode: 0,
+                stderr: "",
+              }),
+            }),
+            settings: {},
+          },
+        },
+      },
+    };
+    await view.onOpen();
+    clickRow(rowsOf(view)[0]);
+    await new Promise((resolve) => setTimeout(resolve, 400)); // drawer opens
+    const root = view.containerEl as unknown as ElLike;
+    const more = findByClass(root, "paper-notes-library-drawer-more")[0];
+    more.listeners["click"]?.({
+      preventDefault() {},
+      stopPropagation() {},
+      clientX: 0,
+      clientY: 0,
+    });
+    menuItems()
+      .find((item) => item.title === "Delete paper…")
+      ?.onClick?.();
+    // Dynamic import + preview scan settle on the real event loop.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(mockModals).toHaveLength(1);
+    const modal = mockModals[0] as {
+      deleteButton: { disabled: boolean };
+      contentEl: ElLike;
+    };
+    // The scan populated the preview and enabled Delete (needs_confirmation).
+    expect(modal.deleteButton.disabled).toBe(false);
+    const texts = collectTexts(modal.contentEl);
+    expect(texts).toContain("Files: 3");
+    expect(texts).toContain("Size: 2.0 KB");
+    expect(texts.some((t) => /cannot be undone/i.test(t))).toBe(true);
   });
 
   it("Open Folder reveals the Canonical Paper Directory in the file explorer", async () => {
@@ -743,11 +1338,13 @@ describe("Batch 1 library shell", () => {
     };
     await view.onOpen();
     await openDrawerViaClick(view);
-    const root = view.containerEl as unknown as ElLike;
-    const bar = findByClass(root, "paper-notes-library-actions-bar")[0];
-    const folderBtn = findByClass(bar, "paper-notes-library-action-open-folder")[0];
-    expect(folderBtn?.textContent).toBe("Open Folder");
-    folderBtn.listeners["click"]?.(undefined);
+    openDrawerMenu(view);
+    const folderItem = menuItems().find(
+      (item) => item.title === "Open Folder",
+    );
+    expect(folderItem).toBeDefined();
+    expect(folderItem?.disabled).toBe(false);
+    folderItem?.onClick?.();
     await Promise.resolve();
     expect(revealed).toEqual(["05 Literature/alpha2024"]);
     expect(mockNotices).toHaveLength(0);
@@ -816,11 +1413,10 @@ describe("Batch 1 library shell", () => {
     };
     await view.onOpen();
     await openDrawerViaClick(view);
-    const root = view.containerEl as unknown as ElLike;
-    const bar = findByClass(root, "paper-notes-library-actions-bar")[0];
-    findByClass(bar, "paper-notes-library-action-open-folder")[0].listeners[
-      "click"
-    ]?.(undefined);
+    openDrawerMenu(view);
+    menuItems()
+      .find((item) => item.title === "Open Folder")
+      ?.onClick?.();
     // Allow the async openPaperFolderAsync chain to finish.
     await Promise.resolve();
     await Promise.resolve();
@@ -856,11 +1452,10 @@ describe("Batch 1 library shell", () => {
     };
     await view.onOpen();
     await openDrawerViaClick(view);
-    const root = view.containerEl as unknown as ElLike;
-    const bar = findByClass(root, "paper-notes-library-actions-bar")[0];
-    findByClass(bar, "paper-notes-library-action-open-folder")[0].listeners[
-      "click"
-    ]?.(undefined);
+    openDrawerMenu(view);
+    menuItems()
+      .find((item) => item.title === "Open Folder")
+      ?.onClick?.();
     await Promise.resolve();
     expect(
       mockNotices.some((n) => /reveal is unavailable/i.test(n)),
@@ -1069,12 +1664,9 @@ describe("Batch 1 library shell", () => {
     await view.onOpen();
     await openDrawerViaClick(view);
     const root = view.containerEl as unknown as ElLike;
-    const bar = findByClass(root, "paper-notes-library-actions-bar")[0];
-    expect(bar).toBeDefined();
-    const hint = findByClass(bar, "paper-notes-library-actions-hint")[0];
-    expect(hint?.textContent).toContain("CLI unavailable");
-    expect(findByClass(bar, "actions-open")).toHaveLength(0);
-    expect(findByClass(bar, "actions-danger")).toHaveLength(0);
+    // The old action bar and its hint are gone; mutations live in the menu.
+    expect(findByClass(root, "paper-notes-library-actions-bar")).toHaveLength(0);
+    expect(findByClass(root, "paper-notes-library-actions-hint")).toHaveLength(0);
   });
 
   it("truncates long abstracts with an Expand toggle revealing full text", async () => {

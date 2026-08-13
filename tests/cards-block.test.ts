@@ -107,7 +107,7 @@ vi.mock("obsidian", () => {
     constructor(_message: string) {}
   }
 
-  return { ItemView, WorkspaceLeaf, Notice };
+  return { ItemView, WorkspaceLeaf, Notice, setIcon: () => {} };
 });
 
 const NOTE_PATH = "05 Literature/alpha2024/alpha2024.md";
@@ -276,24 +276,17 @@ describe("detail Cards block (Gate D R3)", () => {
   });
 
   it("replaces the former Open cards button with the block", async () => {
-    // A plugin bridge with a CLI client makes the action bar render its
-    // buttons; the removed "Open cards" button must no longer appear
-    // while the Cards block is the entry point instead.
-    state.app = {
-      ...(state.app as Record<string, unknown>),
-      plugins: {
-        plugins: {
-          "paper-notes": {
-            getCliClient: () => ({}),
-            settings: {},
-          },
-        },
-      },
-    };
+    // The old Drawer action bar (with its "Open cards" button) is gone;
+    // the Cards block in the detail body is the card entry point.
     const view = await renderedView(["card-a.md"]);
     const texts = collectTexts(view.containerEl as unknown as ElLike);
-    expect(texts).toContain("Open main");
     expect(texts).not.toContain("Open cards");
+    expect(
+      findByClass(
+        view.containerEl as unknown as ElLike,
+        "paper-notes-library-actions-bar",
+      ),
+    ).toHaveLength(0);
     expect(
       findByClass(
         view.containerEl as unknown as ElLike,

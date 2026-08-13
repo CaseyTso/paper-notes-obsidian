@@ -64,6 +64,7 @@ vi.mock("obsidian", () => {
       this.listeners[type] = fn;
     }
     addClass(_cls: string): void {}
+    removeClass(_cls: string): void {}
     setText(text: string): void {
       this.textContent = text;
     }
@@ -813,43 +814,118 @@ describe("CreateItemModal wiring", () => {
 
 describe("DeleteItemModal wiring", () => {
   let app: App;
-  let confirm: () => void | Promise<void>;
+  let confirm: (token: string) => void | Promise<void>;
   let notify: (message: string) => void;
+  let preview: ReturnType<typeof vi.fn<() => Promise<ActionOutcome>>>;
 
   beforeEach(() => {
     app = {} as App;
-    confirm = vi.fn<() => Promise<void>>(async () => {});
+    confirm = vi.fn<(token: string) => Promise<void>>(async () => {});
     notify = vi.fn<(message: string) => void>();
+    preview = vi.fn<() => Promise<ActionOutcome>>();
   });
 
-  it("shows count/size/backlinks and gates deletion on the exact key", async () => {
-    const preview = buildDeletePreview({
+  function needsPreview(): ActionOutcome {
+    return needsConfirmationOutcome({
+      action: "delete",
       citation_key: "alpha2024",
       file_count: 3,
       total_bytes: 2048,
       occurrences: [{ path: "manuscript.md", kind: "citation", line: 12 }],
+      confirmation_token: "del-tok",
     });
-    const modal = new DeleteItemModal(app, preview, { confirm, notify });
-    modal.open();
+  }
 
-    const texts = collectText(modal.contentEl as unknown as { children: StubNode[] });
+  function modalTexts(modal: DeleteItemModal): string[] {
+    return collectText(
+      modal.contentEl as unknown as { children: StubNode[] },
+    );
+  }
+
+  it("opens immediately in the scanning state with Delete disabled", async () => {
+    preview.mockReturnValue(new Promise<ActionOutcome>(() => {}));
+    const modal = new DeleteItemModal(app, { preview, confirm, notify });
+    modal.open();
+    expect(modal.deleteButton.disabled).toBe(true);
+    expect(modal.deleteButton.textContent).toBe("Delete");
+    const texts = modalTexts(modal);
+    expect(texts.some((t) => /scanning files and references/i.test(t))).toBe(
+      true,
+    );
+  });
+
+  it("populates count/size/backlinks and enables Delete on a valid preview", async () => {
+    preview.mockResolvedValue(needsPreview());
+    const modal = new DeleteItemModal(app, { preview, confirm, notify });
+    modal.open();
+    await Promise.resolve();
+    await Promise.resolve();
+    const texts = modalTexts(modal);
     expect(texts).toContain("Files: 3");
     expect(texts).toContain("Size: 2.0 KB");
     expect(texts).toContain("References: 1");
-
-    expect(modal.deleteButton.disabled).toBe(true);
-    modal.keyInput.value = "Alpha2024";
-    modal.updateDeleteEnabled();
-    expect(modal.deleteButton.disabled).toBe(true);
-    modal.keyInput.value = "alpha2024 ";
-    modal.updateDeleteEnabled();
-    expect(modal.deleteButton.disabled).toBe(true);
-
-    modal.keyInput.value = "alpha2024";
-    modal.updateDeleteEnabled();
+    expect(texts.some((t) => /cannot be undone/i.test(t))).toBe(true);
+    expect(texts.some((t) => /scanning/i.test(t))).toBe(false);
     expect(modal.deleteButton.disabled).toBe(false);
-    modal.confirmDelete();
+  });
+
+  it("keeps Delete disabled and shows a readable error when the scan fails", async () => {
+    preview.mockResolvedValue({
+      status: "error",
+      code: "cli_error",
+      message: "vault locked",
+    });
+    const modal = new DeleteItemModal(app, { preview, confirm, notify });
+    modal.open();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(modal.deleteButton.disabled).toBe(true);
+    const texts = modalTexts(modal);
+    expect(texts.some((t) => /vault locked/i.test(t))).toBe(true);
+    expect(texts.some((t) => t === "Cancel")).toBe(true);
+  });
+
+  it("never enables Delete without a needs_confirmation preview token", async () => {
+    preview.mockResolvedValue(
+      successOutcome({ data: { citation_key: "alpha2024" } }),
+    );
+    const modal = new DeleteItemModal(app, { preview, confirm, notify });
+    modal.open();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(modal.deleteButton.disabled).toBe(true);
+    expect(
+      modalTexts(modal).some((t) => /no deletion preview/i.test(t)),
+    ).toBe(true);
+  });
+
+  it("final Delete runs exactly once with the preview token and disables controls", async () => {
+    let resolveConfirm!: () => void;
+    confirm = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveConfirm = resolve;
+        }),
+    );
+    preview.mockResolvedValue(needsPreview());
+    const modal = new DeleteItemModal(app, { preview, confirm, notify });
+    modal.open();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(modal.deleteButton.disabled).toBe(false);
+    const deleteButton = modal.deleteButton as unknown as {
+      listeners: Record<string, (event?: unknown) => void>;
+    };
+    deleteButton.listeners["click"]?.(undefined);
+    // The CLI token flows back to the plugin's confirm path unchanged.
+    expect(confirm).toHaveBeenCalledWith("tok");
+    expect(modal.deleteButton.disabled).toBe(true);
+    expect(modal.deleteButton.textContent).toBe("Deleting…");
+    // Double-submit is impossible while deleting.
+    deleteButton.listeners["click"]?.(undefined);
     expect(confirm).toHaveBeenCalledTimes(1);
+    resolveConfirm();
+    await Promise.resolve();
   });
 });
 
