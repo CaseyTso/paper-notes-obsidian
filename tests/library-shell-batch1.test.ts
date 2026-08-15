@@ -713,17 +713,40 @@ describe("Batch 1 library shell", () => {
     }
   });
 
-  it("keeps an open drawer when a single click re-renders the table", async () => {
+  it("single-click on the already-open row closes the Drawer (toggle)", async () => {
     const view = new PaperNotesLibraryView({} as WorkspaceLeaf, makeSource());
     await view.onOpen();
     await openDrawerViaClick(view);
-    clickRow(rowsOf(view)[0]); // re-selects; pending timer re-opens after delay
-    await flushRowClickDelay();
-    const root = view.containerEl as unknown as ElLike;
+    let root = view.containerEl as unknown as ElLike;
     expect(findByClass(root, "paper-notes-library-drawer-panel")).toHaveLength(1);
-    expect(
-      findByClass(root, "paper-notes-library-detail-title")[0]?.textContent,
-    ).toBe("Alpha cells");
+    const openRow = rowsOf(view)[0];
+    const backdrop = findByClass(root, "paper-notes-library-drawer-backdrop")[0];
+    const originalDocument = globalThis.document;
+    Object.defineProperty(globalThis, "document", {
+      configurable: true,
+      value: {
+        elementFromPoint: () => ({ closest: () => openRow }),
+      },
+    });
+    try {
+      // Real browser: the backdrop receives the click before the covered
+      // row; a single click on the already-open row toggles the Drawer
+      // closed after the click/dblclick disambiguation delay.
+      backdrop.listeners["click"]?.({ clientX: 32, clientY: 32 });
+      await flushRowClickDelay();
+      root = view.containerEl as unknown as ElLike;
+      expect(findByClass(root, "paper-notes-library-drawer-panel")).toHaveLength(0);
+      expect(findByClass(root, "paper-notes-library-drawer-backdrop")).toHaveLength(0);
+    } finally {
+      if (originalDocument === undefined) {
+        delete (globalThis as Record<string, unknown>).document;
+      } else {
+        Object.defineProperty(globalThis, "document", {
+          configurable: true,
+          value: originalDocument,
+        });
+      }
+    }
   });
 
   it("swaps the open drawer to the newly selected row without a second click", async () => {

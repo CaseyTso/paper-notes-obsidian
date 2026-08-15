@@ -6,8 +6,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { WorkspaceLeaf } from "obsidian";
 
 import {
-  PaperNotesLibraryView,
   drawerMetricsStatusOf,
+  formatCacheTimestamp,
+  PaperNotesLibraryView,
   type LibraryViewSource,
 } from "../src/views/literature-library-view";
 import {
@@ -394,6 +395,18 @@ describe("drawerMetricsStatusOf (pure)", () => {
     const status = drawerMetricsStatusOf(entry(), cacheStub, NOW, 30);
     expect(status.kind).toBe("ok");
     expect(status.text.toLowerCase()).toContain("cached");
+  });
+});
+
+describe("formatCacheTimestamp (pure)", () => {
+  it("formats local time compactly without ISO milliseconds", () => {
+    const ms = new Date(2026, 7, 12, 8, 24).getTime(); // Aug 12 2026 08:24 local
+    expect(formatCacheTimestamp(ms)).toBe("Aug 12, 08:24");
+  });
+
+  it("pads single-digit day, hour and minute", () => {
+    const ms = new Date(2026, 0, 3, 9, 5).getTime(); // Jan 03 2026 09:05 local
+    expect(formatCacheTimestamp(ms)).toBe("Jan 03, 09:05");
   });
 });
 

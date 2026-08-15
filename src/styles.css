@@ -897,9 +897,13 @@
 /* ── Drawer Metrics Refresh (icon-only, spins while in flight) ──────── */
 
 .paper-notes-detail-metrics-refresh {
-  min-height: 22px;
-  min-width: 22px;
-  padding: 0 5px;
+  /* Height tracks the surrounding heading text (1.35em ≈ 16-18px), not the
+     old fixed 22px box that towered over the METRICS label (2026-08-15). */
+  min-height: 0;
+  min-width: 0;
+  height: 1.35em;
+  width: 1.35em;
+  padding: 0;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -913,6 +917,11 @@
     border-color var(--pn-transition),
     color var(--pn-transition),
     opacity var(--pn-transition);
+}
+
+.paper-notes-detail-metrics-refresh svg {
+  width: 0.8em;
+  height: 0.8em;
 }
 
 .paper-notes-detail-metrics-refresh:hover:not(:disabled) {
@@ -1216,6 +1225,18 @@
   min-height: 0;
   overflow: auto;
   padding: var(--pn-pad-lg);
+  /* Read-only detail content must stay selectable + copyable (2026-08-15);
+     Obsidian's UI chrome applies user-select: none broadly. */
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+/* Interactive chrome inside the drawer stays non-selectable. */
+.paper-notes-library-drawer-body button,
+.paper-notes-library-drawer-body .paper-notes-status-chip,
+.paper-notes-library-drawer-body .paper-notes-artifact-chip {
+  user-select: none;
+  -webkit-user-select: none;
 }
 
 /* Batch 2 (A): sectioned drawer body. */
@@ -1244,6 +1265,8 @@
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
+  /* Keep the badge capsules off the Refresh button / status line above. */
+  margin-top: 8px;
 }
 
 .paper-notes-detail-abstract {

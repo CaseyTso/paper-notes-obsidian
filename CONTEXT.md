@@ -63,3 +63,19 @@ _Avoid_: chip click opens drawer
 **Metric Badge Styling**:
 Visual rank/IF cues on Journal Metrics badges (partition color and IF scale), still UI-only and EasyScholar-backed.
 _Avoid_: writing colored ranks into notes, Zotero tag coloring
+
+**EasyScholar Key**:
+The private EasyScholar SecretKey used for Journal Metrics; configured in the core CLI's user-local private config (`~/Library/Application Support/paper-notes/config.json`, mode 0600), never in the plugin or vault `data.json`. The plugin settings surface shows only a read-only configured/unconfigured status.
+_Avoid_: plugin settings key field, storing the key in data.json, showing the key value anywhere
+
+**Plugin Settings**:
+The Obsidian settings tab exposing plugin configuration persisted in `data.json` (CLI path, export directory, Pandoc path, PDF engine, reference DOCX, selected CSL, metric TTL, metrics toggle). The literature root is display-only and cannot be edited from the tab.
+_Avoid_: settings in Markdown, hidden config file editing, editable literature root
+
+**Drawer Toggle**:
+Single-clicking the Literature Library row whose Detail Drawer is already open closes the Drawer; single-click on another row still switches the Drawer, and double-click still opens only the Primary PDF (drawer-open included).
+_Avoid_: click-anywhere-to-close, toggle on double-click, closing the Drawer when switching rows
+
+**Drawer Text Selection**:
+The Detail Drawer's read-only content (title, bibliography, abstract) is selectable and copyable; interactive chrome (buttons, chips, menus) stays non-selectable.
+_Avoid_: whole-drawer user-select none, contenteditable, selection inside buttons

@@ -133,6 +133,8 @@ vi.mock("obsidian", () => {
 
     registerView(_type: string, _viewCreator: unknown): void {}
 
+    addSettingTab(_tab: unknown): void {}
+
     addCommand(command: {
       id: string;
       name?: string;
@@ -193,7 +195,41 @@ vi.mock("obsidian", () => {
 
   class MarkdownView {}
 
-  return { Plugin, ItemView, WorkspaceLeaf, Modal, Notice, MarkdownView };
+  class PluginSettingTab {
+    app: unknown;
+    plugin: unknown;
+    containerEl: { empty: () => void };
+    constructor(app: unknown, plugin: unknown) {
+      this.app = app;
+      this.plugin = plugin;
+      this.containerEl = { empty: () => {} };
+    }
+    display(): void {}
+  }
+
+  class Setting {
+    constructor(_containerEl: unknown) {}
+    setName(_name: string): this {
+      return this;
+    }
+    setDesc(_desc: string): this {
+      return this;
+    }
+    setHeading(): this {
+      return this;
+    }
+    addText(_cb: (text: unknown) => void): this {
+      return this;
+    }
+    addDropdown(_cb: (dropdown: unknown) => void): this {
+      return this;
+    }
+    addToggle(_cb: (toggle: unknown) => void): this {
+      return this;
+    }
+  }
+
+  return { Plugin, ItemView, WorkspaceLeaf, Modal, Notice, MarkdownView, PluginSettingTab, Setting };
 });
 
 interface FakeEl {

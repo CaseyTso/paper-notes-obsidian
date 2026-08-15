@@ -140,6 +140,25 @@ const METRIC_ERROR_LABELS: Record<string, string> = {
   empty: "empty response",
 };
 
+const CACHE_MONTHS = [
+  "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+  "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+] as const;
+
+/**
+ * Compact local-time timestamp for the Drawer Metrics status line
+ * (replaces the raw ISO millisecond string, 2026-08-15 polish):
+ * "Aug 12, 08:24".
+ */
+export function formatCacheTimestamp(ms: number): string {
+  const date = new Date(ms);
+  const month = CACHE_MONTHS[date.getMonth()] ?? "Jan";
+  const day = String(date.getDate()).padStart(2, "0");
+  const hour = String(date.getHours()).padStart(2, "0");
+  const minute = String(date.getMinutes()).padStart(2, "0");
+  return `${month} ${day}, ${hour}:${minute}`;
+}
+
 /**
  * Pure status line for the drawer Metrics section. Priority:
  * backoff > failure (stale+error) > stale/expired > ok > empty.
@@ -156,7 +175,7 @@ export function drawerMetricsStatusOf(
   if (cache?.isBackedOff(entry, now) === true) {
     const retryAt =
       entry.retryAfterMs !== undefined
-        ? new Date(entry.retryAfterMs).toISOString()
+        ? formatCacheTimestamp(entry.retryAfterMs)
         : "soon";
     return {
       kind: "backoff",
@@ -179,7 +198,7 @@ export function drawerMetricsStatusOf(
   }
   return {
     kind: "ok",
-    text: `Cached ${new Date(entry.fetchedAtMs).toISOString()}.`,
+    text: `Cached ${formatCacheTimestamp(entry.fetchedAtMs)}.`,
   };
 }
 
@@ -959,7 +978,7 @@ export class PaperNotesLibraryView extends ItemView {
     backdrop.addEventListener("click", (event: MouseEvent) => {
       const item = this.itemBehindDrawerBackdrop(backdrop, event);
       if (item !== undefined) {
-        this.scheduleRowActivation(item);
+        this.scheduleBackdropActivation(item);
         return;
       }
       this.closeDetailDrawer();
@@ -1299,6 +1318,38 @@ export class PaperNotesLibraryView extends ItemView {
         return;
       }
       this.openDetailDrawer();
+    }, ROW_CLICK_DELAY_MS);
+  }
+
+  /**
+   * Drawer-open row activation behind the backdrop (Drawer Toggle +
+   * double-click contract, 2026-08-15). The Drawer — and with it the
+   * backdrop element — is deliberately NOT rebuilt on the first click: a
+   * real-browser click→click→dblclick chain loses the dblclick when its
+   * target is replaced mid-sequence, which is why Drawer-open double-click
+   * never opened the Primary PDF before this fix. Instead the row is
+   * selected immediately (table highlight only) and the action is applied
+   * after {@link ROW_CLICK_DELAY_MS}: a double-click cancels the timer and
+   * opens the Primary PDF; a single-click either closes the Drawer (clicking
+   * the row that is already open) or switches the Drawer to the new row.
+   */
+  private scheduleBackdropActivation(item: LibraryItem): void {
+    this.clearRowClickTimer();
+    const togglesClosed = this.drawerOpen && this.selectedPath === item.path;
+    this.selectedPath = item.path;
+    // Selection highlight only — never rebuild the drawer shell here.
+    this.renderTable();
+    this.rowClickTimer = setTimeout(() => {
+      this.rowClickTimer = undefined;
+      if (!this.isOpen || this.selectedPath !== item.path) {
+        return;
+      }
+      if (togglesClosed) {
+        this.closeDetailDrawer();
+        return;
+      }
+      this.abstractExpanded = false;
+      this.renderDetailDrawer();
     }, ROW_CLICK_DELAY_MS);
   }
 

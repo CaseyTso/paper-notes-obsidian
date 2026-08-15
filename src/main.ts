@@ -22,6 +22,7 @@ import {
   normalizeSettings,
   type PaperNotesSettings,
 } from "./settings";
+import { PaperNotesSettingTab } from "./settings-tab";
 import { createCitationPickerModal } from "./modals/citation-picker-modal";
 import {
   insertCitation,
@@ -174,6 +175,7 @@ export default class PaperNotesPlugin extends Plugin {
     });
     await this.initializeCliBridge();
     this.initializeLibraryIndex();
+    this.addSettingTab(new PaperNotesSettingTab(this.app, this));
   }
 
   async onunload(): Promise<void> {
@@ -211,6 +213,16 @@ export default class PaperNotesPlugin extends Plugin {
 
   isReadOnly(): boolean {
     return this.cliReadOnlyMode;
+  }
+
+  /**
+   * Persist settings to plugin data.json without dropping sibling keys
+   * (metricsCache, column widths, …): merge the normalized settings over
+   * the raw loaded object instead of replacing it wholesale.
+   */
+  async saveSettings(): Promise<void> {
+    const loaded = ((await this.loadData()) as Record<string, unknown> | undefined) ?? {};
+    await this.saveData({ ...loaded, ...this.settings });
   }
 
   /**

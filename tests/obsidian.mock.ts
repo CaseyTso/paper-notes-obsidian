@@ -31,6 +31,11 @@ export class Plugin {
     registeredCommands.push(command.id);
     return command;
   }
+
+  addSettingTab(_tab: unknown): void {
+    // Recorded for signature compatibility; settings tabs are GUI-only and
+    // not exercised by the headless mock suites.
+  }
 }
 
 export class ItemView {
@@ -83,3 +88,44 @@ export class Menu {
 }
 
 export function setIcon(_el: unknown, _icon: string): void {}
+
+/**
+ * Headless stubs for the settings tab surface (src/settings-tab.ts). The
+ * tab is GUI-only and never instantiated by the mock suites; these exist so
+ * `import { PluginSettingTab, Setting } from "obsidian"` resolves.
+ */
+export class PluginSettingTab {
+  app: unknown;
+  plugin: unknown;
+  containerEl: { empty: () => void };
+
+  constructor(app: unknown, plugin: unknown) {
+    this.app = app;
+    this.plugin = plugin;
+    this.containerEl = { empty: () => {} };
+  }
+
+  display(): void {}
+}
+
+export class Setting {
+  constructor(_containerEl: unknown) {}
+  setName(_name: string): this {
+    return this;
+  }
+  setDesc(_desc: string): this {
+    return this;
+  }
+  setHeading(): this {
+    return this;
+  }
+  addText(_cb: (text: unknown) => void): this {
+    return this;
+  }
+  addDropdown(_cb: (dropdown: unknown) => void): this {
+    return this;
+  }
+  addToggle(_cb: (toggle: unknown) => void): this {
+    return this;
+  }
+}

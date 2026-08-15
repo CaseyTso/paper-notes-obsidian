@@ -66,6 +66,8 @@ vi.mock("obsidian", () => {
       return { id: "" };
     }
 
+    addSettingTab(_tab: unknown): void {}
+
     registerEvent(ref: { name?: string }): { name?: string } {
       state.registeredEvents.push(ref.name ?? "unknown");
       return ref;
@@ -98,7 +100,41 @@ vi.mock("obsidian", () => {
     constructor(_message: string) {}
   }
 
-  return { Plugin, ItemView, WorkspaceLeaf, Modal, Notice };
+  class PluginSettingTab {
+    app: unknown;
+    plugin: unknown;
+    containerEl: { empty: () => void };
+    constructor(app: unknown, plugin: unknown) {
+      this.app = app;
+      this.plugin = plugin;
+      this.containerEl = { empty: () => {} };
+    }
+    display(): void {}
+  }
+
+  class Setting {
+    constructor(_containerEl: unknown) {}
+    setName(_name: string): this {
+      return this;
+    }
+    setDesc(_desc: string): this {
+      return this;
+    }
+    setHeading(): this {
+      return this;
+    }
+    addText(_cb: (text: unknown) => void): this {
+      return this;
+    }
+    addDropdown(_cb: (dropdown: unknown) => void): this {
+      return this;
+    }
+    addToggle(_cb: (toggle: unknown) => void): this {
+      return this;
+    }
+  }
+
+  return { Plugin, ItemView, WorkspaceLeaf, Modal, Notice, PluginSettingTab, Setting };
 });
 
 function validFrontmatter(): Record<string, unknown> {
