@@ -535,9 +535,9 @@ describe("Batch 1 library shell", () => {
     expect(
       findByClass(root, "paper-notes-library-filters-advanced"),
     ).toHaveLength(0);
-    expect(
-      findByClass(root, "paper-notes-library-advanced-toggle")[0]?.textContent,
-    ).toBe("Advanced ▸");
+    const toggle = findByClass(root, "paper-notes-library-advanced-toggle")[0];
+    expect(toggle?.attrs?.["data-icon"]).toBe("chevron-right");
+    expect(toggle?.attrs?.["data-tooltip"]).toBe("Advanced filters");
   });
 
   it("expands Advanced on toggle", async () => {
@@ -550,6 +550,106 @@ describe("Batch 1 library shell", () => {
     expect(
       findByClass(root2, "paper-notes-library-filters-advanced"),
     ).toHaveLength(1);
+  });
+
+  it("renders icon-only toolbar actions with accessible names", async () => {
+    const view = new PaperNotesLibraryView({} as WorkspaceLeaf, makeSource());
+    await view.onOpen();
+    const root = view.containerEl as unknown as ElLike;
+    const search = findByClass(root, "paper-notes-library-search")[0];
+    expect(search?.attrs?.["aria-label"]).toBe("Search library");
+    for (const [cls, label] of [
+      ["paper-notes-library-create", "Create item"],
+      ["paper-notes-library-refresh-metrics", "Refresh metrics"],
+      ["paper-notes-library-clear", "Clear filters"],
+    ] as const) {
+      const button = findByClass(root, cls)[0];
+      expect(button?.attrs?.["aria-label"]).toBe(label);
+      expect(button?.attrs?.["data-tooltip"]).toBe(label);
+    }
+  });
+
+  it("reading segmented control and artifact chips update filters", async () => {
+    const view = new PaperNotesLibraryView({} as WorkspaceLeaf, makeSource());
+    await view.onOpen();
+    let root = view.containerEl as unknown as ElLike;
+    const unread = findByClass(root, "paper-notes-library-segment").find(
+      (segment) => segment.textContent === "Unread",
+    );
+    expect(unread).toBeDefined();
+    unread?.listeners["click"]?.(undefined);
+    root = view.containerEl as unknown as ElLike;
+    expect(
+      findByClass(root, "paper-notes-library-segment").find(
+        (segment) => segment.textContent === "Unread",
+      )?.attrs?.["aria-pressed"],
+    ).toBe("true");
+
+    const pdf = findByClass(root, "paper-notes-library-filter-chip").find(
+      (chip) => chip.textContent === "PDF",
+    );
+    expect(pdf).toBeDefined();
+    pdf?.listeners["click"]?.(undefined);
+    root = view.containerEl as unknown as ElLike;
+    expect(
+      findByClass(root, "paper-notes-library-filter-chip").find(
+        (chip) => chip.textContent === "PDF",
+      )?.attrs?.["aria-pressed"],
+    ).toBe("true");
+  });
+
+  it("empty state always offers Create item and conditionally Clear search and filters", async () => {
+    const view = new PaperNotesLibraryView({} as WorkspaceLeaf, makeSource([]));
+    await view.onOpen();
+    let root = view.containerEl as unknown as ElLike;
+    let empty = findByClass(root, "paper-notes-library-empty")[0];
+    let texts = collectTexts(empty);
+    expect(texts).toContain("Create item");
+    expect(texts).not.toContain("Clear search & filters");
+
+    const search = findByClass(root, "paper-notes-library-search")[0];
+    (search as unknown as { value: string }).value = "zzz";
+    search.listeners["input"]?.({});
+    root = view.containerEl as unknown as ElLike;
+    empty = findByClass(root, "paper-notes-library-empty")[0];
+    texts = collectTexts(empty);
+    expect(texts).toContain("Create item");
+    expect(texts).toContain("Clear search & filters");
+  });
+
+  it("table rows are keyboard activatable and Enter opens the drawer", async () => {
+    const view = new PaperNotesLibraryView({} as WorkspaceLeaf, makeSource());
+    await view.onOpen();
+    const row = rowsOf(view)[0];
+    expect(row.attrs?.["tabindex"]).toBe("0");
+    row.listeners["keydown"]?.({ key: "Enter", preventDefault() {} });
+    await flushRowClickDelay();
+    const root = view.containerEl as unknown as ElLike;
+    expect(findByClass(root, "paper-notes-library-drawer-panel")).toHaveLength(1);
+  });
+
+  it("drawer header shows citation key and icon-only close", async () => {
+    const view = new PaperNotesLibraryView({} as WorkspaceLeaf, makeSource());
+    await view.onOpen();
+    await openDrawerViaClick(view);
+    const root = view.containerEl as unknown as ElLike;
+    const title = findByClass(root, "paper-notes-library-drawer-title")[0];
+    expect(
+      title?.children.some((child) =>
+        child.cls.includes("paper-notes-library-drawer-key"),
+      ),
+    ).toBe(true);
+    const close = findByClass(root, "paper-notes-library-drawer-close")[0];
+    expect(close?.attrs?.["data-icon"]).toBe("x");
+    expect(close?.attrs?.["aria-label"]).toBe("Close details");
+  });
+
+  it("reading status chip uses a native button when clickable", async () => {
+    const view = new PaperNotesLibraryView({} as WorkspaceLeaf, makeSource());
+    await view.onOpen();
+    const root = view.containerEl as unknown as ElLike;
+    const chip = findByClass(root, "paper-notes-status-chip")[0];
+    expect(chip?.tag).toBe("button");
   });
 
   it("selects the row immediately on single click and opens the drawer after delay", async () => {
@@ -575,9 +675,8 @@ describe("Batch 1 library shell", () => {
     await openDrawerViaClick(view);
     const root = view.containerEl as unknown as ElLike;
     expect(findByClass(root, "paper-notes-library-drawer-panel")).toHaveLength(1);
-    expect(
-      findByClass(root, "paper-notes-library-drawer-title")[0]?.textContent,
-    ).toBe("Details");
+    const drawerTitle = findByClass(root, "paper-notes-library-drawer-title")[0];
+    expect(drawerTitle?.children[0]?.textContent).toBe("Details");
     expect(
       findByClass(root, "paper-notes-library-detail-title")[0]?.textContent,
     ).toBe("Alpha cells");

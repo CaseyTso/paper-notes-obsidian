@@ -60,8 +60,12 @@ vi.mock("obsidian", () => {
     disabled = false;
     children: ElStub[] = [];
     listeners: Record<string, (event?: unknown) => void> = {};
+    attrs: Record<string, string> = {};
     addEventListener(type: string, fn: () => void): void {
       this.listeners[type] = fn;
+    }
+    setAttribute(name: string, value: string): void {
+      this.attrs[name] = value;
     }
     addClass(_cls: string): void {}
     removeClass(_cls: string): void {}
@@ -776,6 +780,13 @@ describe("CreateItemModal wiring", () => {
     await modal.submit();
     expect(createMock).not.toHaveBeenCalled();
     expect(notifyMock).toHaveBeenCalledWith(expect.stringContaining("not found"));
+  });
+
+  it("shows inline validation error for empty input", async () => {
+    const modal = openModal("   ");
+    await modal.submit();
+    const error = (modal as unknown as { errorEl: { textContent: string } }).errorEl;
+    expect(error.textContent).toContain("Enter an identifier");
   });
 
   it("notifies instead of submitting empty or unrecognized input", async () => {

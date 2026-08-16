@@ -41,6 +41,7 @@ export class CreateItemModal extends Modal {
   confirmationModal: ConfirmationModal | undefined;
   inputEl!: HTMLInputElement;
   submitButton!: HTMLButtonElement;
+  private errorEl!: HTMLElement;
   private readonly callbacks: CreateItemCallbacks;
   private readonly initialText: string;
 
@@ -67,6 +68,10 @@ export class CreateItemModal extends Modal {
         void this.submit();
       }
     });
+    this.errorEl = this.contentEl.createDiv({
+      cls: "paper-notes-create-error is-hidden",
+      attr: { role: "alert" },
+    });
     const actions = this.contentEl.createDiv({ cls: "paper-notes-modal-actions" });
     const cancel = actions.createEl("button", { text: "Cancel" });
     cancel.addEventListener("click", () => this.close());
@@ -79,10 +84,14 @@ export class CreateItemModal extends Modal {
   async submit(): Promise<void> {
     const parsed = parseCreateInput(this.inputEl.value);
     if (parsed.kind === "empty") {
+      this.setError("Enter an identifier, URL, or local PDF path.");
       this.callbacks.notify("Enter an identifier, URL, or local PDF path.");
       return;
     }
     if (parsed.kind === "unrecognized") {
+      this.setError(
+        "Unrecognized input: use a DOI/PMID/PMCID/arXiv identifier, an https URL, or a local PDF path.",
+      );
       this.callbacks.notify(
         "Unrecognized input: use a DOI/PMID/PMCID/arXiv identifier, an https URL, or a local PDF path.",
       );
@@ -91,16 +100,21 @@ export class CreateItemModal extends Modal {
     if (parsed.kind === "pdf") {
       const fileExists = this.callbacks.fileExists ?? existsSync;
       if (!fileExists(parsed.path)) {
+        this.setError(`PDF not found: ${parsed.path}`);
         this.callbacks.notify(`PDF not found: ${parsed.path}`);
         return;
       }
     }
     const input = buildCreateInput(parsed);
     if (input === undefined) {
+      this.setError("Unrecognized input.");
       this.callbacks.notify("Unrecognized input.");
       return;
     }
+    this.setError(undefined);
     this.submitButton.disabled = true;
+    this.submitButton.addClass("is-loading");
+    this.submitButton.setText("Creating…");
     try {
       const outcome = await this.callbacks.create(input);
       if (outcome.status === "success") {
@@ -115,10 +129,23 @@ export class CreateItemModal extends Modal {
         this.showConfirmation(input, outcome);
         return;
       }
+      this.setError(outcome.message);
       this.callbacks.notify(outcome.message);
     } finally {
+      this.submitButton.removeClass("is-loading");
+      this.submitButton.setText("Create");
       this.submitButton.disabled = false;
     }
+  }
+
+  private setError(message: string | undefined): void {
+    if (message === undefined) {
+      this.errorEl.addClass("is-hidden");
+      this.errorEl.setText("");
+      return;
+    }
+    this.errorEl.removeClass("is-hidden");
+    this.errorEl.setText(message);
   }
 
   private showConfirmation(input: CreateItemInput, outcome: ActionOutcome): void {

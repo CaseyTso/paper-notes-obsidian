@@ -58,6 +58,7 @@ vi.mock("obsidian", () => {
     style: Record<string, string> = {};
     children: El[] = [];
     listeners: Record<string, (event?: unknown) => void> = {};
+    attrs: Record<string, string> = {};
 
     constructor(tag: string) {
       this.tag = tag;
@@ -65,6 +66,14 @@ vi.mock("obsidian", () => {
 
     addEventListener(type: string, fn: (event?: unknown) => void): void {
       this.listeners[type] = fn;
+    }
+
+    setAttribute(name: string, value: string): void {
+      this.attrs[name] = value;
+    }
+
+    getAttribute(name: string): string | null {
+      return this.attrs[name] ?? null;
     }
 
     addClass(cls: string): void {
@@ -118,7 +127,7 @@ vi.mock("obsidian", () => {
     }
   }
 
-  return { ItemView, WorkspaceLeaf, Notice };
+  return { ItemView, WorkspaceLeaf, Notice, setIcon: () => {} };
 });
 
 const XIA_PATH = `${ROOT}/xia2024/xia2024.md`;
@@ -393,7 +402,9 @@ describe("on-demand MinerU full-text search in the library view", () => {
       "paper-notes-library-empty",
     );
     expect(
-      empty.some((el) => el.textContent.includes("No papers match")),
+      empty.some((el) =>
+        el.children.some((child) => child.textContent.includes("No papers match")),
+      ),
     ).toBe(true);
   });
 

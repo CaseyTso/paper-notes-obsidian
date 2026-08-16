@@ -94,7 +94,7 @@ vi.mock("obsidian", () => {
 
   class WorkspaceLeaf {}
 
-  return { ItemView, WorkspaceLeaf };
+  return { ItemView, WorkspaceLeaf, setIcon: () => {} };
 });
 
 function makeSource(): LibraryViewSource {

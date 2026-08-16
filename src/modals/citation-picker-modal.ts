@@ -96,6 +96,14 @@ export function createCitationPickerModal(
 
     private rerender(): void {
       this.resultsEl.empty();
+      if (this.results.length === 0) {
+        this.resultsEl.createDiv({
+          cls: "paper-notes-citation-empty",
+          text: "No matching papers. Try a title, author, or DOI.",
+        });
+        this.renderSummary();
+        return;
+      }
       for (const record of this.results) {
         const row = this.resultsEl.createDiv({
           cls: "paper-notes-citation-row",

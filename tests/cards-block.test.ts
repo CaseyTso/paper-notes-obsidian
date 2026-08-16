@@ -48,6 +48,7 @@ vi.mock("obsidian", () => {
     style: Record<string, string> = {};
     children: El[] = [];
     listeners: Record<string, (event?: unknown) => void> = {};
+    attrs: Record<string, string> = {};
 
     constructor(tag: string) {
       this.tag = tag;
@@ -55,6 +56,14 @@ vi.mock("obsidian", () => {
 
     addEventListener(type: string, fn: (event?: unknown) => void): void {
       this.listeners[type] = fn;
+    }
+
+    setAttribute(name: string, value: string): void {
+      this.attrs[name] = value;
+    }
+
+    getAttribute(name: string): string | null {
+      return this.attrs[name] ?? null;
     }
 
     addClass(_cls: string): void {}

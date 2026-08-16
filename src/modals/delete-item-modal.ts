@@ -46,6 +46,7 @@ export class DeleteItemModal extends Modal {
     this.statusEl = body.createDiv({
       cls: "paper-notes-delete-status is-scanning",
       text: "Scanning files and references…",
+      attr: { role: "status", "aria-live": "polite", "aria-busy": "true" },
     });
     this.detailEl = body.createDiv({ cls: "paper-notes-delete-detail" });
     body.createDiv({
@@ -78,6 +79,7 @@ export class DeleteItemModal extends Modal {
     }
     if (outcome.status !== "needs_confirmation") {
       this.statusEl.removeClass("is-scanning");
+      this.statusEl.setAttribute("aria-busy", "false");
       this.statusEl.addClass("is-error");
       this.statusEl.setText(
         outcome.status === "error"
@@ -89,12 +91,14 @@ export class DeleteItemModal extends Modal {
     const preview = buildDeletePreview(outcome.envelope.data);
     if (preview.key.length === 0) {
       this.statusEl.removeClass("is-scanning");
+      this.statusEl.setAttribute("aria-busy", "false");
       this.statusEl.addClass("is-error");
       this.statusEl.setText("Cannot plan deletion: missing citation key.");
       return;
     }
     this.token = outcome.token;
     this.statusEl.removeClass("is-scanning");
+    this.statusEl.setAttribute("aria-busy", "false");
     this.statusEl.setText(
       `Deletion preview ready — ${preview.fileCount} files, ${formatBytes(
         preview.totalBytes,

@@ -595,7 +595,8 @@ describe("Drawer Metrics section UI", () => {
       view.containerEl as unknown as ElLike,
       "paper-notes-library-refresh-metrics",
     )[0];
-    expect(refresh?.textContent).toBe("Refresh metrics");
+    expect(refresh?.attrs?.["aria-label"]).toBe("Refresh metrics");
+    expect(refresh?.attrs?.["data-tooltip"]).toBe("Refresh metrics");
     refresh.listeners["click"]?.(undefined);
     await vi.runAllTimersAsync();
     expect(refreshExpired).toHaveBeenCalledWith([makeRecord()]);

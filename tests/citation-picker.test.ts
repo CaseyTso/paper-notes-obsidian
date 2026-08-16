@@ -773,6 +773,24 @@ describe("citation picker modal", () => {
     expect(rows(modal)[0].textContent).toContain("Cell");
   });
 
+  it("shows an empty state when search returns no results", async () => {
+    const app = makeApp();
+    const modal = createCitationPickerModal(app, {
+      search: () => [],
+      onPick: () => {},
+    });
+    modal.open();
+    const results = (modal.contentEl as unknown as FakeEl).children.find(
+      (child) => child.cls === "paper-notes-citation-results",
+    );
+    const empty = results?.children.find(
+      (child) => child.cls === "paper-notes-citation-empty",
+    );
+    expect(empty?.textContent).toBe(
+      "No matching papers. Try a title, author, or DOI.",
+    );
+  });
+
   it("delivers selections in click order and inserts [@key1; @key2]", async () => {
     const app = makeApp();
     const editor = makeEditor();

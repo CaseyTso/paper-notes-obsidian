@@ -304,6 +304,7 @@ export class PaperNotesLibraryView extends ItemView {
   private advancedFiltersExpanded: boolean | undefined = undefined;
   private drawerHost: HTMLElement | null = null;
   private drawerOpen = false;
+  private drawerPreviousFocus: HTMLElement | null = null;
   private boundDrawerKey: ((event: KeyboardEvent) => void) | null = null;
   /** Pending single-click → drawer timer (cleared on dblclick / close). */
   private rowClickTimer: ReturnType<typeof setTimeout> | undefined;
@@ -391,24 +392,60 @@ export class PaperNotesLibraryView extends ItemView {
     container.addClass("paper-notes-library");
 
     const toolbar = container.createDiv({ cls: "paper-notes-library-toolbar" });
-    const search = toolbar.createEl("input", {
+    const searchWrap = toolbar.createDiv({
+      cls: "paper-notes-library-search-wrap",
+    });
+    const searchIcon = searchWrap.createEl("span", {
+      cls: "paper-notes-library-search-icon",
+      attr: { "aria-hidden": "true" },
+    });
+    setIcon(searchIcon, "search");
+    const search = searchWrap.createEl("input", {
       cls: "paper-notes-library-search",
       attr: {
         type: "search",
+        "aria-label": "Search library",
         placeholder:
           "Search title, author, journal, year, DOI/PMID, citation key, abstract",
       },
     });
     search.value = this.searchQuery;
+    const searchClear = this.createIconButton(
+      searchWrap,
+      "paper-notes-library-search-clear",
+      "x",
+      "Clear search",
+    );
+    const updateSearchClear = (): void => {
+      if (this.searchQuery.length > 0) {
+        searchClear.removeClass("is-hidden");
+      } else {
+        searchClear.addClass("is-hidden");
+      }
+    };
+    updateSearchClear();
     search.addEventListener("input", () => {
       this.searchQuery = search.value;
+      updateSearchClear();
       this.renderResults();
       this.scheduleFullTextSearch();
     });
-    const clear = toolbar.createEl("button", {
-      cls: "paper-notes-library-clear",
-      text: "Clear filters",
+    searchClear.addEventListener("click", () => {
+      this.searchQuery = "";
+      search.value = "";
+      updateSearchClear();
+      this.renderResults();
+      search.focus?.();
     });
+    const clear = this.createIconButton(
+      toolbar,
+      "paper-notes-library-clear",
+      "filter-x",
+      "Clear filters",
+    );
+    if (!this.hasActiveLibraryFilters()) {
+      clear.disabled = true;
+    }
     clear.addEventListener("click", () => {
       this.filters = { ...EMPTY_LIBRARY_FILTERS };
       // Clearing advanced conditions drops any manual expand override so
@@ -416,19 +453,19 @@ export class PaperNotesLibraryView extends ItemView {
       this.advancedFiltersExpanded = undefined;
       this.render();
     });
-    const create = toolbar.createEl("button", {
-      cls: "paper-notes-library-create mod-cta",
-      text: "Create item",
-    });
+    const create = this.createIconButton(
+      toolbar,
+      "paper-notes-library-create mod-cta",
+      "plus",
+      "Create item",
+    );
     create.addEventListener("click", () => void this.runCreate());
-    const refreshMetrics = toolbar.createEl("button", {
-      cls: "paper-notes-library-refresh-metrics",
-      text: "Refresh metrics",
-      attr: {
-        type: "button",
-        "aria-label": "Refresh all expired journal metrics",
-      },
-    });
+    const refreshMetrics = this.createIconButton(
+      toolbar,
+      "paper-notes-library-refresh-metrics",
+      "refresh-cw",
+      "Refresh metrics",
+    );
     refreshMetrics.addEventListener("click", () => void this.refreshAllExpired(true));
 
     this.renderFilterBar(container);
@@ -454,6 +491,41 @@ export class PaperNotesLibraryView extends ItemView {
     this.restoreTableScrollPosition(scrollPosition);
   }
 
+  /** Create an icon-only button with hover/focus tooltip semantics. */
+  private createIconButton(
+    parent: HTMLElement,
+    cls: string,
+    icon: string,
+    label: string,
+    attrs: Record<string, string> = {},
+  ): HTMLButtonElement {
+    const button = parent.createEl("button", {
+      cls: `paper-notes-icon-button ${cls}`.trim(),
+      attr: {
+        type: "button",
+        "aria-label": label,
+        "data-tooltip": label,
+        ...attrs,
+      },
+    });
+    setIcon(button, icon);
+    return button;
+  }
+
+  /** True when any non-search library filter is active. */
+  private hasActiveLibraryFilters(): boolean {
+    return (
+      this.filters.readingStatus !== undefined ||
+      this.filters.requiredArtifacts.length > 0 ||
+      countActiveAdvancedFilters(this.filters) > 0
+    );
+  }
+
+  /** True when search or any non-search filter is active. */
+  private hasActiveSearchOrFilters(): boolean {
+    return this.searchQuery.trim().length > 0 || this.hasActiveLibraryFilters();
+  }
+
   private renderFilterBar(container: HTMLElement): void {
     const bar = container.createDiv({ cls: "paper-notes-library-filters" });
     bar.createEl("span", {
@@ -461,47 +533,57 @@ export class PaperNotesLibraryView extends ItemView {
       text: "Filters",
     });
 
-    // Primary row: Reading + artifact presence (always visible).
-    const statusWrap = bar.createDiv({ cls: "paper-notes-library-filter" });
+    // Primary row: Reading segmented control + artifact presence chips.
+    const statusWrap = bar.createDiv({
+      cls: "paper-notes-library-filter paper-notes-library-segmented",
+    });
     statusWrap.createEl("label", { text: "Reading" });
-    const status = statusWrap.createEl("select");
     for (const [value, label] of [
       ["", "Any"],
       ["unread", "Unread"],
       ["reading", "Reading"],
       ["read", "Read"],
     ] as const) {
-      const option = status.createEl("option", { value, text: label });
-      if (value === (this.filters.readingStatus ?? "")) {
-        option.selected = true;
-      }
-    }
-    status.addEventListener("change", () => {
-      const value = status.value;
-      this.updateFilters({
-        readingStatus:
-          value === "" ? undefined : (value as LibraryFilters["readingStatus"]),
+      const segment = statusWrap.createEl("button", {
+        cls: "paper-notes-library-segment",
+        text: label,
+        attr: {
+          type: "button",
+          "aria-pressed": (this.filters.readingStatus ?? "") === value
+            ? "true"
+            : "false",
+        },
       });
-    });
+      segment.addEventListener("click", () => {
+        this.updateFilters({
+          readingStatus:
+            value === "" ? undefined : (value as LibraryFilters["readingStatus"]),
+        });
+      });
+    }
 
-    this.artifactCheckbox(bar, "PDF", "pdf");
-    this.artifactCheckbox(bar, "MinerU", "minerU");
-    this.artifactCheckbox(bar, "Figure", "figure");
+    this.artifactChip(bar, "PDF", "pdf");
+    this.artifactChip(bar, "MinerU", "minerU");
+    this.artifactChip(bar, "Figure", "figure");
 
     const advancedCount = countActiveAdvancedFilters(this.filters);
     const expanded = this.isAdvancedFiltersExpanded();
-    const toggle = bar.createEl("button", {
-      cls: "paper-notes-library-advanced-toggle",
-      attr: {
-        type: "button",
-        "aria-expanded": expanded ? "true" : "false",
-      },
-    });
-    const toggleLabel = advancedCount > 0
-      ? `Advanced · ${advancedCount}`
-      : "Advanced";
-    // Prefer textContent: unit-test El stubs may lack setText.
-    toggle.textContent = expanded ? `${toggleLabel} ▾` : `${toggleLabel} ▸`;
+    const toggle = this.createIconButton(
+      bar,
+      "paper-notes-library-advanced-toggle",
+      expanded ? "chevron-down" : "chevron-right",
+      advancedCount > 0
+        ? `Advanced filters · ${advancedCount} active`
+        : "Advanced filters",
+      { "aria-expanded": expanded ? "true" : "false" },
+    );
+    if (advancedCount > 0) {
+      toggle.createEl("span", {
+        cls: "paper-notes-library-advanced-count",
+        text: String(advancedCount),
+        attr: { "aria-hidden": "true" },
+      });
+    }
     toggle.addEventListener("click", () => {
       // Manual override: flip relative to the current effective state.
       this.advancedFiltersExpanded = !this.isAdvancedFiltersExpanded();
@@ -578,8 +660,12 @@ export class PaperNotesLibraryView extends ItemView {
     apply: (value: string | undefined) => void,
   ): void {
     const wrap = bar.createDiv({ cls: "paper-notes-library-filter" });
-    wrap.createEl("label", { text: label });
-    const input = wrap.createEl("input", { attr: { type: "text" } });
+    const inputId = `paper-notes-filter-${label.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`;
+    const labelEl = wrap.createEl("label", { text: label });
+    labelEl.setAttribute("for", inputId);
+    const input = wrap.createEl("input", {
+      attr: { type: "text", id: inputId },
+    });
     if (initial !== undefined && initial.length > 0) {
       input.value = initial;
     }
@@ -596,28 +682,41 @@ export class PaperNotesLibraryView extends ItemView {
     apply: (value: number | undefined) => void,
   ): void {
     const wrap = bar.createDiv({ cls: "paper-notes-library-filter" });
-    wrap.createEl("label", { text: label });
-    const input = wrap.createEl("input", { attr: { type: "number" } });
+    const inputId = `paper-notes-filter-${label.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`;
+    const labelEl = wrap.createEl("label", { text: label });
+    labelEl.setAttribute("for", inputId);
+    const input = wrap.createEl("input", {
+      attr: { type: "number", id: inputId },
+    });
     if (initial !== undefined) {
       input.value = String(initial);
     }
     input.addEventListener("input", () => apply(this.parseNumber(input.value)));
   }
 
-  private artifactCheckbox(
+  private artifactChip(
     bar: HTMLElement,
     label: string,
     part: ArtifactPart,
   ): void {
-    const wrap = bar.createDiv({ cls: "paper-notes-library-filter" });
-    const input = wrap.createEl("input", {
-      attr: { type: "checkbox" },
+    const wrap = bar.createDiv({
+      cls: "paper-notes-library-filter paper-notes-library-filter-chip-wrap",
+    });
+    const chip = wrap.createEl("button", {
+      cls: "paper-notes-library-filter-chip",
+      text: label,
+      attr: {
+        type: "button",
+        "aria-pressed": this.filters.requiredArtifacts.includes(part)
+          ? "true"
+          : "false",
+      },
     });
     if (this.filters.requiredArtifacts.includes(part)) {
-      input.checked = true;
+      chip.addClass("is-active");
+      setIcon(chip, "check");
     }
-    wrap.createEl("label", { text: label });
-    input.addEventListener("change", () => {
+    chip.addEventListener("click", () => {
       const current = this.filters.requiredArtifacts;
       const next = current.includes(part)
         ? current.filter((existing) => existing !== part)
@@ -653,7 +752,7 @@ export class PaperNotesLibraryView extends ItemView {
       this.render();
       return;
     }
-    this.renderResults();
+    this.render();
   }
 
   private toggleSort(columnId: LibraryColumnId): void {
@@ -871,6 +970,11 @@ export class PaperNotesLibraryView extends ItemView {
       th.style.width = `${column.width}px`;
       if (column.id === this.sort.columnId) {
         th.addClass(this.sort.direction === "asc" ? "sorted-asc" : "sorted-desc");
+        th.setAttribute(
+          "aria-sort",
+          this.sort.direction === "asc" ? "ascending" : "descending",
+        );
+        setIcon(th, this.sort.direction === "asc" ? "arrow-up" : "arrow-down");
       }
       th.addEventListener("click", () => this.toggleSort(column.id));
       // Right-edge drag handle: resizing must never trigger sorting, so
@@ -889,16 +993,45 @@ export class PaperNotesLibraryView extends ItemView {
     const body = table.createEl("tbody");
     if (items.length === 0) {
       const row = body.createEl("tr");
-      row
-        .createEl("td", {
-          text: "No papers match the current search and filters.",
-          attr: { colspan: String(columns.length) },
-        })
-        .addClass("paper-notes-library-empty");
+      const emptyCell = row.createEl("td", {
+        attr: { colspan: String(columns.length) },
+      });
+      emptyCell.addClass("paper-notes-library-empty");
+      const emptyIcon = emptyCell.createEl("span", {
+        cls: "paper-notes-library-empty-icon",
+        attr: { "aria-hidden": "true" },
+      });
+      setIcon(emptyIcon, "search");
+      emptyCell.createEl("div", {
+        cls: "paper-notes-library-empty-title",
+        text: "No papers match the current search and filters.",
+      });
+      const emptyActions = emptyCell.createDiv({
+        cls: "paper-notes-library-empty-actions",
+      });
+      const createEmpty = emptyActions.createEl("button", {
+        cls: "mod-cta",
+        text: "Create item",
+      });
+      createEmpty.addEventListener("click", () => void this.runCreate());
+      if (this.hasActiveSearchOrFilters()) {
+        const clearEmpty = emptyActions.createEl("button", {
+          text: "Clear search & filters",
+        });
+        clearEmpty.addEventListener("click", () => {
+          this.searchQuery = "";
+          this.filters = { ...EMPTY_LIBRARY_FILTERS };
+          this.advancedFiltersExpanded = undefined;
+          this.render();
+        });
+      }
     }
     for (const item of items) {
       const row = body.createEl("tr", {
-        attr: { "data-paper-notes-library-path": item.path },
+        attr: {
+          "data-paper-notes-library-path": item.path,
+          tabindex: "0",
+        },
       });
       if (item.path === this.selectedPath) {
         row.addClass("selected");
@@ -932,6 +1065,12 @@ export class PaperNotesLibraryView extends ItemView {
         // Select immediately; open the Detail Drawer after a short delay
         // so a following dblclick can cancel and open the Primary PDF only.
         this.scheduleRowActivation(item);
+      });
+      row.addEventListener("keydown", (event: KeyboardEvent) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          this.scheduleRowActivation(item);
+        }
       });
       row.addEventListener("dblclick", (event: MouseEvent) => {
         event.preventDefault();
@@ -1000,11 +1139,20 @@ export class PaperNotesLibraryView extends ItemView {
     const panel = this.drawerHost.createDiv({
       cls: "paper-notes-library-drawer-panel",
     });
+    const selectedItem = this.queryItems().find(
+      (candidate) => candidate.path === this.selectedPath,
+    );
     const header = panel.createDiv({ cls: "paper-notes-library-drawer-header" });
-    header.createEl("span", {
+    const titleWrap = header.createDiv({
       cls: "paper-notes-library-drawer-title",
-      text: "Details",
     });
+    titleWrap.createEl("span", { text: "Details" });
+    if (selectedItem !== undefined && selectedItem.key.length > 0) {
+      titleWrap.createEl("span", {
+        cls: "paper-notes-library-drawer-key",
+        text: selectedItem.key,
+      });
+    }
     const headerActions = header.createDiv({
       cls: "paper-notes-library-drawer-header-actions",
     });
@@ -1027,12 +1175,16 @@ export class PaperNotesLibraryView extends ItemView {
         this.openItemMenu(item, event);
       }
     });
-    const close = headerActions.createEl("button", {
-      cls: "paper-notes-library-drawer-close",
-      text: "Close",
-      attr: { type: "button", "aria-label": "Close details" },
-    });
+    const close = this.createIconButton(
+      headerActions,
+      "paper-notes-library-drawer-close",
+      "x",
+      "Close details",
+    );
     close.addEventListener("click", () => this.closeDetailDrawer());
+    // Move focus into the drawer for keyboard users (no-op in headless mocks).
+    (close as HTMLElement & { focus?: (options?: FocusOptions) => void })
+      .focus?.({ preventScroll: true });
     const body = panel.createDiv({ cls: "paper-notes-library-drawer-body" });
     this.renderDetailInto(body);
     this.attachDrawerKeyHandler();
@@ -1184,18 +1336,21 @@ export class PaperNotesLibraryView extends ItemView {
   private renderReadingStatusChip(host: HTMLElement, item: LibraryItem): void {
     const display = item.readingStatus ?? "unread";
     const clickable = item.invalid === undefined;
-    const chip = host.createEl("span", {
+    const chip = host.createEl(clickable ? "button" : "span", {
       cls: clickable
         ? `paper-notes-status-chip paper-notes-status-chip--${display} is-clickable`
         : `paper-notes-status-chip paper-notes-status-chip--${display}`,
       text: display,
-      attr: {
-        "aria-label": clickable
-          ? `Reading status: ${display}. Activate to cycle.`
-          : `Reading status: ${display}`,
-        role: clickable ? "button" : "status",
-        tabindex: clickable ? "0" : "-1",
-      },
+      attr: clickable
+        ? {
+            type: "button",
+            "aria-label": `Reading status: ${display}. Activate to cycle.`,
+            "data-tooltip": "Click to cycle reading status",
+          }
+        : {
+            role: "status",
+            "aria-label": `Reading status: ${display}`,
+          },
     });
     if (!clickable) {
       return;
@@ -1206,9 +1361,10 @@ export class PaperNotesLibraryView extends ItemView {
       void this.cycleReadingStatus(item);
     };
     chip.addEventListener("click", activate);
-    chip.addEventListener("keydown", (event: KeyboardEvent) => {
-      if (event.key === "Enter" || event.key === " ") {
-        activate(event);
+    chip.addEventListener("keydown", (event: Event) => {
+      const keyboardEvent = event as KeyboardEvent;
+      if (keyboardEvent.key === "Enter" || keyboardEvent.key === " ") {
+        activate(keyboardEvent);
       }
     });
   }
@@ -1245,6 +1401,9 @@ export class PaperNotesLibraryView extends ItemView {
   }
 
   private openDetailDrawer(): void {
+    if (typeof document !== "undefined") {
+      this.drawerPreviousFocus = document.activeElement as HTMLElement | null;
+    }
     this.drawerOpen = true;
     // Fresh per open: a previously expanded long Abstract collapses again.
     this.abstractExpanded = false;
@@ -1259,6 +1418,15 @@ export class PaperNotesLibraryView extends ItemView {
     if (this.drawerHost !== null) {
       this.drawerHost.empty();
       this.drawerHost.addClass("is-hidden");
+    }
+    const previous = this.drawerPreviousFocus;
+    this.drawerPreviousFocus = null;
+    if (
+      previous !== null &&
+      typeof document !== "undefined" &&
+      document.contains(previous)
+    ) {
+      previous.focus?.({ preventScroll: true });
     }
   }
 
