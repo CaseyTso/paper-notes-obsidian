@@ -63,7 +63,7 @@
   --pn-tone-info: var(--pn-metric-jci-1-3);
   /* UI polish tokens. */
   --pn-icon-size: 16px;
-  --pn-table-zebra: color-mix(in srgb, var(--background-secondary) 38%, transparent);
+  --pn-table-zebra: color-mix(in srgb, var(--background-modifier-hover) 55%, var(--background-primary));
   --pn-drawer-shadow: -4px 0 20px color-mix(in srgb, var(--background-modifier-box-shadow, #000) 18%, transparent);
   --pn-tooltip-bg: var(--background-secondary);
   --pn-tooltip-text: var(--text-normal);
