@@ -644,6 +644,18 @@ describe("Batch 1 library shell", () => {
     expect(close?.attrs?.["aria-label"]).toBe("Close details");
   });
 
+
+  it("wheel over the drawer backdrop scrolls the underlying table", async () => {
+    const view = new PaperNotesLibraryView({} as WorkspaceLeaf, makeSource());
+    await view.onOpen();
+    await openDrawerViaClick(view);
+    const root = view.containerEl as unknown as ElLike;
+    const backdrop = findByClass(root, "paper-notes-library-drawer-backdrop")[0];
+    const host = findByClass(root, "paper-notes-library-table-host")[0];
+    host.scrollTop = 0;
+    backdrop.listeners["wheel"]?.({ deltaY: 120, preventDefault() {} });
+    expect(host.scrollTop).toBe(120);
+  });
   it("reading status chip uses a native button when clickable", async () => {
     const view = new PaperNotesLibraryView({} as WorkspaceLeaf, makeSource());
     await view.onOpen();

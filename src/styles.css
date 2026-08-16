@@ -239,7 +239,8 @@
 .paper-notes-library-search {
   width: 100%;
   min-height: 32px;
-  padding: 6px 34px;
+  padding: 6px 36px 6px 40px;
+  box-sizing: border-box;
   border: 1px solid var(--pn-border);
   border-radius: var(--pn-radius-md);
   background: var(--background-primary);

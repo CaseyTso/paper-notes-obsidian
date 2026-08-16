@@ -1136,6 +1136,20 @@ export class PaperNotesLibraryView extends ItemView {
       this.renderTable();
       this.openPrimaryPdf(item);
     });
+      // Let the wheel scroll the underlying table while the drawer is open.
+      // The drawer panel sits above the backdrop, so wheel over the panel
+      // still scrolls the drawer body normally.
+      backdrop.addEventListener(
+        "wheel",
+        (event: WheelEvent) => {
+          if (this.tableHost === null) {
+            return;
+          }
+          event.preventDefault();
+          this.tableHost.scrollTop += event.deltaY;
+        },
+        { passive: false },
+      );
     const panel = this.drawerHost.createDiv({
       cls: "paper-notes-library-drawer-panel",
     });
