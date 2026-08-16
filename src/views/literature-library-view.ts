@@ -537,7 +537,6 @@ export class PaperNotesLibraryView extends ItemView {
     const statusWrap = bar.createDiv({
       cls: "paper-notes-library-filter paper-notes-library-reading-filter",
     });
-    statusWrap.createEl("label", { text: "Reading Status" });
     const currentReading =
       this.filters.readingStatus === undefined
         ? "Any"
