@@ -569,21 +569,26 @@ describe("Batch 1 library shell", () => {
     }
   });
 
-  it("reading segmented control and artifact chips update filters", async () => {
+  it("reading status button opens a menu and artifact chips update filters", async () => {
     const view = new PaperNotesLibraryView({} as WorkspaceLeaf, makeSource());
     await view.onOpen();
     let root = view.containerEl as unknown as ElLike;
-    const unread = findByClass(root, "paper-notes-library-segment").find(
-      (segment) => segment.textContent === "Unread",
+    const readingButton = findByClass(root, "paper-notes-library-reading-select")[0];
+    expect(readingButton?.textContent).toContain("Reading Status:");
+    expect(readingButton?.attrs?.["aria-haspopup"]).toBe("menu");
+    readingButton?.listeners["click"]?.(undefined);
+    const menu = mockMenus[mockMenus.length - 1];
+    const unread = menu?.items.find(
+      (item) => typeof item !== "string" && item.title === "Unread",
     );
     expect(unread).toBeDefined();
-    unread?.listeners["click"]?.(undefined);
+    if (unread !== undefined && typeof unread !== "string") {
+      unread.onClick?.();
+    }
     root = view.containerEl as unknown as ElLike;
     expect(
-      findByClass(root, "paper-notes-library-segment").find(
-        (segment) => segment.textContent === "Unread",
-      )?.attrs?.["aria-pressed"],
-    ).toBe("true");
+      findByClass(root, "paper-notes-library-reading-select")[0]?.textContent,
+    ).toContain("Unread");
 
     const pdf = findByClass(root, "paper-notes-library-filter-chip").find(
       (chip) => chip.textContent === "PDF",

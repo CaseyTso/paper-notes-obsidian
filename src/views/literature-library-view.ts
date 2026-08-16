@@ -533,34 +533,29 @@ export class PaperNotesLibraryView extends ItemView {
       text: "Filters",
     });
 
-    // Primary row: Reading segmented control + artifact presence chips.
+    // Primary row: Reading Status dropdown button + artifact presence chips.
     const statusWrap = bar.createDiv({
-      cls: "paper-notes-library-filter paper-notes-library-segmented",
+      cls: "paper-notes-library-filter paper-notes-library-reading-filter",
     });
-    statusWrap.createEl("label", { text: "Reading" });
-    for (const [value, label] of [
-      ["", "Any"],
-      ["unread", "Unread"],
-      ["reading", "Reading"],
-      ["read", "Read"],
-    ] as const) {
-      const segment = statusWrap.createEl("button", {
-        cls: "paper-notes-library-segment",
-        text: label,
-        attr: {
-          type: "button",
-          "aria-pressed": (this.filters.readingStatus ?? "") === value
-            ? "true"
-            : "false",
-        },
-      });
-      segment.addEventListener("click", () => {
-        this.updateFilters({
-          readingStatus:
-            value === "" ? undefined : (value as LibraryFilters["readingStatus"]),
-        });
-      });
-    }
+    statusWrap.createEl("label", { text: "Reading Status" });
+    const currentReading =
+      this.filters.readingStatus === undefined
+        ? "Any"
+        : this.filters.readingStatus.charAt(0).toUpperCase() +
+          this.filters.readingStatus.slice(1);
+    const readingButton = statusWrap.createEl("button", {
+      cls: "paper-notes-library-reading-select",
+      text: `Reading Status: ${currentReading}`,
+      attr: {
+        type: "button",
+        "aria-haspopup": "menu",
+        "aria-label": `Reading status filter, currently ${currentReading}`,
+      },
+    });
+    setIcon(readingButton, "chevron-down");
+    readingButton.addEventListener("click", (event: MouseEvent) => {
+      this.openReadingStatusMenu(readingButton, event);
+    });
 
     this.artifactChip(bar, "PDF", "pdf");
     this.artifactChip(bar, "MinerU", "minerU");
@@ -2091,6 +2086,33 @@ export class PaperNotesLibraryView extends ItemView {
       });
       row.addEventListener("click", () => this.openCardNote(item.path, card));
     }
+  }
+
+  /** Open the Reading Status filter menu from the filter-bar button. */
+  private openReadingStatusMenu(_anchor: HTMLElement, event: MouseEvent): void {
+    const menu = new Menu();
+    const current = this.filters.readingStatus ?? "";
+    for (const [value, label] of [
+      ["", "Any"],
+      ["unread", "Unread"],
+      ["reading", "Reading"],
+      ["read", "Read"],
+    ] as const) {
+      const selected = current === value;
+      menu.addItem((item) => {
+        item.setTitle(label);
+        if (selected) {
+          item.setIcon("check");
+        }
+        item.onClick(() => {
+          this.updateFilters({
+            readingStatus:
+              value === "" ? undefined : (value as LibraryFilters["readingStatus"]),
+          });
+        });
+      });
+    }
+    menu.showAtMouseEvent(event);
   }
 
   /**
