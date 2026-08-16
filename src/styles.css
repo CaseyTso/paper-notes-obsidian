@@ -236,10 +236,10 @@
   height: 14px;
 }
 
-.paper-notes-library-search {
+.paper-notes-library-search-wrap .paper-notes-library-search {
   width: 100%;
   min-height: 32px;
-  padding: 6px 36px 6px 40px;
+  padding: 6px 36px 6px 42px !important;
   box-sizing: border-box;
   border: 1px solid var(--pn-border);
   border-radius: var(--pn-radius-md);
