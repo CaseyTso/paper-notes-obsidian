@@ -545,14 +545,20 @@ export class PaperNotesLibraryView extends ItemView {
           this.filters.readingStatus.slice(1);
     const readingButton = statusWrap.createEl("button", {
       cls: "paper-notes-library-reading-select",
-      text: `Reading Status: ${currentReading}`,
       attr: {
         type: "button",
         "aria-haspopup": "menu",
         "aria-label": `Reading status filter, currently ${currentReading}`,
       },
     });
-    setIcon(readingButton, "chevron-down");
+    readingButton.createEl("span", {
+      text: `Reading Status: ${currentReading}`,
+    });
+    const readingChevron = readingButton.createEl("span", {
+      cls: "paper-notes-library-reading-chevron",
+      attr: { "aria-hidden": "true" },
+    });
+    setIcon(readingChevron, "chevron-down");
     readingButton.addEventListener("click", (event: MouseEvent) => {
       this.openReadingStatusMenu(readingButton, event);
     });

@@ -379,6 +379,11 @@
   outline-offset: 1px;
 }
 
+.paper-notes-library-reading-select > span {
+  display: inline-flex;
+  align-items: center;
+}
+
 .paper-notes-library-reading-select svg {
   width: 12px;
   height: 12px;

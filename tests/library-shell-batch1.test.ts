@@ -574,7 +574,7 @@ describe("Batch 1 library shell", () => {
     await view.onOpen();
     let root = view.containerEl as unknown as ElLike;
     const readingButton = findByClass(root, "paper-notes-library-reading-select")[0];
-    expect(readingButton?.textContent).toContain("Reading Status:");
+    expect(readingButton?.children[0]?.textContent).toContain("Reading Status:");
     expect(readingButton?.attrs?.["aria-haspopup"]).toBe("menu");
     readingButton?.listeners["click"]?.(undefined);
     const menu = mockMenus[mockMenus.length - 1];
@@ -587,7 +587,8 @@ describe("Batch 1 library shell", () => {
     }
     root = view.containerEl as unknown as ElLike;
     expect(
-      findByClass(root, "paper-notes-library-reading-select")[0]?.textContent,
+      findByClass(root, "paper-notes-library-reading-select")[0]?.children[0]
+        ?.textContent,
     ).toContain("Unread");
 
     const pdf = findByClass(root, "paper-notes-library-filter-chip").find(
