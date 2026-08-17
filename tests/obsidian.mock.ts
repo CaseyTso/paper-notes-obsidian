@@ -32,6 +32,10 @@ export class Plugin {
     return command;
   }
 
+  addRibbonIcon(_icon: string, _title: string, _callback: () => void): void {
+    // Ribbon is GUI-only; recorded for signature compatibility.
+  }
+
   addSettingTab(_tab: unknown): void {
     // Recorded for signature compatibility; settings tabs are GUI-only and
     // not exercised by the headless mock suites.

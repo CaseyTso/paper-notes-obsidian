@@ -27,6 +27,7 @@ import type { App, PluginManifest } from "obsidian";
 
 import PaperNotesPlugin, {
   METADATA_RESCAN_DEBOUNCE_MS,
+  VIEW_TYPE_PAPER_NOTES,
 } from "../src/main";
 import type { PaperNotesLibraryView } from "../src/views/literature-library-view";
 
@@ -35,6 +36,7 @@ const MAIN_PATH = "05 Literature/key/key.md";
 const state = vi.hoisted(() => ({
   registeredEvents: [] as string[],
   resolvedHandlers: [] as Array<() => void>,
+  viewCreators: {} as Record<string, (leaf: unknown) => unknown>,
   viewCreator: null as null | ((leaf: unknown) => unknown),
 }));
 
@@ -58,13 +60,16 @@ vi.mock("obsidian", () => {
       this.manifest = manifest;
     }
 
-    registerView(_type: string, viewCreator: (leaf: unknown) => unknown): void {
+    registerView(type: string, viewCreator: (leaf: unknown) => unknown): void {
+      state.viewCreators[type] = viewCreator;
       state.viewCreator = viewCreator;
     }
 
     addCommand(): { id: string } {
       return { id: "" };
     }
+
+    addRibbonIcon(_icon: string, _title: string, _callback: () => void): void {}
 
     addSettingTab(_tab: unknown): void {}
 
@@ -212,6 +217,7 @@ describe("metadata cache readiness rescan (Gate D R2)", () => {
     state.registeredEvents.length = 0;
     state.resolvedHandlers.length = 0;
     state.viewCreator = null;
+    state.viewCreators = {};
     vi.useRealTimers();
   });
 
@@ -265,9 +271,9 @@ describe("metadata cache readiness rescan (Gate D R2)", () => {
     const app = makeApp(undefined);
     const plugin = makePlugin(app);
     await plugin.onload();
-    expect(state.viewCreator).not.toBeNull();
+    expect(state.viewCreators[VIEW_TYPE_PAPER_NOTES]).not.toBeNull();
 
-    const view = state.viewCreator!({}) as PaperNotesLibraryView;
+    const view = state.viewCreators[VIEW_TYPE_PAPER_NOTES]!({}) as PaperNotesLibraryView;
     const refreshSpy = vi.spyOn(view, "refresh");
 
     setFrontmatter(app, validFrontmatter());

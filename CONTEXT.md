@@ -79,3 +79,53 @@ _Avoid_: click-anywhere-to-close, toggle on double-click, closing the Drawer whe
 **Drawer Text Selection**:
 The Detail Drawer's read-only content (title, bibliography, abstract) is selectable and copyable; interactive chrome (buttons, chips, menus) stays non-selectable.
 _Avoid_: whole-drawer user-select none, contenteditable, selection inside buttons
+
+## Topic MOC
+
+**Topic MOC**:
+A markdown note that collects papers around one research theme. One note is one theme; it is not a Canonical Paper Directory and does not live inside one.
+_Avoid_: 文献总览 section, mega-overview heading, generic Obsidian MOC, theme tag
+
+**MOC Folder**:
+The dedicated directory `05 Literature/MOCs/` that holds Topic MOC notes. It is not a Canonical Paper Directory.
+_Avoid_: Topic MOCs next to paper folders, vault-root MOC, `10 Projects`
+
+**MOC Marker**:
+The frontmatter field `kind: topic-moc` that identifies a note in the MOC Folder as a Topic MOC. An optional `title` is the display name; if absent, the filename stem is used. Notes in that folder without this `kind` are ignored by MOC View.
+_Avoid_: `type: topic-moc`, `moc: true`, “any markdown in the folder”, heading-only detection, settings whitelist
+
+**Create Topic MOC**:
+The MOC View action that asks for a theme name and calls the paper-notes CLI to write a new Topic MOC: `kind: topic-moc`, optional `title`, filename equal to the typed name, and an empty Topic Table. Duplicate names are rejected. It does not add papers or attach cards.
+_Avoid_: plugin `vault.create`, creating a theme by adding a `##` section, adding rows from the panel
+
+**MOC View**:
+The independent plugin view, opened in the center leaf, that lets the user pick a Topic MOC and read its Topic Table. It is not the Literature Library (which stays in the right leaf). Clicks follow Figure解读 Links and Attached Cards only; a row is not an activation target and does not open the Detail Drawer.
+_Avoid_: Library tab, theme filter, overview preview, merged library-and-moc table, row activation, right-leaf MOC
+
+**Overview Archive**:
+The retired mega-overview note after its topic tables have been split into Topic MOCs. It is moved to `40 Archive/` and is no longer a live source for MOC View.
+_Avoid_: keeping 文献总览 as a second live table, leaving an index in `05 Literature`
+
+**Topic Table**:
+The markdown table inside a Topic MOC. One row is one paper in that theme. Columns are Title, Figure解读, Topic Summary, and Card Column.
+_Avoid_: column-per-paper table, Literature Library table
+
+**Card Column**:
+The fourth Topic Table column, titled `卡片`. It lists Attached Cards as wikilinks; it does not embed card bodies.
+_Avoid_: embedding card text, auto-listing every file in `cards/`
+
+**Topic Summary**:
+The theme-oriented note in the 总结 column: what this paper contributes to this theme, not a paper abstract.
+_Avoid_: abstract, 全文摘要, Overview, Figure解读 body
+
+**Topic Entry**:
+One paper’s membership in a Topic MOC — title, Figure解读 link, Topic Summary, and any Attached Cards.
+_Avoid_: Library row, Paper Record, citation
+
+**Attached Card**:
+An existing literature card from that paper’s `cards/` that has been hung on a Topic Entry because it is relevant to this theme. Not every card of the paper, and not a card created inside the Topic MOC.
+_Avoid_: all cards of the paper, inline card body, new card authored in the MOC
+
+**Figure解读 Link**:
+The wikilink in the Figure解读 column. In the first version, its target filename is how a Topic Entry is bound to a paper.
+_Avoid_: citation_key column, title-as-identity

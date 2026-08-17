@@ -144,6 +144,8 @@ vi.mock("obsidian", () => {
       return command;
     }
 
+    addRibbonIcon(_icon: string, _title: string, _callback: () => void): void {}
+
     registerEvent(ref: { name?: string }): { name?: string } {
       state.registeredEvents.push(ref.name ?? "unknown");
       return ref;

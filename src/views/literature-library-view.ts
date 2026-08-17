@@ -213,6 +213,7 @@ interface PluginBridge {
     name: string;
     callback: () => void;
   }) => void;
+  activateMocView?: () => void;
 }
 
 export interface LibraryViewSource {
@@ -467,6 +468,16 @@ export class PaperNotesLibraryView extends ItemView {
       "Refresh metrics",
     );
     refreshMetrics.addEventListener("click", () => void this.refreshAllExpired(true));
+    const mocBtn = this.createIconButton(
+      toolbar,
+      "paper-notes-library-moc",
+      "list",
+      "Open topic MOC",
+    );
+    mocBtn.addEventListener("click", () => {
+      const bridge = this.resolvePluginBridge();
+      bridge?.activateMocView?.();
+    });
 
     this.renderFilterBar(container);
 
@@ -1580,6 +1591,7 @@ export class PaperNotesLibraryView extends ItemView {
             name: string;
             callback: () => void;
           }): void;
+          activateMocView?(): void;
         }
       | undefined;
     if (plugin === undefined) {
@@ -1598,6 +1610,7 @@ export class PaperNotesLibraryView extends ItemView {
         addCommand !== undefined
           ? (command) => addCommand(command)
           : undefined,
+      activateMocView: plugin.activateMocView?.bind(plugin),
     };
   }
 

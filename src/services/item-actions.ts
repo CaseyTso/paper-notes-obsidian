@@ -271,6 +271,29 @@ export class ItemActions {
       "--confirm-key", confirmKey, "--confirm-token", token,
     ]);
   }
+
+  /** `moc create`; the only managed write path for Topic MOC notes. */
+  async createMoc(title: string): Promise<MocCreateResult> {
+    const trimmed = title.trim();
+    if (trimmed.length === 0) {
+      return {
+        outcome: {
+          status: "error",
+          code: "empty_title",
+          message: "Topic name must not be empty.",
+        },
+        title: trimmed,
+        path: undefined,
+      };
+    }
+    const args = mocCreateArgs(this.config.vaultRoot, trimmed);
+    const outcome = await this.run(args);
+    const path =
+      outcome.status === "success" && typeof outcome.envelope.data.path === "string"
+        ? outcome.envelope.data.path
+        : undefined;
+    return { outcome, title: trimmed, path };
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -554,4 +577,32 @@ export function buildCreateInput(parsed: ParsedCreateInput): CreateItemInput | u
     default:
       return undefined;
   }
+}
+
+// ---------------------------------------------------------------------------
+// Topic MOC creation (Task 7).
+// ---------------------------------------------------------------------------
+
+/** Build the argv array for `moc create`. Always an array — never a shell string. */
+export function mocCreateArgs(vaultRoot: string, title: string): string[] {
+  return ["moc", "create", "--vault", vaultRoot, "--title", title];
+}
+
+/** User-facing notice text for a MOC create outcome. */
+export function mocCreateNoticeText(outcome: ActionOutcome, title: string): string {
+  if (outcome.status === "success") {
+    return `Topic MOC “${title}” created.`;
+  }
+  if (outcome.status === "error" && outcome.code === "conflict") {
+    return `A Topic MOC named “${title}” already exists.`;
+  }
+  return `paper-notes CLI unavailable; cannot create a Topic MOC.`;
+}
+
+export interface MocCreateResult {
+  outcome: ActionOutcome;
+  /** The title that was submitted (trimmed). */
+  title: string;
+  /** Vault-relative path from the CLI envelope on success. */
+  path: string | undefined;
 }

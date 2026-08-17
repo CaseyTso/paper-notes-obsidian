@@ -29,12 +29,21 @@ import {
   searchCitationCandidates,
   type CitationEditorPort,
 } from "./services/citation-inserter";
+import {
+  ItemActions,
+  mocCreateNoticeText,
+} from "./services/item-actions";
 import type { PaperRecord } from "./types/paper";
 import {
   PaperNotesLibraryView,
   VIEW_TYPE_PAPER_NOTES,
   type LibraryViewSource,
 } from "./views/literature-library-view";
+import {
+  PaperNotesMocView,
+  VIEW_TYPE_TOPIC_MOC,
+  type MocViewSource,
+} from "./views/topic-moc-view";
 import { requireExportStyle, type CslVaultPort } from "./services/csl-style-manager";
 import { checkExportHealth, defaultHealthPort } from "./services/export-health";
 import {
@@ -146,6 +155,17 @@ export default class PaperNotesPlugin extends Plugin {
       id: OPEN_LIBRARY_COMMAND,
       name: "Open literature library",
       callback: () => this.activateLibraryView(),
+    });
+    // Topic MOC View (Task 8): center leaf, not the right Library leaf.
+    this.registerView(VIEW_TYPE_TOPIC_MOC, (leaf) => {
+      return new PaperNotesMocView(leaf, this.createMocViewSource());
+    });
+    this.addCommand({
+      id: "paper-notes-open-topic-moc",
+      name: "Open topic MOC",
+      callback: () => {
+        void this.activateMocView();
+      },
     });
     // Command-driven citation picker (Task 27): no hardcoded default
     // hotkey, and no editor-typing interception — typing `@` never
@@ -394,6 +414,91 @@ export default class PaperNotesPlugin extends Plugin {
       leaf.setViewState({ type: VIEW_TYPE_PAPER_NOTES, active: true });
     }
     void workspace.revealLeaf(leaf);
+  }
+
+  /** Activate the Topic MOC view in a center leaf (never the right Library leaf). */
+  activateMocView(): void {
+    void this.doActivateMocView();
+  }
+
+  private async doActivateMocView(): Promise<void> {
+    const workspace = this.app.workspace;
+    const leaves = workspace.getLeavesOfType(VIEW_TYPE_TOPIC_MOC);
+    let leaf = leaves.length > 0 ? leaves[0] : null;
+    if (leaf === null) {
+      leaf = workspace.getLeaf(false);
+    }
+    if (leaf === null) {
+      return;
+    }
+    await leaf.setViewState({ type: VIEW_TYPE_TOPIC_MOC, active: true });
+    workspace.revealLeaf(leaf);
+  }
+
+  private createMocViewSource(): MocViewSource {
+    return {
+      getVaultRoot: () => {
+        const adapter = this.app.vault.adapter as unknown as { getBasePath?: () => string };
+        return adapter.getBasePath?.() ?? "";
+      },
+      literatureRoot: this.settings.literatureRoot,
+      readText: async (path: string) => {
+        const file = this.app.vault.getAbstractFileByPath(path);
+        if (file === null || typeof file !== "object" || !("path" in file)) {
+          return "";
+        }
+        return this.app.vault.cachedRead(file as import("obsidian").TFile);
+      },
+      listMarkdownFiles: (dir: string) => {
+        return this.app.vault
+          .getMarkdownFiles()
+          .filter((f) => f.path.startsWith(dir + "/"))
+          .map((f) => f.path.split("/").pop() ?? f.path);
+      },
+      resolveLink: (target: string, sourcePath: string) => {
+        return this.app.metadataCache.getFirstLinkpathDest(target, sourcePath) ?? undefined;
+      },
+      openFile: (file: import("obsidian").TFile) => {
+        this.app.workspace.getLeaf("tab")?.openFile(file);
+      },
+      createMoc: async () => {
+        const client = this.getCliClient();
+        const adapter = this.app.vault.adapter as unknown as { getBasePath?(): string };
+        const vaultRoot = adapter.getBasePath?.();
+        if (!client || !vaultRoot) {
+          new Notice("paper-notes CLI unavailable; cannot create a Topic MOC.");
+          return undefined;
+        }
+        return new Promise<string | undefined>((resolve) => {
+          const { TextPromptModal } = require("./modals/confirmation-modal") as {
+            TextPromptModal: new (
+              app: import("obsidian").App,
+              data: { title: string; placeholder?: string; confirmLabel?: string },
+              callbacks: { confirm(value: string): void; cancel?(): void },
+            ) => { open(): void };
+          };
+          const modal = new TextPromptModal(
+            this.app,
+            { title: "新建主题", placeholder: "主题名称", confirmLabel: "创建" },
+            {
+              confirm: async (name: string) => {
+                const trimmed = name.trim();
+                if (!trimmed) {
+                  return;
+                }
+                const actions = new ItemActions({ client, vaultRoot });
+                const result = await actions.createMoc(trimmed);
+                const noticeText = mocCreateNoticeText(result.outcome, result.title);
+                new Notice(noticeText);
+                resolve(result.path);
+              },
+              cancel: () => resolve(undefined),
+            },
+          );
+          modal.open();
+        });
+      },
+    };
   }
 
   /**
