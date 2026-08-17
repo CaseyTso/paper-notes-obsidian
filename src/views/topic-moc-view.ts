@@ -149,6 +149,17 @@ export class PaperNotesMocView extends ItemView {
       return;
     }
 
+    // --- Toolbar ---
+    const toolbar = main.createDiv({ cls: "paper-notes-moc-toolbar" });
+    const editBtn = toolbar.createEl("button", {
+      cls: "paper-notes-moc-edit-btn",
+      text: "编辑",
+    });
+    editBtn.setAttribute("aria-label", "编辑此 MOC 笔记");
+    editBtn.addEventListener("click", () => {
+      void this.openCurrentMocFile();
+    });
+
     this.renderTable(main, this.parsedMoc);
   }
 
@@ -295,6 +306,19 @@ export class PaperNotesMocView extends ItemView {
     }
     // Default: open in a new tab
     this.app.workspace.getLeaf("tab")?.openFile(file);
+  }
+
+  /** Open the currently selected MOC note as a normal Markdown file. */
+  private openCurrentMocFile(): void {
+    if (this.selectedPath === undefined) {
+      return;
+    }
+    const file = this.app.vault.getAbstractFileByPath(this.selectedPath);
+    if (file !== null && typeof file === "object" && "path" in file) {
+      this.doOpenFile(file as TFile);
+    } else {
+      new Notice(`找不到笔记：${this.selectedPath}`);
+    }
   }
 
   private async handleCreateMoc(): Promise<void> {

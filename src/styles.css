@@ -2003,3 +2003,36 @@
   padding: 16px 10px;
   text-align: center;
 }
+
+/* — MOC toolbar (edit button) — */
+
+.paper-notes-moc-toolbar {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 8px;
+}
+
+.paper-notes-moc-edit-btn {
+  padding: 4px 12px;
+  border-radius: var(--pn-radius-sm, 4px);
+  cursor: pointer;
+  font-size: var(--font-ui-small);
+  font-weight: var(--font-medium);
+  background: var(--background-primary);
+  color: var(--text-normal);
+  border: 1px solid var(--background-modifier-border);
+  transition:
+    background-color var(--pn-transition, 160ms ease),
+    border-color var(--pn-transition, 160ms ease),
+    color var(--pn-transition, 160ms ease);
+}
+
+.paper-notes-moc-edit-btn:hover {
+  background: var(--background-modifier-hover);
+  border-color: var(--background-modifier-border-hover, var(--background-modifier-border));
+}
+
+.paper-notes-moc-edit-btn:focus-visible {
+  outline: 2px solid var(--interactive-accent);
+  outline-offset: 2px;
+}
