@@ -272,9 +272,13 @@ export class ItemActions {
     ]);
   }
 
+  /** `mineru convert --dry-run` preview (re-convert state binding). */
+  async mineruPreview(key: string): Promise<ActionOutcome> {
+    return this.run(mineruPreviewArgs(this.config.vaultRoot, key));
+  }
+
   /** `moc create`; the only managed write path for Topic MOC notes. */
-  async createMoc(title: string): Promise<MocCreateResult> {
-    const trimmed = title.trim();
+  async createMoc(title: string): Promise<MocCreateResult> {    const trimmed = title.trim();
     if (trimmed.length === 0) {
       return {
         outcome: {
@@ -605,4 +609,73 @@ export interface MocCreateResult {
   title: string;
   /** Vault-relative path from the CLI envelope on success. */
   path: string | undefined;
+}
+
+// ---------------------------------------------------------------------------
+// MinerU conversion (Task: MinerU). The plugin only builds argv arrays and
+// reads the preview; the core CLI performs the API call and managed writes.
+// ---------------------------------------------------------------------------
+
+/** Build argv for `mineru convert` (fresh or confirmed re-convert). */
+export function mineruConvertArgs(
+  vaultRoot: string,
+  key: string,
+  confirmToken?: string,
+): string[] {
+  const args = ["mineru", "convert", "--vault", vaultRoot, "--key", key];
+  if (confirmToken !== undefined) {
+    args.push("--confirm-token", confirmToken);
+  }
+  return args;
+}
+
+/** Build argv for the re-convert preview (`--dry-run`). */
+export function mineruPreviewArgs(vaultRoot: string, key: string): string[] {
+  return ["mineru", "convert", "--dry-run", "--vault", vaultRoot, "--key", key];
+}
+
+/** Build argv for `config mineru status` (never carries the key value). */
+export function mineruKeyStatusArgs(): string[] {
+  return ["config", "mineru", "status"];
+}
+
+/** Build argv for `config mineru set-key --stdin` (key goes on stdin). */
+export function mineruSetKeyArgs(): string[] {
+  return ["config", "mineru", "set-key", "--stdin"];
+}
+
+/** Build argv for `config mineru delete-key`. */
+export function mineruDeleteKeyArgs(): string[] {
+  return ["config", "mineru", "delete-key"];
+}
+
+/** Parsed `mineru convert --dry-run` needs_confirmation payload. */
+export interface MineruPreviewData {
+  token: string;
+  plan: unknown;
+  existingMd: boolean;
+}
+
+/** Extract token + plan from the re-convert preview envelope data. */
+export function mineruPreviewOf(data: Record<string, unknown>): MineruPreviewData | undefined {
+  const token = data.confirmation_token;
+  if (typeof token !== "string" || token.length === 0) {
+    return undefined;
+  }
+  return {
+    token,
+    plan: data.plan,
+    existingMd: data.existing_md === true,
+  };
+}
+
+/** User-facing notice text for a single enqueue decision. */
+export function mineruEnqueueNoticeText(result: {
+  ok: boolean;
+  reason?: string;
+}): string {
+  if (result.ok) {
+    return "Added to MinerU queue.";
+  }
+  return result.reason ?? "Cannot add to MinerU queue.";
 }

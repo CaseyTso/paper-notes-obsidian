@@ -2036,3 +2036,20 @@
   outline: 2px solid var(--interactive-accent);
   outline-offset: 2px;
 }
+
+/* ---------------------------------------------------------------------------
+ * MinerU conversion status bar + queue menu (Task: MinerU)
+ * ---------------------------------------------------------------------------
+ */
+.paper-notes-mineru-status {
+  cursor: pointer;
+  user-select: none;
+}
+
+.paper-notes-mineru-status.is-hidden {
+  display: none;
+}
+
+.paper-notes-mineru-status:hover {
+  color: var(--text-accent);
+}

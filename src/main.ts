@@ -2,6 +2,7 @@ import {
   Plugin,
   Notice,
   MarkdownView,
+  Menu,
   type MetadataCache,
   type TFile,
   type Vault,
@@ -31,8 +32,12 @@ import {
 } from "./services/citation-inserter";
 import {
   ItemActions,
+  mineruDeleteKeyArgs,
+  mineruKeyStatusArgs,
+  mineruSetKeyArgs,
   mocCreateNoticeText,
 } from "./services/item-actions";
+import { MineruQueue, type MineruQueueSnapshot, type MineruQueueSummary } from "./services/mineru-queue";
 import type { PaperRecord } from "./types/paper";
 import {
   PaperNotesLibraryView,
@@ -133,6 +138,13 @@ export default class PaperNotesPlugin extends Plugin {
   /** Pending metadata-cache readiness rescan (Gate D R2), cancelled on unload. */
   private metadataRescanTimer: ReturnType<typeof setTimeout> | undefined;
 
+  /** Session-bound FIFO MinerU conversion queue (Task: MinerU). */
+  private mineruQueue: MineruQueue | undefined;
+  /** Cached `config mineru status` result (never the key value). */
+  private mineruKeyConfigured = false;
+  /** Status-bar element showing queue progress; hidden when idle. */
+  private mineruStatusBarEl: HTMLElement | undefined;
+
   async onload(): Promise<void> {
     // Library view extracts loadData/saveData as free functions for the
     // MetricsCache merge-save bridge. Bind them to this plugin instance so
@@ -195,10 +207,15 @@ export default class PaperNotesPlugin extends Plugin {
     });
     await this.initializeCliBridge();
     this.initializeLibraryIndex();
+    this.initializeMineruQueue();
     this.addSettingTab(new PaperNotesSettingTab(this.app, this));
+    void this.refreshMineruKeyStatus();
   }
 
   async onunload(): Promise<void> {
+    // MinerU: cancel the running child and drop the pending queue (published
+    // results are untouched; the core CLI only commits on full success).
+    this.mineruQueue?.dispose();
     if (this.metadataRescanTimer !== undefined) {
       clearTimeout(this.metadataRescanTimer);
       this.metadataRescanTimer = undefined;
@@ -233,6 +250,202 @@ export default class PaperNotesPlugin extends Plugin {
 
   isReadOnly(): boolean {
     return this.cliReadOnlyMode;
+  }
+
+  /** Cached `config mineru status`: configured or not (never the value). */
+  mineruKeyConfiguredStatus(): boolean {
+    return this.mineruKeyConfigured;
+  }
+
+  /** The session-bound MinerU queue, when the CLI + vault root are present. */
+  getMineruQueue(): MineruQueue | undefined {
+    return this.mineruQueue;
+  }
+
+  /**
+   * Build the FIFO queue and status-bar widget. Skipped in headless/embedded
+   * contexts (no vault root) or when the CLI bridge is unhealthy.
+   */
+  private initializeMineruQueue(): void {
+    const client = this.getCliClient();
+    const adapter = this.app.vault?.adapter as { getBasePath?(): string } | undefined;
+    const vaultRoot =
+      typeof adapter?.getBasePath === "function" ? adapter.getBasePath() : undefined;
+    if (client === undefined || vaultRoot === undefined) {
+      return;
+    }
+    if (typeof this.addStatusBarItem === "function") {
+      this.mineruStatusBarEl = this.addStatusBarItem();
+      this.mineruStatusBarEl.addClass("paper-notes-mineru-status");
+      this.mineruStatusBarEl.addEventListener("click", (event: MouseEvent) =>
+        this.openMineruQueueMenu(event),
+      );
+    }
+    this.mineruQueue = new MineruQueue({
+      client,
+      vaultRoot,
+      onUpdate: (snapshot) => this.renderMineruStatusBar(snapshot),
+      onSummary: (summary) => this.onMineruSummary(summary),
+    });
+    this.renderMineruStatusBar(this.mineruQueue.getSnapshot());
+  }
+
+  /** Re-query `config mineru status`; failures keep the cached false. */
+  async refreshMineruKeyStatus(): Promise<boolean> {
+    const client = this.getCliClient();
+    if (client === undefined) {
+      this.mineruKeyConfigured = false;
+      return false;
+    }
+    try {
+      const { envelope } = await client.run(mineruKeyStatusArgs());
+      this.mineruKeyConfigured = envelope.data.configured === true;
+    } catch {
+      this.mineruKeyConfigured = false;
+    }
+    this.renderMineruStatusBar(this.mineruQueue?.getSnapshot());
+    return this.mineruKeyConfigured;
+  }
+
+  /** Save the MinerU Key through the CLI stdin path; never echoed or stored. */
+  async setMineruKey(value: string): Promise<{ ok: boolean; message: string }> {
+    const client = this.getCliClient();
+    if (client === undefined) {
+      return { ok: false, message: "paper-notes CLI unavailable." };
+    }
+    const trimmed = value.trim();
+    if (trimmed.length === 0) {
+      return { ok: false, message: "MinerU key must not be empty." };
+    }
+    try {
+      const { envelope } = await client.runWithInput(mineruSetKeyArgs(), trimmed + "\n", {
+        redact: [trimmed],
+      });
+      if (envelope.status === "success") {
+        this.mineruKeyConfigured = true;
+        this.renderMineruStatusBar(this.mineruQueue?.getSnapshot());
+        return { ok: true, message: "MinerU key saved." };
+      }
+      return {
+        ok: false,
+        message: envelope.errors[0]?.message ?? "Failed to save the MinerU key.",
+      };
+    } catch (error) {
+      return {
+        ok: false,
+        message: error instanceof Error ? error.message : "Failed to save the MinerU key.",
+      };
+    }
+  }
+
+  /** Remove the MinerU Key through the CLI (idempotent). */
+  async deleteMineruKey(): Promise<{ ok: boolean; message: string }> {
+    const client = this.getCliClient();
+    if (client === undefined) {
+      return { ok: false, message: "paper-notes CLI unavailable." };
+    }
+    try {
+      const { envelope } = await client.run(mineruDeleteKeyArgs());
+      if (envelope.status === "success") {
+        this.mineruKeyConfigured = false;
+        this.renderMineruStatusBar(this.mineruQueue?.getSnapshot());
+        return { ok: true, message: "MinerU key deleted." };
+      }
+      return {
+        ok: false,
+        message: envelope.errors[0]?.message ?? "Failed to delete the MinerU key.",
+      };
+    } catch (error) {
+      return {
+        ok: false,
+        message: error instanceof Error ? error.message : "Failed to delete the MinerU key.",
+      };
+    }
+  }
+
+  /** Status-bar text + visibility driven by the latest queue snapshot. */
+  private renderMineruStatusBar(snapshot: MineruQueueSnapshot | undefined): void {
+    const el = this.mineruStatusBarEl;
+    if (el === undefined) {
+      return;
+    }
+    const running = snapshot?.running;
+    const queued = snapshot?.items.filter((item) => item.state === "queued").length ?? 0;
+    if (running === undefined && queued === 0) {
+      el.addClass("is-hidden");
+      el.setText("");
+      return;
+    }
+    el.removeClass("is-hidden");
+    if (running !== undefined) {
+      const pages =
+        running.totalPages !== undefined && running.totalPages > 0
+          ? `${running.extractedPages ?? 0}/${running.totalPages} pages`
+          : running.stage ?? "converting";
+      el.setText(`MinerU: ${running.key} ${pages}${queued > 0 ? ` · ${queued} queued` : ""}`);
+    } else {
+      el.setText(`MinerU: ${queued} queued`);
+    }
+  }
+
+  /** Status-bar click menu: remove waiting items / cancel the running one. */
+  private openMineruQueueMenu(event: MouseEvent): void {
+    const queue = this.mineruQueue;
+    if (queue === undefined) {
+      return;
+    }
+    const menu = new Menu();
+    const snapshot = queue.getSnapshot();
+    const running = snapshot.running;
+    if (running !== undefined) {
+      menu.addItem((item) => {
+        item.setTitle(
+          running.totalPages !== undefined && running.totalPages > 0
+            ? `${running.key} — ${running.extractedPages ?? 0}/${running.totalPages} pages`
+            : `${running.key} — ${running.stage ?? "converting"}`,
+        );
+        item.setDisabled(true);
+      });
+      menu.addItem((item) => {
+        item.setTitle(`Cancel ${running.key}`);
+        item.setIcon("x");
+        item.onClick(() => {
+          queue.cancelRunning();
+          new Notice(`MinerU conversion of ${running.key} cancelled.`);
+        });
+      });
+    }
+    for (const queued of snapshot.items.filter((item) => item.state === "queued")) {
+      menu.addItem((item) => {
+        item.setTitle(`Queued #${queued.queueIndex}: ${queued.key}`);
+        item.setIcon("list");
+        item.onClick(() => {
+          if (queue.removeQueued(queued.key)) {
+            new Notice(`Removed ${queued.key} from the MinerU queue.`);
+          }
+        });
+      });
+    }
+    menu.showAtMouseEvent(event);
+  }
+
+  /** End-of-drain summary: refresh artifacts and surface one Notice. */
+  private onMineruSummary(summary: MineruQueueSummary): void {
+    this.libraryIndex?.scanAll();
+    this.libraryView?.refresh();
+    if (summary.succeeded.length === 0 && summary.failed.length === 0) {
+      return;
+    }
+    const parts: string[] = [];
+    if (summary.succeeded.length > 0) {
+      parts.push(`ok: ${summary.succeeded.join(", ")}`);
+    }
+    if (summary.failed.length > 0) {
+      parts.push(
+        `failed: ${summary.failed.map((entry) => `${entry.key} (${entry.reason})`).join("; ")}`,
+      );
+    }
+    new Notice(`MinerU queue finished — ${parts.join(" · ")}`, 8000);
   }
 
   /**

@@ -1209,7 +1209,11 @@ describe("Batch 1 library shell", () => {
     expect(rowGrouped).toEqual([
       ["Open main", "Open PDF", "Open MinerU", "Open Figure", "Open Folder"],
       ["Copy citation key", "Copy DOI"],
-      ["Attach PDF", "Rename key"],
+      [
+        "Attach PDF",
+        "Convert with MinerU… (MinerU key not configured)",
+        "Rename key",
+      ],
       ["Delete paper…"],
     ]);
     // The old Drawer action bar is gone entirely.

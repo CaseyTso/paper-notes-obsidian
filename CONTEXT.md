@@ -32,6 +32,18 @@ _Avoid_: Reading shortcut button, unread→reading one-shot
 The main PDF at `<citation_key>/<citation_key>.pdf` inside the Canonical Paper Directory.
 _Avoid_: attachment, fulltext, Zotero PDF
 
+**Attach PDF**:
+The Item Context Menu action that opens the native system file picker for one local PDF and attaches it as the paper’s Primary PDF through the paper-notes CLI.
+_Avoid_: manual path entry, folder picker, supplementary upload
+
+**MinerU Conversion**:
+The CLI-backed cloud conversion of a paper’s Primary PDF into `minerUmd_<citation_key>.md` plus extracted images under that paper’s `attachments/`. It does not create Figure解读 or final high-resolution assets under `figures/`.
+_Avoid_: MinerU scan, Figure解读 generation, high-resolution figure rendering, plugin-direct MinerU call
+
+**MinerU Conversion Queue**:
+The session-bound FIFO list of requested MinerU Conversions: one paper runs at a time, later requests wait in order, and quitting or reloading Obsidian discards the pending queue.
+_Avoid_: parallel conversion, persistent worker queue, restart-resumable job
+
 **Journal Metrics**:
 Volatile UI-only CAS / JCR / IF / JCI values from EasyScholar, never written into Markdown.
 _Avoid_: impact factor fields in YAML, zotero-style tags, rank tags on notes
@@ -67,6 +79,10 @@ _Avoid_: writing colored ranks into notes, Zotero tag coloring
 **EasyScholar Key**:
 The private EasyScholar SecretKey used for Journal Metrics; configured in the core CLI's user-local private config (`~/Library/Application Support/paper-notes/config.json`, mode 0600), never in the plugin or vault `data.json`. The plugin settings surface shows only a read-only configured/unconfigured status.
 _Avoid_: plugin settings key field, storing the key in data.json, showing the key value anywhere
+
+**MinerU Key**:
+The private token used for MinerU Conversion. It is entered through Plugin Settings but stored only in the core CLI’s user-local private config (`~/Library/Application Support/paper-notes/config.json`, mode 0600), never in the vault or plugin `data.json`.
+_Avoid_: vault-synced token, persisted plugin setting, command-line token, displayed saved token
 
 **Plugin Settings**:
 The Obsidian settings tab exposing plugin configuration persisted in `data.json` (CLI path, export directory, Pandoc path, PDF engine, reference DOCX, selected CSL, metric TTL, metrics toggle). The literature root is display-only and cannot be edited from the tab.

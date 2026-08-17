@@ -8,7 +8,7 @@
  * row — the SecretKey itself lives in the core CLI's private config
  * (ADR 0001), never in the plugin or data.json.
  */
-import { App, PluginSettingTab, Setting, type TextComponent } from "obsidian";
+import { App, Notice, PluginSettingTab, Setting, type TextComponent } from "obsidian";
 
 import { CSL_STYLE_DIR, metricsEnabledOf } from "./settings";
 import type PaperNotesPlugin from "./main";
@@ -28,6 +28,7 @@ export class PaperNotesSettingTab extends PluginSettingTab {
     this.renderExport(containerEl);
     this.renderMetrics(containerEl);
     void this.renderEasyScholarStatus(containerEl);
+    void this.renderMineruKey(containerEl);
   }
 
   private renderCore(containerEl: HTMLElement): void {
@@ -210,6 +211,78 @@ export class PaperNotesSettingTab extends PluginSettingTab {
       );
     } catch {
       return false;
+    }
+  }
+
+  /**
+   * MinerU Key section (ADR 0002 / CONTEXT: MinerU Key). The key is entered
+   * here but stored only in the core CLI's private config through stdin —
+   * never in plugin data.json, never on argv, never shown back. A saved key
+   * is never echoed, displayed, or copied; only the configured/not status is
+   * surfaced.
+   */
+  private async renderMineruKey(containerEl: HTMLElement): Promise<void> {
+    new Setting(containerEl).setName("MinerU").setHeading();
+
+    const status = new Setting(containerEl)
+      .setName("MinerU key")
+      .setDesc("Checking…");
+    let statusText: TextComponent | undefined;
+    status.addText((text) => {
+      statusText = text;
+      text.setValue("Checking…").setDisabled(true);
+    });
+
+    const configured = await this.plugin.refreshMineruKeyStatus();
+    status.setDesc(
+      configured
+        ? "Configured. The MinerU key lives in the core CLI's private config (~/Library/Application Support/paper-notes/config.json, mode 0600) and is never stored, echoed, or shown by this plugin."
+        : "Not configured. Enter the MinerU API key below and save; it is sent to the core CLI on stdin and stored outside the vault (mode 0600).",
+    );
+    statusText?.setValue(configured ? "Configured" : "Not configured");
+
+    const inputSetting = new Setting(containerEl)
+      .setName("MinerU API key")
+      .setDesc(
+        "Only a new value can be entered here; a saved key is never shown back. Replace by saving a new value, remove with Delete.",
+      );
+    let input: TextComponent | undefined;
+    inputSetting.addText((text) => {
+      input = text;
+      text.inputEl.type = "password";
+      text.setPlaceholder("Enter MinerU API key");
+    });
+
+    inputSetting.addButton((button) =>
+      button
+        .setButtonText(configured ? "Replace key" : "Save key")
+        .setCta()
+        .onClick(async () => {
+          const value = input?.getValue() ?? "";
+          if (value.trim().length === 0) {
+            new Notice("Enter a MinerU key first.");
+            return;
+          }
+          const result = await this.plugin.setMineruKey(value);
+          new Notice(result.message);
+          if (result.ok) {
+            input?.setValue("");
+          }
+          this.display();
+        }),
+    );
+
+    if (configured) {
+      inputSetting.addButton((button) =>
+        button.setButtonText("Delete key").onClick(async () => {
+          const result = await this.plugin.deleteMineruKey();
+          new Notice(result.message);
+          if (result.ok) {
+            input?.setValue("");
+          }
+          this.display();
+        }),
+      );
     }
   }
 

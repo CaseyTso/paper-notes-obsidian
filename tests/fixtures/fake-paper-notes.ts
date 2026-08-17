@@ -26,6 +26,8 @@ export interface FakeCliBehavior {
   delayMs?: number;
   /** When true, ignore SIGTERM so only SIGKILL escalation terminates. */
   ignoreSigterm?: boolean;
+  /** When true, read all of stdin and echo it in the envelope data. */
+  readStdin?: boolean;
 }
 
 export function buildEnvelope(
@@ -44,9 +46,22 @@ export function buildEnvelope(
 const RUNNER = `
 const behavior = __BEHAVIOR__;
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+function readStdin() {
+  return new Promise((resolve) => {
+    let data = "";
+    process.stdin.setEncoding("utf8");
+    process.stdin.on("data", (chunk) => { data += chunk; });
+    process.stdin.on("end", () => resolve(data));
+    process.stdin.on("error", () => resolve(data));
+  });
+}
 async function main() {
   if (behavior.ignoreSigterm) {
     process.on("SIGTERM", () => {});
+  }
+  let stdinData = null;
+  if (behavior.readStdin) {
+    stdinData = await readStdin();
   }
   if (behavior.delayMs > 0) {
     await sleep(behavior.delayMs);
@@ -57,11 +72,15 @@ async function main() {
   if (behavior.stdoutRaw !== undefined) {
     process.stdout.write(behavior.stdoutRaw);
   } else {
+    const data = { argv: process.argv.slice(2) };
+    if (behavior.readStdin) {
+      data.stdin = stdinData;
+    }
     process.stdout.write(
       JSON.stringify({
         protocol_version: 1,
         status: "success",
-        data: { argv: process.argv.slice(2) },
+        data,
         warnings: [],
         errors: [],
       }) + "\\n",

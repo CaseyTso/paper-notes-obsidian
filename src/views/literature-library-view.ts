@@ -45,6 +45,7 @@ import {
 } from "../components/metric-cell";
 import {
   ItemActions,
+  mineruEnqueueNoticeText,
   nextReadingStatus,
   openCard,
   paperDirectoryOf,
@@ -55,6 +56,8 @@ import {
   type OpenAssetKind,
   type OpenTarget,
 } from "../services/item-actions";
+import { mineruMenuItemState } from "../services/mineru-menu-state";
+import type { MineruQueue } from "../services/mineru-queue";
 // Modal classes are loaded lazily (see `loadModalClasses`): the plugin
 // scaffold smoke suite mocks `obsidian` with Plugin/ItemView/WorkspaceLeaf
 // plus Modal/Notice, so the static import graph must not construct the
@@ -214,6 +217,10 @@ interface PluginBridge {
     callback: () => void;
   }) => void;
   activateMocView?: () => void;
+  /** Cached `config mineru status` result (never the key value). */
+  mineruKeyConfigured?: () => boolean;
+  /** Session-bound FIFO MinerU queue. */
+  getMineruQueue?: () => MineruQueue | undefined;
 }
 
 export interface LibraryViewSource {
@@ -1592,6 +1599,8 @@ export class PaperNotesLibraryView extends ItemView {
             callback: () => void;
           }): void;
           activateMocView?(): void;
+          mineruKeyConfiguredStatus?(): boolean;
+          getMineruQueue?(): MineruQueue | undefined;
         }
       | undefined;
     if (plugin === undefined) {
@@ -1611,6 +1620,8 @@ export class PaperNotesLibraryView extends ItemView {
           ? (command) => addCommand(command)
           : undefined,
       activateMocView: plugin.activateMocView?.bind(plugin),
+      mineruKeyConfigured: plugin.mineruKeyConfiguredStatus?.bind(plugin),
+      getMineruQueue: plugin.getMineruQueue?.bind(plugin),
     };
   }
 
@@ -2228,6 +2239,23 @@ export class PaperNotesLibraryView extends ItemView {
       disabledReason,
       () => void this.startAttach(item),
     );
+    // MinerU conversion: visible but disabled (with reason) when there is
+    // no Primary PDF or no configured MinerU Key; label flips to Re-convert
+    // when a `minerUmd_<key>.md` already exists.
+    const mineruState = mineruMenuItemState(item.artifacts.minerU, {
+      invalid,
+      readOnly,
+      hasPdf: item.artifacts.pdf,
+      keyConfigured: this.resolvePluginBridge()?.mineruKeyConfigured?.() ?? false,
+    });
+    this.addMenuItem(
+      menu,
+      mineruState.label,
+      "sparkles",
+      mineruState.enabled,
+      mineruState.enabled ? undefined : mineruState.reason,
+      () => void this.startMineru(item, mineruState.label),
+    );
     this.addMenuItem(
       menu,
       "Rename key",
@@ -2491,23 +2519,134 @@ export class PaperNotesLibraryView extends ItemView {
     if (actions === undefined || item.invalid !== undefined) {
       return;
     }
-    const { TextPromptModal } = await this.loadModalClasses();
-    new TextPromptModal(
-      this.app,
-      {
-        title: "Attach PDF",
-        placeholder: "/absolute/path/to/paper.pdf",
-        confirmLabel: "Attach",
-      },
-      {
-        confirm: (value: string) => {
-          const path = value.trim();
-          if (path.length > 0) {
-            void this.attachPdf(actions, item.key, path);
-          }
-        },
-      },
-    ).open();
+    // Attach PDF opens the macOS native system file picker (Electron file
+    // input). Single selection, PDF-only; cancelling exits silently — the
+    // change event simply never fires and the hidden input is removed.
+    this.pickPdfViaNativePicker((path) => {
+      void this.attachPdf(actions, item.key, path);
+    });
+  }
+
+  /**
+   * Open a hidden single-select PDF file input and call `onPick` with the
+   * chosen absolute path. Cancellation is silent (no Notice, no callback);
+   * a selected file whose absolute path cannot be resolved surfaces a
+   * Notice instead of failing silently.
+   */
+  private pickPdfViaNativePicker(onPick: (path: string) => void): void {
+    if (typeof document === "undefined") {
+      return;
+    }
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = "application/pdf,.pdf";
+    input.style.display = "none";
+    document.body.appendChild(input);
+    input.addEventListener("change", () => {
+      const file = input.files?.[0];
+      input.remove();
+      if (file === undefined) {
+        return; // cancelled: silent exit
+      }
+      const path = this.resolvePickedPdfPath(file);
+      if (path === undefined) {
+        this.notify(
+          "无法获取所选 PDF 的完整路径（File.path/webUtils 均不可用），无法导入。",
+        );
+        return;
+      }
+      this.notify(`Attaching ${file.name}…`);
+      onPick(path);
+    });
+    input.click();
+  }
+
+  /**
+   * Absolute path of a picked file across Electron versions.
+   *
+   * - Older Electron exposes the non-standard `File.path`.
+   * - Electron 32+ removed `File.path`; the supported replacement is
+   *   `webUtils.getPathForFile(file)` (see electron#44370).
+   *
+   * Returns undefined only when neither channel is available, so the caller
+   * can surface a visible failure instead of a silent no-op.
+   */
+  private resolvePickedPdfPath(file: File): string | undefined {
+    const legacy = (file as File & { path?: string }).path;
+    if (typeof legacy === "string" && legacy.length > 0) {
+      return legacy;
+    }
+    try {
+      const requireFn = (
+        typeof require === "function"
+          ? require
+          : (globalThis as { require?: (id: string) => unknown }).require
+      ) as ((id: string) => unknown) | undefined;
+      const electron = requireFn?.("electron") as
+        | { webUtils?: { getPathForFile?: (f: File) => string } }
+        | undefined;
+      const viaWebUtils = electron?.webUtils?.getPathForFile?.(file);
+      if (typeof viaWebUtils === "string" && viaWebUtils.length > 0) {
+        return viaWebUtils;
+      }
+    } catch {
+      // Both channels unavailable; report undefined.
+    }
+    return undefined;
+  }
+
+  /**
+   * Convert / Re-convert through the session-bound MinerU queue. Re-converts
+   * preview first (`--dry-run`) and only enqueue after explicit confirmation;
+   * fresh converts enqueue directly. The core CLI owns every API call and
+   * managed write.
+   */
+  private async startMineru(
+    item: LibraryItem,
+    _label: string,
+  ): Promise<void> {
+    if (item.invalid !== undefined) {
+      return;
+    }
+    const bridge = this.resolvePluginBridge();
+    const queue = bridge?.getMineruQueue?.();
+    const actions = this.getActions();
+    if (queue === undefined || actions === undefined || bridge?.client === undefined) {
+      this.notify("MinerU queue is unavailable (CLI or vault root missing).");
+      return;
+    }
+    const title = item.record?.title ?? item.key;
+    if (item.artifacts.minerU) {
+      // Re-convert: preview to bind state, confirm, then enqueue with token.
+      const outcome = await actions.mineruPreview(item.key);
+      if (outcome.status === "needs_confirmation") {
+        const preview = outcome.envelope.data;
+        const token = typeof preview.confirmation_token === "string" ? preview.confirmation_token : undefined;
+        if (token === undefined) {
+          this.notify("MinerU preview did not return a confirmation token.");
+          return;
+        }
+        const { ConfirmationModal } = await this.loadModalClasses();
+        new ConfirmationModal(
+          this.app,
+          {
+            title: "Re-convert with MinerU?",
+            lines: renderPlanLines(preview.plan),
+          },
+          () => {
+            const result = queue.enqueue(item.key, title, token);
+            this.notify(mineruEnqueueNoticeText(result));
+          },
+        ).open();
+        return;
+      }
+      if (outcome.status === "error") {
+        this.notify(this.outcomeMessage(outcome));
+      }
+      return;
+    }
+    const result = queue.enqueue(item.key, title);
+    this.notify(mineruEnqueueNoticeText(result));
   }
 
   private async attachPdf(

@@ -102,6 +102,17 @@ export function sanitizeDiagnostics(text: string): string {
     );
 }
 
+/** Replace every exact secret substring with the fixed mask. */
+export function redactSecrets(text: string, secrets: string[]): string {
+  let out = text;
+  for (const secret of secrets) {
+    if (secret.length > 0) {
+      out = out.split(secret).join("***");
+    }
+  }
+  return out;
+}
+
 export class CliClient {
   constructor(private readonly cliPath: string) {}
 
@@ -362,4 +373,289 @@ export class CliClient {
       };
     }
   }
+
+  /**
+   * Streaming variant of `run` for `mineru convert` (NDJSON progress) and
+   * for stdin-delivered secrets (`config mineru set-key --stdin`).
+   *
+   * stdout is read line-buffered. Lines shaped `{"type":"progress", ...}`
+   * are forwarded to `onProgress`; the first non-progress line must be the
+   * final protocol envelope. A CLI without progress support (plain single
+   * envelope) is handled identically, so older cores stay compatible.
+   * `input` (when given) is written to the child's stdin then closed; the
+   * `redact` list is additionally masked out of surfaced stderr/stdout and
+   * error messages (secrets never enter argv/logs/UI).
+   */
+  runStream(
+    args: string[],
+    options: RunStreamOptions = {},
+  ): Promise<RunStreamResult> {
+    const { signal, timeoutMs, input, onProgress, redact } = options;
+    const secrets = redact ?? [];
+
+    return new Promise<RunStreamResult>((resolve, reject) => {
+      let settled = false;
+      let termination: Promise<void> | undefined;
+      let child: ChildProcess | undefined;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const stdout: Buffer[] = [];
+      const stderr: Buffer[] = [];
+      let pendingLine = "";
+      let envelope: ProtocolEnvelope | undefined;
+
+      const rawText = (chunks: Buffer[]): string =>
+        Buffer.concat(chunks).toString("utf8");
+      const sanitize = (text: string): string =>
+        sanitizeDiagnostics(redactSecrets(text, secrets));
+
+      const cleanup = (): void => {
+        if (timer !== undefined) {
+          clearTimeout(timer);
+          timer = undefined;
+        }
+        if (signal !== undefined) {
+          signal.removeEventListener("abort", onAbort);
+        }
+      };
+
+      const settle = (callback: () => void): void => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        cleanup();
+        callback();
+      };
+
+      const fail = (options_: CliErrorOptions): void => {
+        settle(() => reject(new CliError(options_)));
+      };
+
+      const onAbort = (): void => {
+        termination = this.terminateChild(child).then(() => {
+          fail({
+            code: "aborted",
+            message: "CLI run was cancelled",
+            stderr: sanitize(rawText(stderr)),
+          });
+        });
+      };
+
+      const onTimeout = (): void => {
+        termination = this.terminateChild(child).then(() => {
+          fail({
+            code: "timeout",
+            message: `CLI run exceeded ${timeoutMs}ms and was terminated`,
+            stderr: sanitize(rawText(stderr)),
+          });
+        });
+      };
+
+      const handleLine = (line: string): void => {
+        const trimmed = line.trim();
+        if (trimmed.length === 0) {
+          return;
+        }
+        let parsed: unknown;
+        try {
+          parsed = JSON.parse(trimmed);
+        } catch {
+          parsed = undefined;
+        }
+        if (typeof parsed === "object" && parsed !== null) {
+          const record = parsed as Record<string, unknown>;
+          if (record.type === "progress") {
+            onProgress?.(record);
+            return;
+          }
+          if (envelope === undefined && isProtocolEnvelope(record)) {
+            envelope = record;
+          }
+        }
+      };
+
+      if (signal?.aborted) {
+        reject(
+          new CliError({ code: "aborted", message: "CLI run was cancelled" }),
+        );
+        return;
+      }
+      if (timeoutMs !== undefined && timeoutMs <= 0) {
+        reject(new CliError({ code: "timeout", message: "CLI run timed out" }));
+        return;
+      }
+
+      const stdio: Array<"ignore" | "pipe"> =
+        input === undefined
+          ? ["ignore", "pipe", "pipe"]
+          : ["pipe", "pipe", "pipe"];
+      const proc = spawn(this.cliPath, ["--json", ...args], {
+        stdio,
+        detached: true,
+      });
+      child = proc;
+
+      if (timeoutMs !== undefined) {
+        timer = setTimeout(onTimeout, timeoutMs);
+      }
+      if (signal !== undefined) {
+        signal.addEventListener("abort", onAbort, { once: true });
+      }
+
+      proc.on("error", (error: NodeJS.ErrnoException) => {
+        const code: CliErrorCode =
+          error.code === "ENOENT"
+            ? "not_found"
+            : error.code === "EACCES"
+              ? "permission"
+              : "cli_error";
+        fail({
+          code,
+          message: `cannot start CLI at "${this.cliPath}": ${sanitize(error.message)}`,
+          cause: error,
+        });
+      });
+
+      proc.stdout?.on("data", (chunk: Buffer) => {
+        stdout.push(chunk);
+        pendingLine += chunk.toString("utf8");
+        let newline = pendingLine.indexOf("\n");
+        while (newline !== -1) {
+          const line = pendingLine.slice(0, newline);
+          pendingLine = pendingLine.slice(newline + 1);
+          handleLine(line);
+          newline = pendingLine.indexOf("\n");
+        }
+      });
+      proc.stderr?.on("data", (chunk: Buffer) => {
+        stderr.push(chunk);
+      });
+
+      if (input !== undefined && proc.stdin !== null) {
+        proc.stdin.on("error", () => {
+          // The child closed stdin early; the close handler owns the outcome.
+        });
+        proc.stdin.write(input, () => {
+          proc.stdin?.end();
+        });
+      }
+
+      proc.on("close", (exitCode) => {
+        if (settled) {
+          return;
+        }
+        if (termination !== undefined) {
+          return;
+        }
+        settled = true;
+        cleanup();
+        if (envelope === undefined) {
+          reject(
+            new CliError({
+              code: "bad_json",
+              message:
+                "CLI produced malformed output; expected progress lines then one JSON envelope on stdout",
+              exitCode,
+              stderr: sanitize(rawText(stderr)),
+              stdout: sanitize(rawText(stdout)),
+            }),
+          );
+          return;
+        }
+        if (envelope.protocol_version !== PROTOCOL_VERSION) {
+          reject(
+            new CliError({
+              code: "protocol_mismatch",
+              message: `unsupported protocol version ${envelope.protocol_version} (expected ${PROTOCOL_VERSION}); plugin is read-only`,
+              exitCode,
+              stderr: sanitize(rawText(stderr)),
+              observedVersion: envelope.protocol_version,
+            }),
+          );
+          return;
+        }
+        resolve({
+          envelope,
+          exitCode: exitCode ?? 0,
+          stderr: sanitize(rawText(stderr)),
+        });
+      });
+    });
+  }
+
+  /** Run one CLI operation with text delivered on stdin (never argv). */
+  runWithInput(
+    args: string[],
+    input: string,
+    options: Omit<RunStreamOptions, "input"> = {},
+  ): Promise<RunStreamResult> {
+    return this.runStream(args, { ...options, input });
+  }
+
+  /**
+   * Terminate a spawned CLI once: SIGTERM first, SIGKILL escalation on the
+   * whole process group (mirrors the single-shot `run` cancellation path).
+   */
+  private terminateChild(
+    child: ChildProcess | undefined,
+  ): Promise<void> {
+    if (child === undefined) {
+      return Promise.resolve();
+    }
+    return new Promise<void>((terminated) => {
+      const killer = setTimeout(() => {
+        this.signalGroup(child, "SIGKILL");
+        clearTimeout(killer);
+      }, KILL_ESCALATION_MS);
+      const finished = (): void => {
+        terminated();
+      };
+      if (child.exitCode !== null || child.signalCode !== null) {
+        finished();
+        return;
+      }
+      child.once("exit", finished);
+      child.once("close", finished);
+      try {
+        this.signalGroup(child, "SIGTERM");
+      } catch {
+        finished();
+      }
+    });
+  }
+
+  /** Signal the child's whole process group (detached spawn leads it). */
+  private signalGroup(child: ChildProcess, cliSignal: NodeJS.Signals): void {
+    const pid = child.pid;
+    if (pid === undefined) {
+      return;
+    }
+    try {
+      process.kill(-pid, cliSignal);
+    } catch {
+      try {
+        child.kill(cliSignal);
+      } catch {
+        // Already gone.
+      }
+    }
+  }
+}
+
+export interface RunStreamOptions {
+  signal?: AbortSignal;
+  timeoutMs?: number;
+  /** Text written to the child's stdin then closed (never argv). */
+  input?: string;
+  /** Called for each NDJSON `{"type":"progress", ...}` line. */
+  onProgress?: (event: Record<string, unknown>) => void;
+  /** Exact secret substrings additionally masked from surfaced text. */
+  redact?: string[];
+}
+
+export interface RunStreamResult {
+  envelope: ProtocolEnvelope;
+  exitCode: number;
+  /** Sanitized stderr diagnostics. */
+  stderr: string;
 }
