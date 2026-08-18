@@ -117,6 +117,37 @@ function stringValue(value: unknown): string | undefined {
   return undefined;
 }
 
+/**
+ * Clean a title for display/search: strip inline markup such as
+ * `P16<sup>+</sup>` and unescape the common HTML entities, so the table
+ * and Detail Drawer never show raw tags. The stored frontmatter is never
+ * modified — the plugin only reads.
+ */
+function cleanTitleValue(value: unknown): string | undefined {
+  const raw = stringValue(value);
+  if (raw === undefined) {
+    return undefined;
+  }
+  if (!/[<>&]/.test(raw)) {
+    return raw;
+  }
+  const cleaned = raw
+    .replace(/<sup[^>]*>/gi, "")
+    .replace(/<\/sup>/gi, "")
+    .replace(/<sub[^>]*>/gi, "")
+    .replace(/<\/sub>/gi, "")
+    .replace(/<[^>]*>/g, "")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .replace(/&#0*39;/gi, "'")
+    .replace(/&quot;/gi, '"')
+    .replace(/\s+/g, " ")
+    .trim();
+  return cleaned.length > 0 ? cleaned : raw;
+}
+
 function stringList(value: unknown): string[] {
   if (!Array.isArray(value)) {
     return [];
@@ -139,6 +170,15 @@ function normalizeYear(value: unknown): number | undefined {
     return Number(value);
   }
   return undefined;
+}
+
+const PUBLICATION_DATE_RE = /^\d{4}(-\d{2}(-\d{2})?)?$/;
+
+function normalizePublicationDate(value: unknown): string | undefined {
+  if (typeof value !== "string" || !PUBLICATION_DATE_RE.test(value.trim())) {
+    return undefined;
+  }
+  return value.trim();
 }
 
 function normalizeAuthors(value: unknown): PaperAuthor[] {
@@ -195,7 +235,7 @@ function parsePaper(
       : undefined;
   const declaredAliases =
     declaredKey !== undefined ? stringList(fm.citation_key_aliases) : [];
-  const title = stringValue(fm.title);
+  const title = cleanTitleValue(fm.title);
 
   if (fm.schema_version !== PAPER_SCHEMA_VERSION) {
     reasons.push("unsupported_schema");
@@ -234,8 +274,20 @@ function parsePaper(
       paperId: paperId!,
       title: title!,
       authors: normalizeAuthors(fm.authors),
+      itemType:
+        fm.item_type === "article-journal" || fm.item_type === "preprint"
+          ? fm.item_type
+          : undefined,
       journal: stringValue(fm.journal),
+      journalAbbreviation: stringValue(fm.journal_abbreviation),
+      publicationDate: normalizePublicationDate(fm.publication_date),
       year: normalizeYear(fm.year),
+      volume: stringValue(fm.volume),
+      issue: stringValue(fm.issue),
+      pages: stringValue(fm.pages),
+      url: stringValue(fm.url),
+      issn: stringList(fm.issn),
+      language: stringValue(fm.language),
       identifiers: normalizeIdentifiers(fm),
       citationKeyAliases: declaredAliases,
       titleAliases: stringList(fm.aliases),
@@ -251,6 +303,7 @@ function cloneRecord(record: PaperRecord): PaperRecord {
     identifiers: { ...record.identifiers },
     citationKeyAliases: [...record.citationKeyAliases],
     titleAliases: [...record.titleAliases],
+    issn: record.issn !== undefined ? [...record.issn] : undefined,
   };
 }
 

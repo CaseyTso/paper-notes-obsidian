@@ -233,6 +233,58 @@ describe("LibraryIndex scan", () => {
     index.scanAll();
     expect(index.getRecords()).toHaveLength(2);
   });
+
+  it("reads the full canonical bibliography fields", () => {
+    const vault = new FakeVault();
+    vault.add(
+      `${ROOT}/full2024/full2024.md`,
+      makeFrontmatter({
+        citation_key: "full2024",
+        item_type: "preprint",
+        journal_abbreviation: "J Tests",
+        publication_date: "2024-05-01",
+        volume: "12",
+        issue: "3",
+        pages: "100-110",
+        url: "https://doi.org/10.1000/full",
+        issn: ["1234-5678", "8765-4321"],
+        language: "en",
+        arxiv: "2401.00001",
+      }),
+    );
+    const index = new LibraryIndex(vault, ROOT);
+    index.scanAll();
+    const record = index.getRecords()[0];
+    expect(record.itemType).toBe("preprint");
+    expect(record.journalAbbreviation).toBe("J Tests");
+    expect(record.publicationDate).toBe("2024-05-01");
+    expect(record.volume).toBe("12");
+    expect(record.issue).toBe("3");
+    expect(record.pages).toBe("100-110");
+    expect(record.url).toBe("https://doi.org/10.1000/full");
+    expect(record.issn).toEqual(["1234-5678", "8765-4321"]);
+    expect(record.language).toBe("en");
+    expect(record.identifiers.arxiv).toBe("2401.00001");
+  });
+
+  it("cleans inline HTML tags and entities from titles for display", () => {
+    const vault = new FakeVault();
+    vault.add(
+      `${ROOT}/sup2024/sup2024.md`,
+      makeFrontmatter({
+        citation_key: "sup2024",
+        title: "P16<sup>+</sup> Cells Drive Adverse Remodeling",
+      }),
+    );
+    const index = new LibraryIndex(vault, ROOT);
+    index.scanAll();
+    const record = index.getRecords()[0];
+    expect(record.title).toBe("P16+ Cells Drive Adverse Remodeling");
+    // The stored frontmatter is never modified.
+    expect(vault.frontmatter.get(`${ROOT}/sup2024/sup2024.md`)?.title).toBe(
+      "P16<sup>+</sup> Cells Drive Adverse Remodeling",
+    );
+  });
 });
 
 describe("invalid records", () => {

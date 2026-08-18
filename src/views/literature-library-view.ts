@@ -267,6 +267,10 @@ export class PaperNotesLibraryView extends ItemView {
   private sort: LibrarySort = { columnId: "year", direction: "desc" };
   private selectedPath: string | undefined;
   private isOpen = false;
+  /** Focus requested while the view was still opening (applied in onOpen). */
+  private pendingFocus: { citationKey: string; path?: string } | undefined;
+  private focusRetryTimer: ReturnType<typeof setTimeout> | undefined;
+  private focusRetries = 0;
   private tableHost: HTMLElement | null = null;
   /** Local snapshots bridge rapid chip activation until vault events arrive. */
   private readonly readingStatusOverrides = new Map<
@@ -357,6 +361,11 @@ export class PaperNotesLibraryView extends ItemView {
   async onOpen(): Promise<void> {
     this.isOpen = true;
     this.render();
+    const pending = this.pendingFocus;
+    this.pendingFocus = undefined;
+    if (pending !== undefined) {
+      this.focusPaper(pending.citationKey, pending.path);
+    }
     // Background refresh of missing/expired journal metrics (deduplicated
     // inside the cache; the first render already showed cached values).
     void this.refreshAllExpired();
@@ -364,6 +373,8 @@ export class PaperNotesLibraryView extends ItemView {
 
   async onClose(): Promise<void> {
     this.isOpen = false;
+    this.clearFocusRetryTimer();
+    this.pendingFocus = undefined;
     this.cancelFullTextSearch();
     this.clearRowClickTimer();
     this.detachDrawerKeyHandler();
@@ -391,6 +402,85 @@ export class PaperNotesLibraryView extends ItemView {
     if (this.isOpen) {
       this.render();
     }
+  }
+
+  /**
+   * Focus the Library on a specific paper after a Browser Capture import.
+   * Clears search/filters so the target row is visible, selects it, opens
+   * the Detail Drawer, and scrolls the row into view.
+   */
+  focusPaper(citationKey: string, path?: string): void {
+    this.clearFocusRetryTimer();
+    if (!this.isOpen) {
+      // The view is still being created; apply the focus when it opens.
+      this.pendingFocus = { citationKey, path };
+      return;
+    }
+    this.applyFocus(citationKey, path);
+  }
+
+  private clearFocusRetryTimer(): void {
+    if (this.focusRetryTimer !== undefined) {
+      clearTimeout(this.focusRetryTimer);
+      this.focusRetryTimer = undefined;
+    }
+    this.focusRetries = 0;
+  }
+
+  /**
+   * Apply the focus once the record is visible in the index. Obsidian's
+   * vault file cache may lag a fresh CLI write by a moment, so retry until
+   * the row exists instead of opening an empty drawer.
+   */
+  private applyFocus(citationKey: string, path?: string): void {
+    const records = this.source.getRecords();
+    const targetPath =
+      path ??
+      records.find(
+        (record) =>
+          record.key === citationKey || record.citationKeyAliases.includes(citationKey),
+      )?.path;
+    const targetVisible =
+      targetPath !== undefined && records.some((record) => record.path === targetPath);
+
+    if (!targetVisible) {
+      if (this.focusRetries < 25) {
+        this.focusRetries += 1;
+        this.focusRetryTimer = setTimeout(() => {
+          this.focusRetryTimer = undefined;
+          if (this.isOpen) {
+            this.applyFocus(citationKey, path);
+          }
+        }, 200);
+      }
+      return;
+    }
+
+    this.focusRetries = 0;
+    this.searchQuery = "";
+    this.filters = { ...EMPTY_LIBRARY_FILTERS };
+    this.advancedFiltersExpanded = undefined;
+    this.cancelFullTextSearch();
+
+    this.selectedPath = targetPath;
+    this.render();
+    if (this.drawerOpen) {
+      this.abstractExpanded = false;
+      this.renderDetailDrawer();
+    } else {
+      this.abstractExpanded = false;
+      this.openDetailDrawer();
+    }
+
+    requestAnimationFrame(() => {
+      const rows = this.containerEl.querySelectorAll<HTMLElement>("[data-paper-notes-library-path]");
+      for (const row of rows) {
+        if (row.dataset.paperNotesLibraryPath === targetPath) {
+          row.scrollIntoView?.({ block: "nearest" });
+          break;
+        }
+      }
+    });
   }
 
   private render(): void {

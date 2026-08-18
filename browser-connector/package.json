@@ -1,0 +1,19 @@
+{
+  "name": "paper-notes-browser-connector",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Chromium MV3 connector that captures one current journal/preprint page into paper-notes",
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "build": "node build.mjs"
+  },
+  "devDependencies": {
+    "@types/chrome": "^0.2.6",
+    "esbuild": "^0.28.1",
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.10"
+  },
+  "license": "MIT"
+}

@@ -1,0 +1,12 @@
+{
+  "manifest_version": 3,
+  "name": "Paper Notes Browser Connector",
+  "version": "0.1.0",
+  "description": "Captures the current journal article or preprint page into paper-notes via the Obsidian Capture Bridge.",
+  "permissions": ["activeTab", "scripting"],
+  "host_permissions": ["http://127.0.0.1:27124/*"],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Capture current paper into Paper Notes"
+  }
+}

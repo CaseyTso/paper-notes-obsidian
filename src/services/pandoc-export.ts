@@ -86,7 +86,7 @@ export function generateCslJson(records: PaperRecord[]): string {
 function recordToCslItem(record: PaperRecord): Record<string, unknown> {
   const item: Record<string, unknown> = {
     id: record.key,
-    type: "article-journal",
+    type: record.itemType ?? "article-journal",
     title: record.title,
   };
   const authors = record.authors
@@ -98,8 +98,32 @@ function recordToCslItem(record: PaperRecord): Record<string, unknown> {
   if (typeof record.journal === "string" && record.journal.length > 0) {
     item["container-title"] = record.journal;
   }
-  if (typeof record.year === "number") {
+  if (
+    typeof record.journalAbbreviation === "string" &&
+    record.journalAbbreviation.length > 0
+  ) {
+    item["container-title-short"] = record.journalAbbreviation;
+  }
+  if (
+    typeof record.publicationDate === "string" &&
+    record.publicationDate.length > 0
+  ) {
+    item.issued = {
+      "date-parts": [
+        record.publicationDate.split("-").map((part) => Number(part)),
+      ],
+    };
+  } else if (typeof record.year === "number") {
     item.issued = { "date-parts": [[record.year]] };
+  }
+  if (typeof record.volume === "string" && record.volume.length > 0) {
+    item.volume = record.volume;
+  }
+  if (typeof record.issue === "string" && record.issue.length > 0) {
+    item.issue = record.issue;
+  }
+  if (typeof record.pages === "string" && record.pages.length > 0) {
+    item.page = record.pages;
   }
   if (record.identifiers.doi !== undefined) {
     item.DOI = record.identifiers.doi;
@@ -109,6 +133,18 @@ function recordToCslItem(record: PaperRecord): Record<string, unknown> {
   }
   if (record.identifiers.pmcid !== undefined) {
     item.PMCID = record.identifiers.pmcid;
+  }
+  if (record.identifiers.arxiv !== undefined) {
+    item.arXiv = record.identifiers.arxiv;
+  }
+  if (typeof record.url === "string" && record.url.length > 0) {
+    item.URL = record.url;
+  }
+  if (record.issn !== undefined && record.issn.length > 0) {
+    item.ISSN = [...record.issn];
+  }
+  if (typeof record.language === "string" && record.language.length > 0) {
+    item.language = record.language;
   }
   if (typeof record.abstract === "string" && record.abstract.length > 0) {
     item.abstract = record.abstract;

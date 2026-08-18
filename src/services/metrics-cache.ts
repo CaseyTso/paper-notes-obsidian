@@ -46,7 +46,24 @@ export interface CachedMetricsEntry {
 /** A journal identity to look up: either/both of journal name and ISSN. */
 export interface MetricQueryTarget {
   journal?: string;
-  issn?: string;
+  /** A single ISSN or the record's full ISSN list (first valid wins). */
+  issn?: string | string[];
+}
+
+/**
+ * ISSN usable for a metrics query.
+ *
+ * A single explicit ISSN is accepted (precise identity for direct callers),
+ * but an ISSN *array* — the shape carried by `PaperRecord` for display/CSL —
+ * returns `undefined`. EasyScholar's migrated endpoint only accepts a
+ * journal name (`publicationName`), so record ISSN lists must not turn the
+ * lookup into an ISSN-only query.
+ */
+export function firstIssn(issn: string | string[] | undefined): string | undefined {
+  if (Array.isArray(issn)) {
+    return undefined;
+  }
+  return issn;
 }
 
 export type RefreshStatus =
@@ -107,7 +124,8 @@ export function normalizeIssn(issn: string): string | undefined {
  * their prefixes. Returns undefined when there is no usable identity.
  */
 export function metricKeyOf(target: MetricQueryTarget): string | undefined {
-  const normalizedIssn = target.issn !== undefined ? normalizeIssn(target.issn) : undefined;
+  const issnValue = firstIssn(target.issn);
+  const normalizedIssn = issnValue !== undefined ? normalizeIssn(issnValue) : undefined;
   if (normalizedIssn !== undefined) {
     return `issn:${normalizedIssn}`;
   }
@@ -458,10 +476,11 @@ export class MetricsCache {
   }
 
   private queryArgs(target: MetricQueryTarget): string[] {
-    const issn = target.issn !== undefined ? normalizeIssn(target.issn) : undefined;
+    const issnValue = firstIssn(target.issn);
+    const issn = issnValue !== undefined ? normalizeIssn(issnValue) : undefined;
     if (issn !== undefined) {
       // Pass the ISSN through as provided (the key itself stays normalized).
-      return ["metrics", "query", "--issn", target.issn!.trim()];
+      return ["metrics", "query", "--issn", issnValue!.trim()];
     }
     return ["metrics", "query", "--journal", (target.journal ?? "").trim()];
   }
@@ -490,7 +509,7 @@ export class MetricsCache {
       if (journal.length > 0) {
         entry.journal = journal;
       }
-      const issn = target.issn !== undefined ? target.issn.trim() : undefined;
+      const issn = firstIssn(target.issn)?.trim();
       if (issn !== undefined && issn.length > 0) {
         entry.issn = issn;
       }

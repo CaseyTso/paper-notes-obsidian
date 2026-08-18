@@ -129,6 +129,12 @@ export function buildPaperDetail(item: LibraryItem): PaperDetailData {
     ...(item.journal !== undefined
       ? [{ label: "Journal", value: item.journal }]
       : []),
+    ...(record.volume !== undefined ? [{ label: "Volume", value: record.volume }] : []),
+    ...(record.issue !== undefined ? [{ label: "Issue", value: record.issue }] : []),
+    ...(record.pages !== undefined ? [{ label: "Pages", value: record.pages }] : []),
+    ...(record.issn !== undefined && record.issn.length > 0
+      ? [{ label: "ISSN", value: record.issn.join(", ") }]
+      : []),
     ...identifiers,
   ];
   const abstract =

@@ -96,6 +96,36 @@ _Avoid_: click-anywhere-to-close, toggle on double-click, closing the Drawer whe
 The Detail Drawer's read-only content (title, bibliography, abstract) is selectable and copyable; interactive chrome (buttons, chips, menus) stays non-selectable.
 _Avoid_: whole-drawer user-select none, contenteditable, selection inside buttons
 
+## Browser Capture
+
+**Browser Connector**:
+The Paper Notes browser extension that submits metadata from one current paper page to the Obsidian Plugin.
+_Avoid_: Zotero Connector, Obsidian Plugin, Zotero runtime
+
+**Capture Bridge**:
+The Obsidian Plugin-owned loopback endpoint through which the Browser Connector submits a Web Capture.
+_Avoid_: public API, `obsidian://` payload transport, native-messaging host, core writer
+
+**Web Capture**:
+A candidate bibliographic record extracted from one current journal-article or preprint webpage before core validation and deduplication.
+_Avoid_: user-confirmed metadata, authoritative Paper, Zotero item
+
+**Captured Bibliography**:
+The source-supplied publication facts in a Web Capture, excluding core-generated identity, workflow, artifact, and metric fields.
+_Avoid_: full frontmatter, confirmed metadata, tags, page body
+
+**Verified Capture**:
+A Web Capture backed by a successful authoritative identifier lookup, complete critical bibliography, and no material source conflict; it may create a Paper without Import Review.
+_Avoid_: trusted webpage, user-confirmed metadata, unchecked complete record
+
+**Import Review**:
+The field-by-field Obsidian confirmation surface for a Web Capture that has missing or conflicting metadata, a possible duplicate, or an explicit metadata-update proposal for an existing Paper.
+_Avoid_: import inbox, mandatory preview, silent conflict resolution, automatic metadata update
+
+**Supported Paper Page**:
+A webpage describing one journal article or preprint and exposing enough structured metadata or a strong identifier for a Web Capture.
+_Avoid_: search-results page, multi-item page, book page
+
 ## Topic MOC
 
 **Topic MOC**:

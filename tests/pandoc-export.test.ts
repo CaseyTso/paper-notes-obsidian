@@ -293,6 +293,47 @@ describe("generateCslJson", () => {
     expect(item["issued"]).toEqual({ "date-parts": [[2023]] });
   });
 
+  it("maps the full canonical bibliography like the core CSL layer", () => {
+    const full: PaperRecord = {
+      path: "05 Literature/full2024/full2024.md",
+      key: "full2024",
+      paperId: "550e8400-e29b-41d4-a716-446655440000",
+      title: "Full paper",
+      authors: [
+        { family: "Smith", given: "J." },
+        { literal: "Study Group" },
+      ],
+      itemType: "preprint",
+      journal: "Journal of Tests",
+      journalAbbreviation: "J Tests",
+      publicationDate: "2024-05-01",
+      year: 2024,
+      volume: "12",
+      issue: "3",
+      pages: "100-110",
+      url: "https://doi.org/10.1000/full",
+      issn: ["1234-5678", "8765-4321"],
+      language: "en",
+      identifiers: { doi: "10.1000/full", arxiv: "2401.00001" },
+      citationKeyAliases: [],
+      titleAliases: [],
+      abstract: "An abstract",
+    };
+    const item = (JSON.parse(generateCslJson([full])) as Array<Record<string, unknown>>)[0];
+    expect(item["type"]).toBe("preprint");
+    expect(item["container-title"]).toBe("Journal of Tests");
+    expect(item["container-title-short"]).toBe("J Tests");
+    expect(item["issued"]).toEqual({ "date-parts": [[2024, 5, 1]] });
+    expect(item["volume"]).toBe("12");
+    expect(item["issue"]).toBe("3");
+    expect(item["page"]).toBe("100-110");
+    expect(item["URL"]).toBe("https://doi.org/10.1000/full");
+    expect(item["ISSN"]).toEqual(["1234-5678", "8765-4321"]);
+    expect(item["language"]).toBe("en");
+    expect(item["arXiv"]).toBe("2401.00001");
+    expect(item["abstract"]).toBe("An abstract");
+  });
+
   it("sorts records by key and keeps ids unique", () => {
     const items = JSON.parse(generateCslJson([JONES, SMITH])) as Array<{
       id: string;

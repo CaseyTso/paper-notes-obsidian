@@ -69,6 +69,11 @@ export interface PaperNotesSettings {
    * out-of-range widths clamp to the drag bounds.
    */
   columnWidths?: Partial<Record<LibraryColumnId, number>>;
+  /**
+   * Browser Connector toggle (Task 6). Absent means enabled so legacy
+   * `data.json` files keep the Capture Bridge on by default.
+   */
+  browserConnectorEnabled?: boolean;
 }
 
 export const DEFAULT_SETTINGS: PaperNotesSettings = {
@@ -159,6 +164,14 @@ export function normalizeSettings(loaded: unknown): PaperNotesSettings {
  */
 export function metricsEnabledOf(settings: PaperNotesSettings): boolean {
   return settings.metricsEnabled !== false;
+}
+
+/**
+ * Effective Browser Connector toggle: enabled unless explicitly disabled.
+ * Absent/legacy `data.json` values keep the Capture Bridge on.
+ */
+export function browserConnectorEnabledOf(settings: PaperNotesSettings): boolean {
+  return settings.browserConnectorEnabled !== false;
 }
 
 /**

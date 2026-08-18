@@ -201,6 +201,11 @@ describe("cache key normalization by ISSN/journal", () => {
     expect(metricKeyOf({ journal: "Nature Medicine", issn: "junk" })).toBe(
       "journal:nature medicine",
     );
+    // Record ISSN lists (PaperRecord display data) never become an
+    // ISSN-only metrics identity: EasyScholar only accepts journal names.
+    expect(
+      metricKeyOf({ journal: "Nature Medicine", issn: ["0040-4020", "1078-8956"] }),
+    ).toBe("journal:nature medicine");
     expect(metricKeyOf({})).toBeUndefined();
     expect(metricKeyOf({ journal: "  " })).toBeUndefined();
   });
@@ -322,6 +327,20 @@ describe("current-journal and all-expired refresh", () => {
       "query",
       "--issn",
       "0028-0836",
+    ]);
+  });
+
+  it("uses --journal for record ISSN lists (EasyScholar API requires names)", async () => {
+    const { cache, run } = makeCache();
+    await cache.refresh({
+      journal: "Nature Medicine",
+      issn: ["0028-0836", "1078-8956"],
+    });
+    expect(run.mock.calls[0][0]).toEqual([
+      "metrics",
+      "query",
+      "--journal",
+      "Nature Medicine",
     ]);
   });
 

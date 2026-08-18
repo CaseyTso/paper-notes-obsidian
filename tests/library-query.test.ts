@@ -46,7 +46,16 @@ function makeRecord(overrides: Partial<PaperRecord> = {}): PaperRecord {
       { literal: "Global Consortium" },
     ],
     journal: "Nature Methods",
+    journalAbbreviation: "Nat Methods",
+    publicationDate: "2024-01-15",
     year: 2024,
+    volume: "10",
+    issue: "2",
+    pages: "1-9",
+    url: "https://doi.org/10.1000/alpha",
+    issn: ["1234-5678"],
+    language: "en",
+    itemType: "article-journal",
     identifiers: { doi: "10.1000/alpha", pmid: "12345" },
     citationKeyAliases: ["alpha-old-key"],
     titleAliases: ["Alpha cells"],
@@ -665,8 +674,16 @@ describe("buildPaperDetail", () => {
     expect(field("Authors")).toBe("Shiau Wen; Global Consortium");
     expect(field("Year")).toBe("2024");
     expect(field("Journal")).toBe("Nature Methods");
+    expect(field("Volume")).toBe("10");
+    expect(field("Issue")).toBe("2");
+    expect(field("Pages")).toBe("1-9");
+    expect(field("ISSN")).toBe("1234-5678");
     expect(field("DOI")).toBe("10.1000/alpha");
     expect(field("PMID")).toBe("12345");
+    // Fields deliberately not captured are hidden from the drawer too.
+    for (const hidden of ["Type", "Date", "Journal abbreviation", "URL", "Language"]) {
+      expect(field(hidden)).toBeUndefined();
+    }
     // Batch 2 (A+C): reading status, artifacts, metrics and the abstract
     // are sectioned fields, not flat bibliographic rows.
     expect(field("Reading status")).toBeUndefined();

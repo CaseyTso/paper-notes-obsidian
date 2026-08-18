@@ -9,6 +9,9 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "build": "node esbuild.config.mjs production",
+    "test:connector": "npm --prefix browser-connector run test",
+    "typecheck:connector": "npm --prefix browser-connector run typecheck",
+    "build:connector": "npm --prefix browser-connector run build",
     "verify": "npm run typecheck && npm test && npm run build"
   },
   "devDependencies": {

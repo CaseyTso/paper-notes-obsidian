@@ -32,8 +32,18 @@ export interface PaperRecord {
   paperId: string;
   title: string;
   authors: PaperAuthor[];
+  itemType?: "article-journal" | "preprint";
   journal?: string;
+  journalAbbreviation?: string;
+  /** Canonical publication date (YYYY, YYYY-MM, or YYYY-MM-DD). */
+  publicationDate?: string;
   year?: number;
+  volume?: string;
+  issue?: string;
+  pages?: string;
+  url?: string;
+  issn?: string[];
+  language?: string;
   identifiers: PaperIdentifiers;
   /** Old citation keys kept after rename (identity aliases). */
   citationKeyAliases: string[];

@@ -10,7 +10,7 @@
  */
 import { App, Notice, PluginSettingTab, Setting, type TextComponent } from "obsidian";
 
-import { CSL_STYLE_DIR, metricsEnabledOf } from "./settings";
+import { CSL_STYLE_DIR, browserConnectorEnabledOf, metricsEnabledOf } from "./settings";
 import type PaperNotesPlugin from "./main";
 
 export class PaperNotesSettingTab extends PluginSettingTab {
@@ -25,10 +25,43 @@ export class PaperNotesSettingTab extends PluginSettingTab {
     const { containerEl } = this;
     containerEl.empty();
     this.renderCore(containerEl);
+    this.renderBrowserConnector(containerEl);
     this.renderExport(containerEl);
     this.renderMetrics(containerEl);
     void this.renderEasyScholarStatus(containerEl);
     void this.renderMineruKey(containerEl);
+  }
+
+  /** Browser Connector section (Task 6): enable toggle + read-only status. */
+  private renderBrowserConnector(containerEl: HTMLElement): void {
+    new Setting(containerEl).setName("Browser Connector").setHeading();
+
+    new Setting(containerEl)
+      .setName("Capture Bridge")
+      .setDesc(
+        "When enabled, Obsidian listens on http://127.0.0.1:27124/v1/capture so the Chromium Browser Connector can submit one paper page. Loopback only; requests without the connector version header cannot mutate.",
+      )
+      .addToggle((toggle) =>
+        toggle
+          .setValue(browserConnectorEnabledOf(this.plugin.settings))
+          .onChange(async (value) => {
+            await this.plugin.setBrowserConnectorEnabled(value);
+            this.display();
+          }),
+      );
+
+    const status = this.plugin.getBrowserConnectorStatus();
+    const statusText: Record<string, string> = {
+      running: "Running on 127.0.0.1:27124",
+      disabled: "Disabled",
+      port_conflict: "Port 27124 is in use by another process",
+      error: "Error starting the bridge",
+      stopped: "Stopped",
+    };
+    new Setting(containerEl)
+      .setName("Status")
+      .setDesc(statusText[status] ?? status)
+      .setDisabled(true);
   }
 
   private renderCore(containerEl: HTMLElement): void {

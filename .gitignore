@@ -5,3 +5,6 @@ main.js
 .DS_Store
 BLOCKED.md
 PROGRESS.md
+browser-connector/dist/
+browser-connector/dist.crx
+browser-connector/dist.pem

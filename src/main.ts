@@ -16,14 +16,18 @@ import {
   type IndexVaultEvent,
   type LiteratureVaultAdapter,
 } from "./services/library-index";
+import { CaptureBridge, type CaptureBridgeStatus } from "./services/capture-bridge";
+import { WebCaptureActions } from "./services/web-capture-actions";
 import {
   CSL_STYLE_DIR,
   DEFAULT_SETTINGS,
+  browserConnectorEnabledOf,
   exportConfigOf,
   normalizeSettings,
   type PaperNotesSettings,
 } from "./settings";
 import { PaperNotesSettingTab } from "./settings-tab";
+import { ImportReviewModal } from "./modals/import-review-modal";
 import { createCitationPickerModal } from "./modals/citation-picker-modal";
 import {
   insertCitation,
@@ -128,6 +132,11 @@ export default class PaperNotesPlugin extends Plugin {
   private cliClient: CliClient | undefined;
   private cliReadOnlyMode = true;
 
+  /** Capture Bridge (loopback) and its CLI adapter (Task 6/7). */
+  private captureBridge: CaptureBridge | undefined;
+  private webCaptureActions: WebCaptureActions | undefined;
+  private browserConnectorStatus: CaptureBridgeStatus = "stopped";
+
   private libraryIndex: LibraryIndex | undefined;
   private vaultAdapter: ObsidianVaultAdapter | undefined;
   private libraryView: PaperNotesLibraryView | null = null;
@@ -209,10 +218,83 @@ export default class PaperNotesPlugin extends Plugin {
     this.initializeLibraryIndex();
     this.initializeMineruQueue();
     this.addSettingTab(new PaperNotesSettingTab(this.app, this));
+    if (typeof this.registerObsidianProtocolHandler === "function") {
+    this.registerObsidianProtocolHandler("paper-notes-review", (params) => {
+      const reviewId = typeof params.id === "string" ? params.id : "";
+      const review = this.webCaptureActions?.getReview(reviewId);
+      if (review === undefined) {
+        new Notice("Capture review expired; capture the page again.");
+        return;
+      }
+      const modal = new ImportReviewModal(this.app, review, {
+        confirm: (confirmed) => {
+          void (async () => {
+            const result = await this.webCaptureActions?.confirmReview(reviewId, confirmed);
+            if (result !== undefined) {
+              this.showWebCaptureResult(result);
+            }
+          })();
+        },
+        cancel: () => {
+          new Notice("Capture review cancelled; nothing was written.");
+        },
+      });
+      modal.open();
+    });
+    }
     void this.refreshMineruKeyStatus();
   }
 
+  /** Surface a Browser Capture result as a concise Notice. */
+  private showWebCaptureResult(result: import("../browser-connector/src/protocol").BrowserCaptureResult): void {
+    switch (result.status) {
+      case "created":
+        new Notice(`Created ${result.title} (${result.citationKey})`);
+        break;
+      case "existing":
+        new Notice(`Already in library: ${result.title} (${result.citationKey})`);
+        break;
+      case "needs_review":
+        new Notice(`Capture still needs review: ${result.reason}`);
+        break;
+      case "rejected":
+        new Notice(`Capture rejected: ${result.reason}`);
+        break;
+      case "unavailable":
+        new Notice(`Capture unavailable: ${result.reason}`);
+        break;
+    }
+  }
+
+  /**
+   * Reveal the Library and focus it on the imported paper. Clears any
+   * search/filter, selects the row, opens the Detail Drawer, and scrolls
+   * the row into view (user-visible result of a successful capture).
+   */
+  private focusPaperInLibrary(citationKey: string, path?: string): void {
+    this.activateLibraryView();
+    const attempt = (remaining: number): void => {
+      // Obsidian's vault file cache can lag the CLI write by a moment;
+      // rescan on each attempt so the imported note becomes visible.
+      this.libraryIndex?.scanAll();
+      const view = this.libraryView;
+      if (view !== null) {
+        view.focusPaper(citationKey, path);
+        return;
+      }
+      if (remaining > 0) {
+        setTimeout(() => attempt(remaining - 1), 100);
+      }
+    };
+    attempt(30);
+  }
+
   async onunload(): Promise<void> {
+    // Capture Bridge: release the loopback port and drop in-memory
+    // idempotency/review maps (Task 6).
+    await this.captureBridge?.stop();
+    this.captureBridge = undefined;
+    this.webCaptureActions = undefined;
     // MinerU: cancel the running child and drop the pending queue (published
     // results are untouched; the core CLI only commits on full success).
     this.mineruQueue?.dispose();
@@ -238,6 +320,78 @@ export default class PaperNotesPlugin extends Plugin {
     this.cliClient = new CliClient(this.settings.cliPath);
     const probe = await this.cliClient.probe();
     this.cliReadOnlyMode = probe.readOnlyMode;
+    this.initializeCaptureBridge();
+  }
+
+  /**
+   * Start the loopback Capture Bridge after settings/CLI are ready. A
+   * port collision records `port_conflict`; every other plugin feature
+   * stays usable. `browserConnectorEnabled` defaults to true for legacy
+   * `data.json` files.
+   */
+  private initializeCaptureBridge(): void {
+    this.captureBridge?.stop();
+    this.captureBridge = undefined;
+    this.webCaptureActions = undefined;
+
+    if (!browserConnectorEnabledOf(this.settings)) {
+      this.browserConnectorStatus = "disabled";
+      return;
+    }
+    const client = this.getCliClient();
+    if (client === undefined) {
+      this.browserConnectorStatus = "disabled";
+      return;
+    }
+    const adapter = this.app.vault?.adapter as { getBasePath?(): string } | undefined;
+    const vaultRoot =
+      typeof adapter?.getBasePath === "function" ? adapter.getBasePath() : undefined;
+    if (vaultRoot === undefined) {
+      this.browserConnectorStatus = "disabled";
+      return;
+    }
+    this.webCaptureActions = new WebCaptureActions({
+      client,
+      vaultRoot,
+      onChanged: (result) => {
+        this.libraryIndex?.scanAll();
+        if (result.status === "created" || result.status === "existing") {
+          this.focusPaperInLibrary(
+            result.citationKey,
+            result.status === "created" ? result.path : undefined,
+          );
+        }
+      },
+    });
+    this.captureBridge = new CaptureBridge({
+      handler: (request) => {
+        const actions = this.webCaptureActions;
+        if (actions === undefined) {
+          return Promise.resolve({
+            status: "unavailable",
+            reason: "Capture bridge is not ready.",
+          });
+        }
+        return actions.submitCapture(request);
+      },
+      onStatusChange: (status) => {
+        this.browserConnectorStatus = status;
+      },
+    });
+    void this.captureBridge.start().then((result) => {
+      this.browserConnectorStatus = result.status;
+    });
+  }
+
+  getBrowserConnectorStatus(): CaptureBridgeStatus {
+    return this.browserConnectorStatus;
+  }
+
+  /** Toggle the Browser Connector; persists via settings. */
+  async setBrowserConnectorEnabled(enabled: boolean): Promise<void> {
+    this.settings.browserConnectorEnabled = enabled;
+    await this.saveSettings();
+    this.initializeCaptureBridge();
   }
 
   getCliClient(): CliClient | undefined {
