@@ -275,6 +275,7 @@ describe("plugin settings", () => {
   it("exposes defaults for every bridge setting", () => {
     expect(DEFAULT_SETTINGS).toEqual({
       cliPath: "paper-notes",
+      paperFetchPath: "paper-fetch",
       literatureRoot: "05 Literature",
       exportDirectory: "",
       pandocPath: "pandoc",
@@ -293,9 +294,11 @@ describe("plugin settings", () => {
   it("merges partial loaded settings over defaults", () => {
     const settings = normalizeSettings({
       cliPath: "/opt/paper-notes/bin/paper-notes",
+      paperFetchPath: "/opt/paper-fetch/bin/paper-fetch",
       metricTtlDays: 7,
     });
     expect(settings.cliPath).toBe("/opt/paper-notes/bin/paper-notes");
+    expect(settings.paperFetchPath).toBe("/opt/paper-fetch/bin/paper-fetch");
     expect(settings.literatureRoot).toBe("05 Literature");
     expect(settings.metricTtlDays).toBe(7);
   });

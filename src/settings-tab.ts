@@ -30,6 +30,7 @@ export class PaperNotesSettingTab extends PluginSettingTab {
     this.renderMetrics(containerEl);
     void this.renderEasyScholarStatus(containerEl);
     void this.renderMineruKey(containerEl);
+    this.renderFetchPdf(containerEl);
   }
 
   /** Browser Connector section (Task 6): enable toggle + read-only status. */
@@ -317,6 +318,74 @@ export class PaperNotesSettingTab extends PluginSettingTab {
         }),
       );
     }
+  }
+
+  /**
+   * Fetch PDF section: paper-fetch CLI path + read-only AbleSci Login
+   * Status (CONTEXT: AbleSci Login Status). The status row runs
+   * `paper-fetch doctor --json` on demand and shows only the ablesci row;
+   * the plugin never writes ~/.paper-fetch/config.json and never touches
+   * ableSci credentials.
+   */
+  private renderFetchPdf(containerEl: HTMLElement): void {
+    new Setting(containerEl).setName("Fetch PDF").setHeading();
+
+    new Setting(containerEl)
+      .setName("paper-fetch CLI path")
+      .setDesc(
+        "Path to the paper-fetch CLI used by Fetch PDF. All downloads run through this binary; a path change applies after reloading the plugin.",
+      )
+      .addText((text) =>
+        text
+          .setValue(this.plugin.settings.paperFetchPath)
+          .onChange(async (value) => {
+            const next = value.trim();
+            if (next.length > 0) {
+              this.plugin.settings.paperFetchPath = next;
+              await this.plugin.saveSettings();
+            }
+          }),
+      );
+
+    const status = new Setting(containerEl)
+      .setName("AbleSci login status")
+      .setDesc(
+        "科研通（ableSci）会话状态：paper-fetch 从 Google Chrome 读取登录 cookie。点击检查以刷新；未就绪时请先在 Chrome 登录 ablesci.com。插件不存储任何凭据，也不写入 paper-fetch 配置文件。",
+      );
+    let statusText: TextComponent | undefined;
+    status.addText((text) => {
+      statusText = text;
+      text.setValue("Not checked").setDisabled(true);
+    });
+
+    const runCheck = async (): Promise<void> => {
+      statusText?.setValue("Checking…");
+      const result = await this.plugin.checkAbleSciLoginStatus();
+      statusText?.setValue(
+        result.status === "ready"
+          ? "Ready"
+          : result.status === "not_ready"
+            ? "Not ready"
+            : "Unavailable",
+      );
+      status.setDesc(
+        result.status === "ready"
+          ? "科研通会话就绪：paper-fetch 可直接使用 ableSci 下载。"
+          : `${result.detail}\n${result.action}`,
+      );
+    };
+
+    status.addButton((button) =>
+      button
+        .setButtonText("Check login status")
+        .setCta()
+        .onClick(() => void runCheck()),
+    );
+    status.addButton((button) =>
+      button
+        .setButtonText("Open ableSci login")
+        .onClick(() => this.plugin.openExternal("https://www.ablesci.com")),
+    );
   }
 
   /** CSL styles present under the vault .paper-notes/csl/ directory. */

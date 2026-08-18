@@ -9,6 +9,8 @@ import {
 } from "obsidian";
 
 import { CliClient } from "./services/cli-client";
+import { FetchClient } from "./services/fetch-client";
+import type { AbleSciStatusResult } from "./types/fetch";
 import {
   LibraryIndex,
   SearchCancelledError,
@@ -132,6 +134,12 @@ export default class PaperNotesPlugin extends Plugin {
   private cliClient: CliClient | undefined;
   private cliReadOnlyMode = true;
 
+  /** paper-fetch CLI bridge (Fetch PDF) + startup availability probe. */
+  private fetchClient: FetchClient | undefined;
+  private fetchAvailable = false;
+  /** In-flight Fetch PDF runs, aborted on unload. */
+  private runningFetches = new Set<AbortController>();
+
   /** Capture Bridge (loopback) and its CLI adapter (Task 6/7). */
   private captureBridge: CaptureBridge | undefined;
   private webCaptureActions: WebCaptureActions | undefined;
@@ -215,6 +223,7 @@ export default class PaperNotesPlugin extends Plugin {
       },
     });
     await this.initializeCliBridge();
+    await this.initializeFetchBridge();
     this.initializeLibraryIndex();
     this.initializeMineruQueue();
     this.addSettingTab(new PaperNotesSettingTab(this.app, this));
@@ -306,6 +315,12 @@ export default class PaperNotesPlugin extends Plugin {
       controller.abort();
     }
     this.runningExports.clear();
+    // Fetch PDF: cancel in-flight downloads; temp dirs are removed by the
+    // PdfFetcher's own finally block.
+    for (const controller of this.runningFetches) {
+      controller.abort();
+    }
+    this.runningFetches.clear();
   }
 
   /**
@@ -321,6 +336,78 @@ export default class PaperNotesPlugin extends Plugin {
     const probe = await this.cliClient.probe();
     this.cliReadOnlyMode = probe.readOnlyMode;
     this.initializeCaptureBridge();
+  }
+
+  /**
+   * Load the paper-fetch CLI bridge and probe availability (non-mutating
+   * `--help`). A missing/broken CLI keeps Fetch PDF menu entries disabled
+   * with an explanatory reason; a path change applies after reloading.
+   */
+  private async initializeFetchBridge(): Promise<void> {
+    this.fetchClient = new FetchClient(this.settings.paperFetchPath);
+    this.fetchAvailable = await this.fetchClient.probe();
+  }
+
+  getFetchClient(): FetchClient | undefined {
+    return this.fetchClient;
+  }
+
+  isPaperFetchAvailable(): boolean {
+    return this.fetchAvailable;
+  }
+
+  /** Read-only ableSci (科研通) session status from `paper-fetch doctor`. */
+  async checkAbleSciLoginStatus(): Promise<AbleSciStatusResult> {
+    const client = this.fetchClient;
+    if (client === undefined) {
+      return {
+        status: "unavailable",
+        rowStatus: "cli_missing",
+        detail: "paper-fetch CLI 未配置。",
+        action: "在 Settings → Fetch PDF 设置 paper-fetch 路径。",
+      };
+    }
+    return client.ableSciStatus();
+  }
+
+  /** Track an in-flight Fetch PDF run so unload can abort it. */
+  trackFetchRun(controller: AbortController): void {
+    this.runningFetches.add(controller);
+  }
+
+  untrackFetchRun(controller: AbortController): void {
+    this.runningFetches.delete(controller);
+  }
+
+  /** Open an external http(s) URL in the default browser. */
+  openExternal(url: string): void {
+    if (!/^https?:\/\//i.test(url)) {
+      return;
+    }
+    try {
+      const requireFn = (
+        typeof require === "function"
+          ? require
+          : (globalThis as { require?: (id: string) => unknown }).require
+      ) as ((id: string) => unknown) | undefined;
+      const electron = requireFn?.("electron") as
+        | { shell?: { openExternal?: (url: string) => unknown } }
+        | undefined;
+      if (typeof electron?.shell?.openExternal === "function") {
+        void electron.shell.openExternal(url);
+        return;
+      }
+    } catch {
+      // Fall through to window.open below.
+    }
+    window.open(url, "_blank", "noopener,noreferrer");
+  }
+
+  /** Open the Obsidian settings panel (plugin tab may need a manual pick). */
+  openSettingsTab(): void {
+    const setting = (this.app as unknown as { setting?: { open?: () => void } })
+      .setting;
+    setting?.open?.();
   }
 
   /**

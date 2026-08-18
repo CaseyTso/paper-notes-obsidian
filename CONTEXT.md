@@ -36,6 +36,10 @@ _Avoid_: attachment, fulltext, Zotero PDF
 The Item Context Menu action that opens the native system file picker for one local PDF and attaches it as the paper’s Primary PDF through the paper-notes CLI.
 _Avoid_: manual path entry, folder picker, supplementary upload
 
+**Fetch PDF**:
+The Item Context Menu action that retrieves a paper’s Primary PDF from the internet using an identifier or URL already recorded in that paper’s metadata, and attaches it as the paper’s Primary PDF through the paper-notes CLI.
+_Avoid_: Download PDF, Get PDF, 下载文献, 抓取
+
 **MinerU Conversion**:
 The CLI-backed cloud conversion of a paper’s Primary PDF into `minerUmd_<citation_key>.md` plus extracted images under that paper’s `attachments/`. It does not create Figure解读 or final high-resolution assets under `figures/`.
 _Avoid_: MinerU scan, Figure解读 generation, high-resolution figure rendering, plugin-direct MinerU call
@@ -84,8 +88,12 @@ _Avoid_: plugin settings key field, storing the key in data.json, showing the ke
 The private token used for MinerU Conversion. It is entered through Plugin Settings but stored only in the core CLI’s user-local private config (`~/Library/Application Support/paper-notes/config.json`, mode 0600), never in the vault or plugin `data.json`.
 _Avoid_: vault-synced token, persisted plugin setting, command-line token, displayed saved token
 
+**AbleSci Login Status**:
+The read-only Plugin Settings status showing whether the paper-fetch CLI can use the user’s existing ableSci (科研通) browser session; refreshed only by an on-demand `paper-fetch doctor` check. The plugin never stores or handles ableSci credentials.
+_Avoid_: 科研通登录获取, ableSci session grabber, 科研通账号配置
+
 **Plugin Settings**:
-The Obsidian settings tab exposing plugin configuration persisted in `data.json` (CLI path, export directory, Pandoc path, PDF engine, reference DOCX, selected CSL, metric TTL, metrics toggle). The literature root is display-only and cannot be edited from the tab.
+The Obsidian settings tab exposing plugin configuration persisted in `data.json` (paper-notes CLI path, paper-fetch CLI path, export directory, Pandoc path, PDF engine, reference DOCX, selected CSL, metric TTL, metrics toggle). The literature root is display-only and cannot be edited from the tab.
 _Avoid_: settings in Markdown, hidden config file editing, editable literature root
 
 **Drawer Toggle**:

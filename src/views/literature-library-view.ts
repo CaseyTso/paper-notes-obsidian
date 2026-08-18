@@ -57,6 +57,16 @@ import {
   type OpenTarget,
 } from "../services/item-actions";
 import { mineruMenuItemState } from "../services/mineru-menu-state";
+import { FetchClient } from "../services/fetch-client";
+import { PdfFetcher } from "../services/pdf-fetcher";
+import {
+  fetchNoticePlan,
+  selectFetchIdentifier,
+  type FetchNoticeAction,
+  type FetchNoticePlan,
+  type FetchOutcome,
+} from "../services/fetch-model";
+import { fetchMenuItemState } from "../services/fetch-menu-state";
 import type { MineruQueue } from "../services/mineru-queue";
 // Modal classes are loaded lazily (see `loadModalClasses`): the plugin
 // scaffold smoke suite mocks `obsidian` with Plugin/ItemView/WorkspaceLeaf
@@ -221,6 +231,17 @@ interface PluginBridge {
   mineruKeyConfigured?: () => boolean;
   /** Session-bound FIFO MinerU queue. */
   getMineruQueue?: () => MineruQueue | undefined;
+  /** paper-fetch CLI present and probeable (Fetch PDF). */
+  paperFetchAvailable?: () => boolean;
+  /** paper-fetch CLI bridge for Fetch PDF. */
+  getFetchClient?: () => FetchClient | undefined;
+  /** Open an external http(s) URL in the default browser. */
+  openExternal?: (url: string) => void;
+  /** Open the Obsidian settings panel. */
+  openSettingsTab?: () => void;
+  /** Track/untrack an in-flight Fetch PDF run for unload cancellation. */
+  trackFetchRun?: (controller: AbortController) => void;
+  untrackFetchRun?: (controller: AbortController) => void;
 }
 
 export interface LibraryViewSource {
@@ -1691,6 +1712,12 @@ export class PaperNotesLibraryView extends ItemView {
           activateMocView?(): void;
           mineruKeyConfiguredStatus?(): boolean;
           getMineruQueue?(): MineruQueue | undefined;
+          isPaperFetchAvailable?(): boolean;
+          getFetchClient?(): FetchClient | undefined;
+          openExternal?(url: string): void;
+          openSettingsTab?(): void;
+          trackFetchRun?(controller: AbortController): void;
+          untrackFetchRun?(controller: AbortController): void;
         }
       | undefined;
     if (plugin === undefined) {
@@ -1712,6 +1739,12 @@ export class PaperNotesLibraryView extends ItemView {
       activateMocView: plugin.activateMocView?.bind(plugin),
       mineruKeyConfigured: plugin.mineruKeyConfiguredStatus?.bind(plugin),
       getMineruQueue: plugin.getMineruQueue?.bind(plugin),
+      paperFetchAvailable: plugin.isPaperFetchAvailable?.bind(plugin),
+      getFetchClient: plugin.getFetchClient?.bind(plugin),
+      openExternal: plugin.openExternal?.bind(plugin),
+      openSettingsTab: plugin.openSettingsTab?.bind(plugin),
+      trackFetchRun: plugin.trackFetchRun?.bind(plugin),
+      untrackFetchRun: plugin.untrackFetchRun?.bind(plugin),
     };
   }
 
@@ -2329,6 +2362,27 @@ export class PaperNotesLibraryView extends ItemView {
       disabledReason,
       () => void this.startAttach(item),
     );
+    // Fetch PDF: downloads via paper-fetch when the row has a deterministic
+    // identifier (DOI/PMID/PMCID) and no Primary PDF yet; stays visible but
+    // disabled with a reason otherwise (CONTEXT: Fetch PDF).
+    const fetchState = fetchMenuItemState({
+      invalid,
+      readOnly,
+      fetchAvailable:
+        this.resolvePluginBridge()?.paperFetchAvailable?.() ?? false,
+      hasPdf: item.artifacts.pdf,
+      hasIdentifier:
+        item.record !== undefined &&
+        selectFetchIdentifier(item.record) !== undefined,
+    });
+    this.addMenuItem(
+      menu,
+      "Fetch PDF",
+      "download",
+      fetchState.enabled,
+      fetchState.enabled ? undefined : fetchState.reason,
+      () => void this.startFetch(item),
+    );
     // MinerU conversion: visible but disabled (with reason) when there is
     // no Primary PDF or no configured MinerU Key; label flips to Re-convert
     // when a `minerUmd_<key>.md` already exists.
@@ -2602,6 +2656,87 @@ export class PaperNotesLibraryView extends ItemView {
       }
     });
     await operation;
+  }
+
+  /**
+   * Fetch the Primary PDF from the internet (paper-fetch CLI → paper-notes
+   * attach). Runs in the background with a progress Notice; structured
+   * failures surface as Notices with action buttons (CONTEXT: Fetch PDF).
+   */
+  private async startFetch(item: LibraryItem): Promise<void> {
+    if (item.invalid !== undefined) {
+      return;
+    }
+    const actions = this.getActions();
+    const bridge = this.resolvePluginBridge();
+    const client = bridge?.getFetchClient?.();
+    const record = item.record;
+    if (actions === undefined || client === undefined || record === undefined) {
+      this.notify("Fetch PDF unavailable (paper-fetch CLI missing).");
+      return;
+    }
+    const controller = new AbortController();
+    bridge?.trackFetchRun?.(controller);
+    const fetcher = new PdfFetcher({ client });
+    const title = record.title.length > 0 ? record.title : item.key;
+    this.notify(`Fetching PDF for ${title}…`);
+    let outcome: FetchOutcome;
+    try {
+      outcome = await fetcher.fetchAndAttach({
+        record,
+        signal: controller.signal,
+        attach: (pdfPath) => actions.attachPdf(item.key, pdfPath),
+      });
+    } catch (error) {
+      outcome = {
+        status: "transport",
+        code: "cli_error",
+        message: String(error),
+      };
+    } finally {
+      bridge?.untrackFetchRun?.(controller);
+    }
+    if (outcome.status === "attached") {
+      this.notify(`PDF fetched (来源: ${outcome.source}).`);
+      this.refresh();
+      return;
+    }
+    this.showFetchNotice(
+      fetchNoticePlan(outcome),
+      () => void this.startFetch(item),
+    );
+  }
+
+  /** Render a Fetch PDF Notice with action buttons. */
+  private showFetchNotice(plan: FetchNoticePlan, retry: () => void): void {
+    const fragment = document.createDocumentFragment();
+    const message = document.createElement("span");
+    message.textContent = plan.message;
+    fragment.appendChild(message);
+    const bridge = this.resolvePluginBridge();
+    const handle = (action: FetchNoticeAction): void => {
+      switch (action.kind) {
+        case "open_url":
+        case "open_login":
+          if (typeof action.url === "string") {
+            bridge?.openExternal?.(action.url);
+          }
+          break;
+        case "open_settings":
+          bridge?.openSettingsTab?.();
+          break;
+        case "retry":
+          retry();
+          break;
+      }
+    };
+    for (const action of plan.actions) {
+      const button = document.createElement("button");
+      button.textContent = action.label;
+      button.addEventListener("click", () => handle(action));
+      fragment.appendChild(button);
+    }
+    new Notice(fragment, plan.durationMs ?? 12_000);
   }
 
   private async startAttach(item: LibraryItem): Promise<void> {

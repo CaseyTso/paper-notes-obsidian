@@ -31,6 +31,8 @@ const COLUMN_IDS: readonly LibraryColumnId[] = [
 export interface PaperNotesSettings {
   /** Path to the paper-notes core CLI executable. */
   cliPath: string;
+  /** Path to the paper-fetch CLI executable used by Fetch PDF. */
+  paperFetchPath: string;
   /** Vault-relative root of the literature directories. */
   literatureRoot: string;
   /** Required, user-configured global export directory (no fallback). */
@@ -78,6 +80,7 @@ export interface PaperNotesSettings {
 
 export const DEFAULT_SETTINGS: PaperNotesSettings = {
   cliPath: "paper-notes",
+  paperFetchPath: "paper-fetch",
   literatureRoot: "05 Literature",
   exportDirectory: "",
   pandocPath: "pandoc",
@@ -96,6 +99,7 @@ export const CSL_STYLE_DIR = ".paper-notes/csl";
 
 const STRING_FIELDS = [
   "cliPath",
+  "paperFetchPath",
   "literatureRoot",
   "exportDirectory",
   "pandocPath",

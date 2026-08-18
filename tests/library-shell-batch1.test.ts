@@ -1211,6 +1211,7 @@ describe("Batch 1 library shell", () => {
       ["Copy citation key", "Copy DOI"],
       [
         "Attach PDF",
+        "Fetch PDF (paper-fetch CLI unavailable)",
         "Convert with MinerU… (MinerU key not configured)",
         "Rename key",
       ],
