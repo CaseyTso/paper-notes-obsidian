@@ -9,16 +9,14 @@
  *
  * - DOCX output exists, is a valid ZIP and contains the rendered
  *   bibliography text after extraction;
- * - PDF output exists and begins with `%PDF` when the configured engine
- *   (typst/xelatex/…) is available;
  * - the alias citation resolves to the *current* item (the alias Lua
  *   filter rewrites legacy keys before citeproc, so the bibliography shows
  *   the current item instead of an unresolved key);
  * - unknown citation keys block the run before any spawn (status
  *   `blocked`, no output file created).
  *
- * When Pandoc (or the PDF engine) is absent the affected suites are
- * skipped and reported as such by vitest — never faked green.
+ * When Pandoc is absent the suite is skipped and reported as such by
+ * vitest — never faked green.
  */
 
 import { spawnSync, execFileSync } from "node:child_process";
@@ -52,30 +50,10 @@ function binaryAvailable(name: string): boolean {
 }
 
 const hasPandoc = binaryAvailable("pandoc");
-// Only LaTeX-family engines are usable with the mandated CSL-JSON
-// pipeline. Pandoc's typst writer (3.x) emits native `@key` citations and
-// a `#bibliography(path)` directive that typst's own citeproc cannot
-// consume from a CSL-JSON `library.json` — typst accepts .yaml/.yml/.bib
-// only. Verified against pandoc 3.3 + typst 0.13 on macOS: the export
-// fails cleanly in the production path (status `failed`, stderr surfaced),
-// but a `%PDF` assertion is impossible, so the PDF integration case is
-// skipped — never faked green — until a LaTeX engine is present.
-const PDF_ENGINES = ["xelatex", "lualatex", "pdflatex"];
-const hasPdfEngine = PDF_ENGINES.some(binaryAvailable);
 
 function pandocBinaryPath(): string {
   const which = spawnSync("which", ["pandoc"], { encoding: "utf8" });
   return (which.stdout ?? "").trim() || "pandoc";
-}
-
-function pdfEnginePath(): string {
-  for (const engine of PDF_ENGINES) {
-    const which = spawnSync("which", [engine], { encoding: "utf8" });
-    if ((which.stdout ?? "").trim().length > 0) {
-      return which.stdout.trim();
-    }
-  }
-  return "";
 }
 
 // ---------------------------------------------------------------------------
@@ -96,6 +74,7 @@ const SMITH: PaperRecord = {
   identifiers: { doi: "10.1000/xyz" },
   citationKeyAliases: ["oldSmith2020"],
   titleAliases: [],
+  issn: ["1234-5678", "8765-4321"],
 };
 
 const MINIMAL_CSL = `<?xml version="1.0" encoding="utf-8"?>
@@ -125,8 +104,11 @@ interface FixtureDir {
   referenceDocx: string;
 }
 
+const fixtureRoots: string[] = [];
+
 function makeFixture(markdown: string): FixtureDir {
   const root = mkdtempSync(join(tmpdir(), "paper-notes-integration-"));
+  fixtureRoots.push(root);
   const manuscriptMd = join(root, "manuscript.md");
   writeFileSync(manuscriptMd, markdown, "utf8");
   const cslPath = join(root, "minimal.csl");
@@ -154,10 +136,6 @@ function docxText(target: string): string {
   });
 }
 
-function pdfStartsWithMagic(target: string): boolean {
-  return readFileSync(target).subarray(0, 4).equals(Buffer.from("%PDF"));
-}
-
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -167,7 +145,7 @@ describe.skipIf(!hasPandoc)("pandoc integration (real binary)", () => {
   const exportDirectory = mkdtempSync(join(tmpdir(), "paper-notes-export-dir-"));
 
   afterAll(() => {
-    rmSync(fixture?.root, { recursive: true, force: true });
+    for (const root of fixtureRoots) rmSync(root, { recursive: true, force: true });
     rmSync(exportDirectory, { recursive: true, force: true });
   });
 
@@ -190,7 +168,6 @@ describe.skipIf(!hasPandoc)("pandoc integration (real binary)", () => {
         markdownPath: fixture.markdownPath,
         exportDirectory,
         pandocPath: pandocBinaryPath(),
-        pdfEngine: "",
         cslPath: fixture.cslPath,
         referenceDocx: fixture.referenceDocx,
         records: [SMITH],
@@ -198,7 +175,7 @@ describe.skipIf(!hasPandoc)("pandoc integration (real binary)", () => {
       defaultExportPorts(),
     );
 
-    expect(result.status).toBe("success");
+    expect(result.status, result.stderr).toBe("success");
     const target = result.targetPath as string;
     expect(docxIsZip(target)).toBe(true);
     const text = docxText(target);
@@ -226,7 +203,6 @@ describe.skipIf(!hasPandoc)("pandoc integration (real binary)", () => {
         markdownPath: fixture.markdownPath,
         exportDirectory,
         pandocPath: pandocBinaryPath(),
-        pdfEngine: "",
         cslPath: fixture.cslPath,
         referenceDocx: fixture.referenceDocx,
         records: [SMITH],
@@ -234,7 +210,7 @@ describe.skipIf(!hasPandoc)("pandoc integration (real binary)", () => {
       defaultExportPorts(),
     );
 
-    expect(result.status).toBe("success");
+    expect(result.status, result.stderr).toBe("success");
     const text = docxText(result.targetPath as string);
     // The Lua filter rewrote oldSmith2020 → smith2024current before
     // citeproc, so the current item title appears (no unresolved key).
@@ -254,7 +230,6 @@ describe.skipIf(!hasPandoc)("pandoc integration (real binary)", () => {
         markdownPath: fixture.markdownPath,
         exportDirectory,
         pandocPath: pandocBinaryPath(),
-        pdfEngine: "",
         cslPath: fixture.cslPath,
         referenceDocx: fixture.referenceDocx,
         records: [SMITH],
@@ -268,35 +243,5 @@ describe.skipIf(!hasPandoc)("pandoc integration (real binary)", () => {
     }
     const target = join(exportDirectory, "blocked-manuscript.docx");
     expect(existsSync(target)).toBe(false);
-  });
-
-  it.skipIf(!hasPdfEngine)("PDF export exists and begins with %PDF", async () => {
-    fixture = makeFixture(
-      [
-        "# Manuscript",
-        "",
-        "Lung cancer remains a major burden [@smith2024current].",
-        "",
-      ].join("\n"),
-    );
-
-    const result = await exportPandoc(
-      {
-        format: "pdf",
-        baseName: "manuscript",
-        markdown: readFileSync(fixture.manuscriptMd, "utf8"),
-        markdownPath: fixture.markdownPath,
-        exportDirectory,
-        pandocPath: pandocBinaryPath(),
-        pdfEngine: pdfEnginePath(),
-        cslPath: fixture.cslPath,
-        referenceDocx: "",
-        records: [SMITH],
-      },
-      defaultExportPorts(),
-    );
-
-    expect(result.status).toBe("success");
-    expect(pdfStartsWithMagic(result.targetPath as string)).toBe(true);
   });
 });

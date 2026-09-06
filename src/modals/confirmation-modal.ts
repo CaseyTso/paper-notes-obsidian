@@ -89,6 +89,7 @@ export interface TextPromptCallbacks {
 
 export class TextPromptModal extends Modal {
   inputEl!: HTMLInputElement;
+  private settled = false;
   private readonly data: TextPromptData;
   private readonly callbacks: TextPromptCallbacks;
 
@@ -103,6 +104,7 @@ export class TextPromptModal extends Modal {
     this.inputEl = this.contentEl.createEl("input", {
       type: "text",
       placeholder: this.data.placeholder ?? "",
+      attr: { "aria-label": this.data.title },
     });
     if (this.data.initial !== undefined) {
       this.inputEl.value = this.data.initial;
@@ -114,10 +116,7 @@ export class TextPromptModal extends Modal {
     });
     const actions = this.contentEl.createDiv({ cls: "paper-notes-modal-actions" });
     const cancel = actions.createEl("button", { text: "Cancel" });
-    cancel.addEventListener("click", () => {
-      this.close();
-      this.callbacks.cancel?.();
-    });
+    cancel.addEventListener("click", () => this.close());
     const confirm = actions.createEl("button", {
       text: this.data.confirmLabel ?? "OK",
     });
@@ -125,7 +124,16 @@ export class TextPromptModal extends Modal {
     confirm.addEventListener("click", () => this.submit());
   }
 
+  onClose(): void {
+    if (!this.settled) {
+      this.settled = true;
+      this.callbacks.cancel?.();
+    }
+  }
+
   submit(): void {
+    if (this.settled) return;
+    this.settled = true;
     this.close();
     this.callbacks.confirm(this.inputEl.value);
   }

@@ -53,8 +53,9 @@ import {
 import {
   PaperNotesMocView,
   VIEW_TYPE_TOPIC_MOC,
-  type MocViewSource,
 } from "./views/topic-moc-view";
+import type { MocDirectorySource } from "./components/moc-directory";
+import { openMocNote } from "./services/moc-navigation";
 import { requireExportStyle, type CslVaultPort } from "./services/csl-style-manager";
 import { checkExportHealth, defaultHealthPort } from "./services/export-health";
 import {
@@ -64,7 +65,6 @@ import {
   desktopOpenRevealActions,
   exportPandoc,
   exportTargetPath,
-  type ExportFormat,
 } from "./services/pandoc-export";
 import { createExportConfirmationModal } from "./modals/export-confirmation-modal";
 
@@ -75,9 +75,8 @@ export const OPEN_LIBRARY_COMMAND = "paper-notes-open-library";
 /** Command id for the keyboard citation picker (Task 27). */
 export const INSERT_CITATION_COMMAND = "paper-notes-insert-citation";
 
-/** Command ids for the focused Pandoc exporter (Task 29). */
+/** Command id for the focused Pandoc exporter (Task 29). */
 export const EXPORT_DOCX_COMMAND = "paper-notes-export-docx";
-export const EXPORT_PDF_COMMAND = "paper-notes-export-pdf";
 
 /**
  * Debounce window for the metadata-cache readiness rescan (Gate D R2).
@@ -177,6 +176,7 @@ export default class PaperNotesPlugin extends Plugin {
       this.libraryView = new PaperNotesLibraryView(
         leaf,
         this.createLibraryViewSource(),
+        this.createMocViewSource(),
       );
       return this.libraryView;
     });
@@ -185,9 +185,9 @@ export default class PaperNotesPlugin extends Plugin {
       name: "Open literature library",
       callback: () => this.activateLibraryView(),
     });
-    // Topic MOC View (Task 8): center leaf, not the right Library leaf.
+    // Keep old saved workspace entries as redirects to the internal page.
     this.registerView(VIEW_TYPE_TOPIC_MOC, (leaf) => {
-      return new PaperNotesMocView(leaf, this.createMocViewSource());
+      return new PaperNotesMocView(leaf, () => this.activateMocView());
     });
     this.addCommand({
       id: "paper-notes-open-topic-moc",
@@ -206,20 +206,13 @@ export default class PaperNotesPlugin extends Plugin {
         void this.openCitationPicker();
       },
     });
-    // Focused academic export (Task 29): DOCX/PDF only, from the active
+    // Focused academic export (Task 29): DOCX only, from the active
     // Markdown note, into the fixed global output directory.
     this.addCommand({
       id: EXPORT_DOCX_COMMAND,
       name: "Export active note as DOCX",
       callback: () => {
-        void this.exportActiveNote("docx");
-      },
-    });
-    this.addCommand({
-      id: EXPORT_PDF_COMMAND,
-      name: "Export active note as PDF",
-      callback: () => {
-        void this.exportActiveNote("pdf");
+        void this.exportActiveNote();
       },
     });
     await this.initializeCliBridge();
@@ -866,55 +859,49 @@ export default class PaperNotesPlugin extends Plugin {
     }
     if (leaves.length === 0) {
       leaf.setViewState({ type: VIEW_TYPE_PAPER_NOTES, active: true });
+    } else if (leaf.view instanceof PaperNotesLibraryView) {
+      leaf.view.showPage("library");
     }
     void workspace.revealLeaf(leaf);
   }
 
-  /** Activate the Topic MOC view in a center leaf (never the right Library leaf). */
-  activateMocView(): void {
-    void this.doActivateMocView();
-  }
-
-  private async doActivateMocView(): Promise<void> {
+  /** Legacy command/button entry: route to the existing plugin navigation. */
+  async activateMocView(): Promise<void> {
     const workspace = this.app.workspace;
-    const leaves = workspace.getLeavesOfType(VIEW_TYPE_TOPIC_MOC);
-    let leaf = leaves.length > 0 ? leaves[0] : null;
-    if (leaf === null) {
-      leaf = workspace.getLeaf(false);
+    const leaves = workspace.getLeavesOfType(VIEW_TYPE_PAPER_NOTES);
+    const leaf = leaves[0] ?? workspace.getRightLeaf(false);
+    if (!leaf) return;
+    if (leaves.length === 0) {
+      await leaf.setViewState({ type: VIEW_TYPE_PAPER_NOTES, active: true, state: { page: "moc" } });
     }
-    if (leaf === null) {
-      return;
+    await workspace.revealLeaf(leaf);
+    if (typeof (leaf as unknown as { loadIfDeferred?: () => Promise<void> }).loadIfDeferred === "function") {
+      await (leaf as unknown as { loadIfDeferred: () => Promise<void> }).loadIfDeferred();
     }
-    await leaf.setViewState({ type: VIEW_TYPE_TOPIC_MOC, active: true });
-    workspace.revealLeaf(leaf);
+    if (leaf.view instanceof PaperNotesLibraryView) {
+      leaf.view.showPage("moc");
+    }
   }
 
-  private createMocViewSource(): MocViewSource {
+  private createMocViewSource(): MocDirectorySource {
+    const plugin = this;
     return {
-      getVaultRoot: () => {
-        const adapter = this.app.vault.adapter as unknown as { getBasePath?: () => string };
-        return adapter.getBasePath?.() ?? "";
-      },
-      literatureRoot: this.settings.literatureRoot,
+      get literatureRoot() { return plugin.settings.literatureRoot; },
       readText: async (path: string) => {
         const file = this.app.vault.getAbstractFileByPath(path);
-        if (file === null || typeof file !== "object" || !("path" in file)) {
-          return "";
+        if (!file || !("extension" in file) || file.extension !== "md") return "";
+        try {
+          return await this.app.vault.cachedRead(file as TFile);
+        } catch (error) {
+          // A rename/delete between listing and reading is not a page failure.
+          if (!this.app.vault.getAbstractFileByPath(path)) return "";
+          throw error;
         }
-        return this.app.vault.cachedRead(file as import("obsidian").TFile);
       },
-      listMarkdownFiles: (dir: string) => {
-        return this.app.vault
-          .getMarkdownFiles()
-          .filter((f) => f.path.startsWith(dir + "/"))
-          .map((f) => f.path.split("/").pop() ?? f.path);
-      },
-      resolveLink: (target: string, sourcePath: string) => {
-        return this.app.metadataCache.getFirstLinkpathDest(target, sourcePath) ?? undefined;
-      },
-      openFile: (file: import("obsidian").TFile) => {
-        this.app.workspace.getLeaf("tab")?.openFile(file);
-      },
+      listMarkdownFiles: (dir: string) => this.app.vault.getMarkdownFiles()
+        .filter((file) => file.path.slice(0, file.path.lastIndexOf("/")) === dir)
+        .map((file) => file.name),
+      openNote: (path, newTab, signal) => openMocNote(this.app, path, newTab, signal),
       createMoc: async () => {
         const client = this.getCliClient();
         const adapter = this.app.vault.adapter as unknown as { getBasePath?(): string };
@@ -938,13 +925,26 @@ export default class PaperNotesPlugin extends Plugin {
               confirm: async (name: string) => {
                 const trimmed = name.trim();
                 if (!trimmed) {
+                  resolve(undefined);
                   return;
                 }
-                const actions = new ItemActions({ client, vaultRoot });
-                const result = await actions.createMoc(trimmed);
-                const noticeText = mocCreateNoticeText(result.outcome, result.title);
-                new Notice(noticeText);
-                resolve(result.path);
+                try {
+                  const actions = new ItemActions({ client, vaultRoot });
+                  const result = await actions.createMoc(trimmed);
+                  new Notice(mocCreateNoticeText(result.outcome, result.title));
+                  // CLI writes are external: allow Obsidian's file watcher to
+                  // catch up before refreshing/opening the newly created note.
+                  if (result.path) {
+                    for (let attempt = 0; attempt < 20; attempt++) {
+                      if (this.app.vault.getAbstractFileByPath(result.path)) break;
+                      await new Promise((done) => setTimeout(done, 100));
+                    }
+                  }
+                  resolve(result.path);
+                } catch (error) {
+                  new Notice(`无法创建主题：${String(error)}`);
+                  resolve(undefined);
+                }
               },
               cancel: () => resolve(undefined),
             },
@@ -1009,14 +1009,14 @@ export default class PaperNotesPlugin extends Plugin {
   }
 
   /**
-   * Export the active Markdown note as DOCX or PDF through Pandoc (Task
-   * 29). Preflight blocks on unknown citation keys, the fixed global
-   * output directory, Pandoc, the PDF engine, the selected CSL style and
-   * the reference DOCX before anything launches; an existing target asks
-   * for explicit confirmation via the export modal. The export itself
-   * writes to a temporary file and atomically publishes on exit 0.
+   * Export the active Markdown note as DOCX through Pandoc (Task 29).
+   * Preflight blocks on unknown citation keys, the fixed global output
+   * directory, Pandoc, the selected CSL style and the reference DOCX
+   * before anything launches; an existing target asks for explicit
+   * confirmation via the export modal. The export itself writes to a
+   * temporary file and atomically publishes on exit 0.
    */
-  private async exportActiveNote(format: ExportFormat): Promise<void> {
+  private async exportActiveNote(): Promise<void> {
     const workspace = this.app.workspace as {
       getActiveFile?: () => TFile | null;
     };
@@ -1049,10 +1049,9 @@ export default class PaperNotesPlugin extends Plugin {
 
     const cfg = exportConfigOf(this.settings);
     const health = await checkExportHealth(defaultHealthPort(), {
-      format,
+      format: "docx",
       exportDirectory: cfg.exportDirectory,
       pandocPath: cfg.pandocPath,
-      pdfEngine: cfg.pdfEngine,
       referenceDocx: cfg.referenceDocx,
       csl: cslCheck,
     });
@@ -1067,23 +1066,21 @@ export default class PaperNotesPlugin extends Plugin {
     const targetPath = exportTargetPath(
       health.exportDirectory,
       activeFile.basename,
-      format,
+      "docx",
     );
     const targetExists = await ports.fs.exists(targetPath);
     const markdownPath = adapter.getFullPath(activeFile.path);
     const cslPath = adapter.getFullPath(health.cslPath);
     const engineLabel =
-      format === "pdf"
-        ? `PDF engine: ${health.pdfEngine}`
-        : health.referenceDocx.length > 0
-          ? `Reference DOCX: ${health.referenceDocx}`
-          : "Reference DOCX: Pandoc default";
+      health.referenceDocx.length > 0
+        ? `Reference DOCX: ${health.referenceDocx}`
+        : "Reference DOCX: Pandoc default";
 
     try {
       const modal = createExportConfirmationModal(
         this.app,
         {
-          format,
+          format: "docx",
           targetPath,
           targetExists,
           cslTitle: health.cslTitle,
@@ -1097,13 +1094,12 @@ export default class PaperNotesPlugin extends Plugin {
             this.runningExports.add(controller);
             const result = exportPandoc(
               {
-                format,
+                format: "docx",
                 baseName: activeFile.basename,
                 markdown,
                 markdownPath,
                 exportDirectory: health.exportDirectory,
                 pandocPath: health.pandocPath,
-                pdfEngine: health.pdfEngine,
                 cslPath,
                 referenceDocx: health.referenceDocx,
                 records,

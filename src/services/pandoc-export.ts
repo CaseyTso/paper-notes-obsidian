@@ -1,9 +1,9 @@
 /**
  * Focused academic Pandoc exporter (Task 29).
  *
- * Academic DOCX/PDF export for the paper-notes literature system. The flow
+ * Academic DOCX export for the paper-notes literature system. The flow
  * is inspired by the MIT-licensed `OliverBalfour/obsidian-pandoc` project
- * (see THIRD_PARTY_NOTICES.md) but ports only the DOCX/PDF slice and fixes
+ * (see THIRD_PARTY_NOTICES.md) but retains only DOCX export and fixes
  * two upstream weaknesses:
  *
  * 1. Upstream splits free-form argument strings on spaces
@@ -11,10 +11,8 @@
  *    paths. Here every CLI argument is a separate array element passed to
  *    `spawn()` verbatim — configured paths containing spaces stay intact
  *    and no shell string is ever built.
- * 2. Upstream auto-picks the PDF engine with `lookpath('xelatex')`
- *    instead of the user's configured engine and resolves success by
- *    file-existence rather than the process exit code. Here the configured
- *    engine is used, the exit code decides success, output is written to a
+ * 2. Upstream resolves success by file-existence rather than the process
+ *    exit code. Here the exit code decides success, output is written to a
  *    temporary file and atomically promoted only on exit 0, and a nonzero
  *    exit preserves the previous artifact while surfacing stderr.
  *
@@ -26,8 +24,7 @@
  *   the current items (empirically verified against pandoc 3.8: the
  *   `citation.id` field is rewritten by a `Cite` filter, and citeproc
  *   runs last regardless of flag order, so the filter must precede it).
- * - DOCX uses the configured reference DOCX when set; PDF uses the
- *   configured engine when set.
+ * - DOCX uses the configured reference DOCX when set.
  * - A fixed, validated global output directory owns the output.
  * - Unknown citation keys block the run before any spawn.
  * - Cancel terminates the child process and cleans the temp output.
@@ -40,6 +37,7 @@ import { spawn } from "node:child_process";
 import {
   access,
   mkdtemp,
+  readFile,
   rename as fsRename,
   rm,
   writeFile,
@@ -47,10 +45,11 @@ import {
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 
+import { alignDocxBibliography } from "./docx-bibliography";
 import type { PaperRecord } from "../types/paper";
 
-/** Supported output formats (design spec §14.1: DOCX and PDF only). */
-export type ExportFormat = "docx" | "pdf";
+/** Supported output format (focused academic DOCX export). */
+export type ExportFormat = "docx";
 
 export type ExportStatus = "success" | "failed" | "cancelled" | "blocked";
 
@@ -141,7 +140,9 @@ function recordToCslItem(record: PaperRecord): Record<string, unknown> {
     item.URL = record.url;
   }
   if (record.issn !== undefined && record.issn.length > 0) {
-    item.ISSN = [...record.issn];
+    // CSL/Pandoc expects a scalar. Keep every source value and its order;
+    // only this export boundary changes the representation.
+    item.ISSN = record.issn.join(", ");
   }
   if (typeof record.language === "string" && record.language.length > 0) {
     item.language = record.language;
@@ -350,7 +351,7 @@ export function checkCitationKeys(
 export function exportTargetPath(
   exportDirectory: string,
   baseName: string,
-  format: ExportFormat,
+  format: ExportFormat = "docx",
 ): string {
   const sanitized = baseName
     .trim()
@@ -371,11 +372,12 @@ export function exportTargetPath(
 export function tempOutputFor(job: {
   exportDirectory: string;
   baseName: string;
-  format: ExportFormat;
+  format?: ExportFormat;
   nonce?: string;
 }): string {
-  const target = exportTargetPath(job.exportDirectory, job.baseName, job.format);
-  const safeBase = basename(target, `.${job.format}`);
+  const format = job.format ?? "docx";
+  const target = exportTargetPath(job.exportDirectory, job.baseName, format);
+  const safeBase = basename(target, `.${format}`);
   const nonce =
     job.nonce ??
     `${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -398,20 +400,8 @@ export interface ExportArgsConfig {
   aliasFilterPath: string;
   /** Absolute path of the selected CSL style. */
   cslPath: string;
-  /** Absolute path of the reference DOCX (docx only; empty when unset). */
+  /** Absolute path of the reference DOCX (empty when unset). */
   referenceDocx: string;
-  /** Absolute path of the PDF engine (pdf only; empty when unset). */
-  pdfEngine: string;
-}
-
-/**
- * True when the configured PDF engine is typst. Detected from the basename
- * (Repair R10) so absolute paths stay out of the source; the basename of
- * `/opt/homebrew/bin/typst` is `typst`, while a directory containing the
- * word never matches (`/opt/typst-bundles/weasyprint` is not typst).
- */
-export function isTypstEngine(pdfEngine: string): boolean {
-  return basename(pdfEngine).toLowerCase().includes("typst");
 }
 
 /**
@@ -421,23 +411,15 @@ export function isTypstEngine(pdfEngine: string): boolean {
  * `spawn()`'s `command` argument (embedding it here would duplicate the
  * path and make Pandoc treat its own binary as the first input file). The
  * Lua filter precedes `--citeproc` so alias rewriting happens first.
- *
- * PDF + typst engine (Repair R10): pandoc 3.8's `--pdf-engine=typst`
- * template path is broken ("font fallback list must not be empty"), so the
- * engine flag is dropped and pandoc emits typst *source* (`--to typst`,
- * output `<temp>.typ`) instead; the typst binary compiles it afterwards
- * (see `runTypstTwoStepExport`). Non-typst engines keep the original
- * single-step path with `--pdf-engine`.
  */
 export function buildExportArgs(config: ExportArgsConfig): string[] {
-  const typstTwoStep = config.format === "pdf" && isTypstEngine(config.pdfEngine);
   const args = [
     "--from",
     "markdown",
     "--to",
-    typstTwoStep ? "typst" : config.format,
+    "docx",
     "-o",
-    typstTwoStep ? `${config.tempOutputPath}.typ` : config.tempOutputPath,
+    config.tempOutputPath,
     "--lua-filter",
     config.aliasFilterPath,
     "--citeproc",
@@ -446,11 +428,8 @@ export function buildExportArgs(config: ExportArgsConfig): string[] {
     "--csl",
     config.cslPath,
   ];
-  if (config.format === "docx" && config.referenceDocx.length > 0) {
+  if (config.referenceDocx.length > 0) {
     args.push("--reference-doc", config.referenceDocx);
-  }
-  if (config.format === "pdf" && config.pdfEngine.length > 0 && !typstTwoStep) {
-    args.push("--pdf-engine", config.pdfEngine);
   }
   args.push(config.markdownPath);
   return args;
@@ -479,6 +458,10 @@ export interface ExportFileSystem {
   /** Create a unique temp directory and return its absolute path. */
   mkdtemp(prefix: string): Promise<string>;
   writeText(path: string, content: string): Promise<void>;
+  /** Read a binary file (DOCX temp output) for post-processing. */
+  readBytes(path: string): Promise<Uint8Array>;
+  /** Overwrite a binary file (aligned DOCX) before atomic promotion. */
+  writeBytes(path: string, data: Uint8Array): Promise<void>;
   /** Atomically move `from` to `to` (same filesystem). */
   rename(from: string, to: string): Promise<void>;
   /** Remove a file; resolves when already absent. */
@@ -500,6 +483,12 @@ function realExportFileSystem(): ExportFileSystem {
     },
     async writeText(path: string, content: string): Promise<void> {
       await writeFile(path, content, "utf8");
+    },
+    async readBytes(path: string): Promise<Uint8Array> {
+      return new Uint8Array(await readFile(path));
+    },
+    async writeBytes(path: string, data: Uint8Array): Promise<void> {
+      await writeFile(path, data);
     },
     async rename(from: string, to: string): Promise<void> {
       await fsRename(from, to);
@@ -544,10 +533,8 @@ export interface RunPandocOptions {
 }
 
 /**
- * Write the generated assets and run the export. PDF with the typst engine
- * takes the two-step path (pandoc → typst source, typst → PDF); every other
- * format/engine keeps the original single-step pandoc spawn. Capture
- * exit/stdout/stderr, promote the temp target on success only, and clean
+ * Write the generated assets and run the export.
+ * Capture exit/stdout/stderr, promote the temp target on success only, and clean
  * the temp output on any other outcome. Cancel kills the child with SIGTERM.
  */
 export async function runPandocExport(
@@ -558,9 +545,6 @@ export async function runPandocExport(
   await ports.fs.writeText(config.bibliographyPath, options.libraryJson);
   await ports.fs.writeText(config.aliasFilterPath, options.aliasFilterLua);
 
-  if (config.format === "pdf" && isTypstEngine(config.pdfEngine)) {
-    return await runTypstTwoStepExport(options, ports);
-  }
   return await runPandocSingleStep(options, ports);
 }
 
@@ -576,7 +560,7 @@ interface SpawnOutcome {
 /**
  * Spawn one child, capture stdout/stderr, resolve on close with the exit
  * code, and resolve cancelled (killing the child with SIGTERM) on abort.
- * Shared by the single-step pandoc path and both steps of the typst path.
+ * Used by the Pandoc DOCX export path.
  */
 function spawnCollect(
   ports: ExportPorts,
@@ -660,6 +644,48 @@ async function runPandocSingleStep(
     options.signal,
   );
   if (outcome.status === "success") {
+    // Bibliography layout pass runs on the temp file before atomic
+    // promotion so the published artifact keeps Nature CSL wording with a
+    // compact hanging indent. Abort is rechecked after the async transform
+    // and before rename; any transform failure preserves the old target.
+    if (options.signal?.aborted) {
+      await ports.fs.unlink(config.tempOutputPath).catch(() => {});
+      return {
+        status: "cancelled",
+        outputPath: config.outputPath,
+        exitCode: outcome.exitCode,
+        stdout: outcome.stdout,
+        stderr: outcome.stderr,
+      };
+    }
+    try {
+      const raw = await ports.fs.readBytes(config.tempOutputPath);
+      const aligned = alignDocxBibliography(raw);
+      if (aligned !== raw) {
+        await ports.fs.writeBytes(config.tempOutputPath, aligned);
+      }
+    } catch (error) {
+      await ports.fs.unlink(config.tempOutputPath).catch(() => {});
+      return {
+        status: "failed",
+        outputPath: config.outputPath,
+        exitCode: outcome.exitCode ?? null,
+        stdout: outcome.stdout,
+        stderr:
+          outcome.stderr +
+          (error instanceof Error ? `\n[bibliography layout] ${error.message}` : `\n[bibliography layout] ${String(error)}`),
+      };
+    }
+    if (options.signal?.aborted) {
+      await ports.fs.unlink(config.tempOutputPath).catch(() => {});
+      return {
+        status: "cancelled",
+        outputPath: config.outputPath,
+        exitCode: outcome.exitCode,
+        stdout: outcome.stdout,
+        stderr: outcome.stderr,
+      };
+    }
     try {
       await ports.fs.rename(config.tempOutputPath, config.outputPath);
     } catch (error) {
@@ -693,95 +719,6 @@ async function runPandocSingleStep(
   };
 }
 
-/**
- * Two-step PDF export for the typst engine (Repair R10). pandoc emits typst
- * source (citeproc has already resolved the citations into the source), then
- * the configured typst binary compiles it to the final temp PDF. This
- * bypasses pandoc 3.8's broken `--pdf-engine=typst` template ("font
- * fallback list must not be empty"). Both steps must exit 0 before the PDF
- * is atomically promoted; any other outcome preserves the previous
- * artifact, surfaces stderr and cleans the temp source/PDF. Cancel during
- * either step kills the running child with SIGTERM.
- *
- * typst CLI contract (verified against typst 0.15.1): the `compile`
- * subcommand is mandatory and the output is a positional argument —
- * `typst compile <input> <output>`. Neither the subcommand-less `typst
- * <input> -o <output>` nor `typst compile <input> -o <output>` forms are
- * accepted on 0.15 (the latter rejects `-o` as unexpected).
- */
-async function runTypstTwoStepExport(
-  options: RunPandocOptions,
-  ports: ExportPorts,
-): Promise<ExportRunResult> {
-  const { config } = options;
-  const cwd = dirname(config.markdownPath);
-  const typSourcePath = `${config.tempOutputPath}.typ`;
-  const typPdfPath = `${config.tempOutputPath}.pdf`;
-
-  const step1 = await spawnCollect(
-    ports,
-    config.pandocPath,
-    buildExportArgs(config),
-    cwd,
-    options.signal,
-  );
-  if (step1.status !== "success") {
-    await ports.fs.unlink(typSourcePath).catch(() => {});
-    return {
-      status: step1.status,
-      outputPath: config.outputPath,
-      exitCode: step1.exitCode,
-      stdout: step1.stdout,
-      stderr: step1.stderr,
-    };
-  }
-
-  const step2 = await spawnCollect(
-    ports,
-    config.pdfEngine,
-    ["compile", typSourcePath, typPdfPath],
-    cwd,
-    options.signal,
-  );
-  if (step2.status !== "success") {
-    await ports.fs.unlink(typSourcePath).catch(() => {});
-    await ports.fs.unlink(typPdfPath).catch(() => {});
-    return {
-      status: step2.status,
-      outputPath: config.outputPath,
-      exitCode: step2.exitCode,
-      stdout: step1.stdout + step2.stdout,
-      stderr: step1.stderr + step2.stderr,
-    };
-  }
-
-  try {
-    await ports.fs.rename(typPdfPath, config.outputPath);
-  } catch (error) {
-    await ports.fs.unlink(typSourcePath).catch(() => {});
-    await ports.fs.unlink(typPdfPath).catch(() => {});
-    return {
-      status: "failed",
-      outputPath: config.outputPath,
-      exitCode: 0,
-      stdout: step1.stdout + step2.stdout,
-      stderr:
-        step1.stderr +
-        step2.stderr +
-        (error instanceof Error ? `\n${error.message}` : `\n${String(error)}`),
-    };
-  }
-  await ports.fs.unlink(typSourcePath).catch(() => {});
-  return {
-    status: "success",
-    targetPath: config.outputPath,
-    outputPath: config.outputPath,
-    exitCode: 0,
-    stdout: step1.stdout + step2.stdout,
-    stderr: step1.stderr + step2.stderr,
-  };
-}
-
 export interface PandocExportJob {
   format: ExportFormat;
   baseName: string;
@@ -793,11 +730,9 @@ export interface PandocExportJob {
   exportDirectory: string;
   /** Resolved absolute pandoc binary path. */
   pandocPath: string;
-  /** Resolved absolute PDF engine path (pdf; "" when unset). */
-  pdfEngine: string;
   /** Absolute path of the selected CSL style. */
   cslPath: string;
-  /** Absolute path of the reference DOCX (docx; "" when unset). */
+  /** Absolute path of the reference DOCX (empty when unset). */
   referenceDocx: string;
   records: PaperRecord[];
   signal?: AbortSignal;
@@ -843,7 +778,6 @@ export async function exportPandoc(
       aliasFilterPath: join(workDir, "alias.lua"),
       cslPath: job.cslPath,
       referenceDocx: job.referenceDocx,
-      pdfEngine: job.pdfEngine,
     };
     return await runPandocExport(
       {

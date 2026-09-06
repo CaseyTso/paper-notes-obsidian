@@ -64,6 +64,18 @@ describe("listTopicMocs", () => {
     expect(result[0].path).not.toBe(result[1].path);
   });
 
+  it("includes marked notes with no table or a nonstandard body and uses filename fallback", () => {
+    const result = listTopicMocs([
+      { path: "Custom/MOCs/fallback.md", text: "---\nkind: topic-moc\n---\n" },
+      { path: "Custom/MOCs/title.md", text: "---\nkind: topic-moc\ntitle: Theme\n---\nUnstructured prose\n| Custom | Table |" },
+      { path: "Custom/MOCs/not-marked.md", text: "# Theme\n| Title | Figure解读 | 总结 | 卡片 |" },
+    ]);
+    expect(result).toEqual([
+      { path: "Custom/MOCs/fallback.md", title: "fallback" },
+      { path: "Custom/MOCs/title.md", title: "Theme" },
+    ]);
+  });
+
   it("returns empty array for empty input", () => {
     expect(listTopicMocs([])).toEqual([]);
   });

@@ -14,14 +14,16 @@ the core repository at build time.
   their frontmatter (`paper-notes-open-library`).
 - **Citation picker** — insert a `[@key]` citation for a library item from
   the active note (`paper-notes-insert-citation`).
-- **Focused Pandoc export (DOCX/PDF)** — export the active Markdown note as
-  an academic DOCX or PDF (`paper-notes-export-docx`,
-  `paper-notes-export-pdf`):
+- **PDF export** — use Obsidian's built-in PDF export. The plugin no longer
+  provides PDF export or a PDF-engine setting. Native export does not run
+  this plugin's Pandoc/CSL citation processing.
+- **Focused Pandoc export (DOCX)** — export the active Markdown note as
+  an academic DOCX (`paper-notes-export-docx`):
   - Markdown input keeps Pandoc citations intact.
   - A generated CSL-JSON `library.json` (current keys as ids), an alias Lua
     filter (legacy keys rewritten to current items before citeproc),
     `--citeproc` and the selected CSL style are passed to Pandoc.
-  - DOCX uses the configured reference DOCX; PDF uses the configured engine.
+  - Uses the configured reference DOCX (or Pandoc default when unset).
   - All exports go to one required, user-configured global output directory
     (no same-directory fallback).
   - Unknown citation keys block the run before anything spawns; an existing
@@ -38,8 +40,7 @@ the core repository at build time.
 - `cliPath` — path to the paper-notes core CLI executable.
 - `literatureRoot` — vault-relative root of the literature directories.
 - `exportDirectory` — required global output directory for Pandoc exports.
-- `pandocPath` — Pandoc binary used for DOCX/PDF export.
-- `pdfEngine` — PDF engine passed to Pandoc (e.g. `xelatex`, `typst`).
+- `pandocPath` — Pandoc binary used for DOCX export.
 - `referenceDocx` — reference DOCX used for export styling (optional).
 - `selectedCsl` — globally selected CSL style file name (vault configuration,
   never paper metadata).

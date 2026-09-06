@@ -27,6 +27,7 @@
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import { strToU8, zipSync } from "fflate";
 import type { App } from "obsidian";
 
 import type { PaperRecord } from "../src/types/paper";
@@ -40,7 +41,6 @@ import {
   exportSuccessActions,
   exportTargetPath,
   generateCslJson,
-  isTypstEngine,
   runPandocExport,
   tempOutputFor,
   unknownCitationKeys,
@@ -103,26 +103,6 @@ const DOCX_ARGS_CONFIG: ExportArgsConfig = {
   aliasFilterPath: "/tmp/work/alias.lua",
   cslPath: "/vault dir/.paper-notes/csl/ama style.csl",
   referenceDocx: "/path with spaces/reference document.docx",
-  pdfEngine: "",
-};
-
-const PDF_ARGS_CONFIG: ExportArgsConfig = {
-  ...DOCX_ARGS_CONFIG,
-  format: "pdf",
-  tempOutputPath: "/exports/.manuscript file.pdf.abc123.tmp",
-  outputPath: "/exports/manuscript file.pdf",
-  referenceDocx: "",
-  pdfEngine: "/opt/engines/weasyprint",
-};
-
-/** PDF job whose engine is typst — takes the two-step path (Repair R10). */
-const TYPST_ARGS_CONFIG: ExportArgsConfig = {
-  ...DOCX_ARGS_CONFIG,
-  format: "pdf",
-  tempOutputPath: "/exports/.manuscript file.pdf.abc123.tmp",
-  outputPath: "/exports/manuscript file.pdf",
-  referenceDocx: "",
-  pdfEngine: "/opt/homebrew/bin/typst",
 };
 
 // ---------------------------------------------------------------------------
@@ -176,7 +156,29 @@ class FakePandocProcess {
 
 interface FakeFsState {
   files: Map<string, string>;
+  binaries: Map<string, Uint8Array>;
   ops: string[];
+}
+
+/** Minimal valid DOCX with no Bibliography paragraphs: layout pass is a no-op. */
+function minimalDocxBytes(): Uint8Array {
+  const documentXml =
+    '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+    '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">' +
+    '<w:body><w:p><w:pPr><w:pStyle w:val="Normal"/></w:pPr>' +
+    '<w:r><w:t xml:space="preserve">body</w:t></w:r></w:p></w:body></w:document>';
+  const contentTypes =
+    '<?xml version="1.0" encoding="UTF-8"?>' +
+    '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">' +
+    '<Default Extension="xml" ContentType="application/xml"/>' +
+    '<Override PartName="/word/document.xml" ' +
+    'ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>' +
+    '</Types>';
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  return zipSync({
+    "[Content_Types].xml": strToU8(contentTypes),
+    "word/document.xml": strToU8(documentXml),
+  });
 }
 
 function makeFakeFs(seed: Array<[string, string]> = []): {
@@ -184,6 +186,7 @@ function makeFakeFs(seed: Array<[string, string]> = []): {
   state: FakeFsState;
 } {
   const files = new Map<string, string>(seed);
+  const binaries = new Map<string, Uint8Array>();
   const ops: string[] = [];
   let mkdtempCount = 0;
   const fs: ExportFileSystem = {
@@ -197,8 +200,27 @@ function makeFakeFs(seed: Array<[string, string]> = []): {
       ops.push(`write:${path}`);
       files.set(path, content);
     },
+    async readBytes(path: string): Promise<Uint8Array> {
+      ops.push(`readBytes:${path}`);
+      const binary = binaries.get(path);
+      if (binary !== undefined) return binary;
+      const text = files.get(path);
+      if (text !== undefined) return new TextEncoder().encode(text);
+      // Fake pandoc never writes the temp output; synthesize a valid
+      // no-op DOCX so the layout pass is exercised without failing.
+      return minimalDocxBytes();
+    },
+    async writeBytes(path: string, data: Uint8Array): Promise<void> {
+      ops.push(`writeBytes:${path}`);
+      binaries.set(path, data);
+    },
     async rename(from: string, to: string): Promise<void> {
       ops.push(`rename:${from}->${to}`);
+      const binary = binaries.get(from);
+      if (binary !== undefined) {
+        binaries.set(to, binary);
+        binaries.delete(from);
+      }
       const content = files.get(from);
       if (content !== undefined) {
         files.set(to, content);
@@ -208,16 +230,18 @@ function makeFakeFs(seed: Array<[string, string]> = []): {
     async unlink(path: string): Promise<void> {
       ops.push(`unlink:${path}`);
       files.delete(path);
+      binaries.delete(path);
     },
     async rmRecursive(path: string): Promise<void> {
       ops.push(`rm:${path}`);
       files.delete(path);
+      binaries.delete(path);
     },
     async exists(path: string): Promise<boolean> {
       return files.has(path);
     },
   };
-  return { fs, state: { files, ops } };
+  return { fs, state: { files, binaries, ops } };
 }
 
 function makeFakePorts(seed: Array<[string, string]> = []): {
@@ -250,7 +274,6 @@ function baseJob(overrides: Partial<PandocExportJob> = {}): PandocExportJob {
     markdownPath: "/vault dir/manuscript file.md",
     exportDirectory: "/exports",
     pandocPath: "/opt/bin/pandoc",
-    pdfEngine: "",
     cslPath: "/vault dir/.paper-notes/csl/ama style.csl",
     referenceDocx: "/path with spaces/reference document.docx",
     records: [SMITH, JONES],
@@ -328,10 +351,26 @@ describe("generateCslJson", () => {
     expect(item["issue"]).toBe("3");
     expect(item["page"]).toBe("100-110");
     expect(item["URL"]).toBe("https://doi.org/10.1000/full");
-    expect(item["ISSN"]).toEqual(["1234-5678", "8765-4321"]);
+    expect(item["ISSN"]).toBe("1234-5678, 8765-4321");
     expect(item["language"]).toBe("en");
     expect(item["arXiv"]).toBe("2401.00001");
     expect(item["abstract"]).toBe("An abstract");
+  });
+
+  it.each([
+    [undefined, undefined],
+    [[], undefined],
+    [["1234-5678"], "1234-5678"],
+    [["1234-5678", "8765-4321", "1234-5678"], "1234-5678, 8765-4321, 1234-5678"],
+  ])("serializes ISSNs only at the boundary (%j)", (issn, expected) => {
+    const record = { ...SMITH, issn } as PaperRecord;
+    const before = structuredClone(record);
+    if (issn) Object.freeze(issn);
+    Object.freeze(record);
+    const items = JSON.parse(generateCslJson([record, JONES]));
+    expect(items).toHaveLength(2);
+    expect(items.find((item: { id: string }) => item.id === record.key).ISSN).toBe(expected);
+    expect(record).toEqual(before);
   });
 
   it("sorts records by key and keeps ids unique", () => {
@@ -454,8 +493,8 @@ describe("exportTargetPath", () => {
     expect(exportTargetPath("/exports", "manuscript file", "docx")).toBe(
       "/exports/manuscript file.docx",
     );
-    expect(exportTargetPath("/exports", "manuscript", "pdf")).toBe(
-      "/exports/manuscript.pdf",
+    expect(exportTargetPath("/exports", "manuscript")).toBe(
+      "/exports/manuscript.docx",
     );
   });
 
@@ -469,7 +508,7 @@ describe("exportTargetPath", () => {
   });
 
   it("falls back to 'export' for an empty base name", () => {
-    expect(exportTargetPath("/exports", "   ", "pdf")).toBe("/exports/export.pdf");
+    expect(exportTargetPath("/exports", "   ")).toBe("/exports/export.docx");
   });
 });
 
@@ -501,31 +540,6 @@ describe("tempOutputFor", () => {
     expect(a).not.toBe(b);
     expect(a.startsWith("/exports/.")).toBe(true);
     expect(b.startsWith("/exports/.")).toBe(true);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// isTypstEngine (two-step PDF detection, Repair R10)
-// ---------------------------------------------------------------------------
-
-describe("isTypstEngine", () => {
-  it("detects the typst engine by basename (absolute path)", () => {
-    expect(isTypstEngine("/opt/homebrew/bin/typst")).toBe(true);
-  });
-
-  it("detects a bare name and case variants", () => {
-    expect(isTypstEngine("typst")).toBe(true);
-    expect(isTypstEngine("Typst")).toBe(true);
-  });
-
-  it("rejects non-typst engines and empty values", () => {
-    expect(isTypstEngine("/opt/engines/weasyprint")).toBe(false);
-    expect(isTypstEngine("xelatex")).toBe(false);
-    expect(isTypstEngine("")).toBe(false);
-  });
-
-  it("keys on the basename only, never the directory", () => {
-    expect(isTypstEngine("/opt/typst-bundles/weasyprint")).toBe(false);
   });
 });
 
@@ -568,43 +582,6 @@ describe("buildExportArgs", () => {
     const args = buildExportArgs({ ...DOCX_ARGS_CONFIG, referenceDocx: "" });
     expect(args).not.toContain("--reference-doc");
     expect(args).toContain("/vault dir/manuscript file.md");
-  });
-
-  it("uses the configured PDF engine for PDF output", () => {
-    const args = buildExportArgs(PDF_ARGS_CONFIG);
-    expect(args).toContain("--pdf-engine");
-    expect(args).toContain("/opt/engines/weasyprint");
-    expect(args).not.toContain("--reference-doc");
-    expect(args[args.indexOf("--to") + 1]).toBe("pdf");
-  });
-
-  it("typst: targets typst source, drops --pdf-engine (two-step R10)", () => {
-    const args = buildExportArgs(TYPST_ARGS_CONFIG);
-    expect(args[args.indexOf("--to") + 1]).toBe("typst");
-    expect(args[args.indexOf("-o") + 1]).toBe(
-      `${TYPST_ARGS_CONFIG.tempOutputPath}.typ`,
-    );
-    expect(args).not.toContain("--pdf-engine");
-    expect(args).not.toContain("/opt/homebrew/bin/typst");
-  });
-
-  it("typst: keeps lua filter/citeproc/csl/bibliography arguments", () => {
-    const args = buildExportArgs(TYPST_ARGS_CONFIG);
-    expect(args.indexOf("--citeproc")).toBeGreaterThan(
-      args.indexOf("--lua-filter"),
-    );
-    expect(args[args.indexOf("--csl") + 1]).toBe(
-      "/vault dir/.paper-notes/csl/ama style.csl",
-    );
-    expect(args[args.indexOf("--bibliography") + 1]).toBe(
-      "/tmp/work/library.json",
-    );
-    expect(args[args.length - 1]).toBe("/vault dir/manuscript file.md");
-  });
-
-  it("omits --pdf-engine when none is configured", () => {
-    const args = buildExportArgs({ ...PDF_ARGS_CONFIG, pdfEngine: "" });
-    expect(args).not.toContain("--pdf-engine");
   });
 });
 
@@ -735,121 +712,6 @@ describe("runPandocExport", () => {
     expect(result.status).toBe("failed");
     expect(result.stderr).toContain("ENOENT");
   });
-
-  // -------------------------------------------------------------------------
-  // Two-step typst PDF path (Repair R10): pandoc emits typst source, then the
-  // configured typst binary compiles it. Both steps must exit 0 before the
-  // PDF is atomically promoted.
-  // -------------------------------------------------------------------------
-
-  const typstRunOptions = () => ({
-    config: TYPST_ARGS_CONFIG,
-    workDir: "/tmp/work",
-    libraryJson: JSON.stringify([{ id: "smith2024current" }]),
-    aliasFilterLua: buildAliasLuaFilter({ oldSmith2020: "smith2024current" }),
-  });
-
-  it("typst: runs pandoc then typst, promoting the PDF only when both exit 0", async () => {
-    const { ports, runner, state, process } = makeFakePorts();
-    const promise = runPandocExport(typstRunOptions(), ports);
-    await vi.waitFor(() => expect(runner).toHaveBeenCalledTimes(1));
-
-    const [pandocCommand, pandocArgs] = runner.mock.calls[0] as [
-      string,
-      string[],
-      { cwd: string },
-    ];
-    expect(pandocCommand).toBe("/opt/bin/pandoc");
-    expect(pandocArgs[pandocArgs.indexOf("--to") + 1]).toBe("typst");
-    expect(pandocArgs).not.toContain("--pdf-engine");
-    process.emitClose(0);
-
-    await vi.waitFor(() => expect(runner).toHaveBeenCalledTimes(2));
-    const [typstCommand, typstArgs, typstOptions] = runner.mock.calls[1] as [
-      string,
-      string[],
-      { cwd: string },
-    ];
-    expect(typstCommand).toBe("/opt/homebrew/bin/typst");
-    // typst 0.15 CLI contract: explicit `compile` subcommand, positional
-    // output (semantic update from the card's `typst <input> -o <output>`
-    // sketch — neither subcommand-less nor `-o` forms are accepted on 0.15).
-    expect(typstArgs).toEqual([
-      "compile",
-      `${TYPST_ARGS_CONFIG.tempOutputPath}.typ`,
-      `${TYPST_ARGS_CONFIG.tempOutputPath}.pdf`,
-    ]);
-    expect(typstOptions.cwd).toBe("/vault dir");
-    process.emitClose(0);
-
-    const result = await promise;
-    expect(result.status).toBe("success");
-    expect(result.targetPath).toBe(TYPST_ARGS_CONFIG.outputPath);
-    const rename = lastRenameTo(TYPST_ARGS_CONFIG.outputPath, state.ops);
-    expect(rename).toBeDefined();
-    expect(rename).toContain(`${TYPST_ARGS_CONFIG.tempOutputPath}.pdf`);
-    expect(state.ops).toContain(`unlink:${TYPST_ARGS_CONFIG.tempOutputPath}.typ`);
-  });
-
-  it("typst: a failing pandoc step preserves the artifact and never spawns typst", async () => {
-    const { ports, runner, state, process } = makeFakePorts([
-      [TYPST_ARGS_CONFIG.outputPath, "previous artifact"],
-    ]);
-    const promise = runPandocExport(typstRunOptions(), ports);
-    await vi.waitFor(() => expect(runner).toHaveBeenCalledTimes(1));
-    process.emitStderr("pandoc: cannot write typst source\n");
-    process.emitClose(1);
-    const result = await promise;
-
-    expect(result.status).toBe("failed");
-    expect(result.exitCode).toBe(1);
-    expect(result.stderr).toContain("cannot write typst source");
-    expect(runner).toHaveBeenCalledTimes(1);
-    expect(state.files.get(TYPST_ARGS_CONFIG.outputPath)).toBe("previous artifact");
-    expect(state.ops).toContain(`unlink:${TYPST_ARGS_CONFIG.tempOutputPath}.typ`);
-    expect(lastRenameTo(TYPST_ARGS_CONFIG.outputPath, state.ops)).toBeUndefined();
-  });
-
-  it("typst: a failing typst step surfaces stderr and cleans both temps", async () => {
-    const { ports, state, process } = makeFakePorts([
-      [TYPST_ARGS_CONFIG.outputPath, "previous artifact"],
-    ]);
-    const promise = runPandocExport(typstRunOptions(), ports);
-    await vi.waitFor(() => expect(ports.runner).toHaveBeenCalledTimes(1));
-    process.emitClose(0);
-    await vi.waitFor(() => expect(ports.runner).toHaveBeenCalledTimes(2));
-    process.emitStderr("error: font fallback list must not be empty\n");
-    process.emitClose(2);
-    const result = await promise;
-
-    expect(result.status).toBe("failed");
-    expect(result.exitCode).toBe(2);
-    expect(result.stderr).toContain("font fallback list must not be empty");
-    expect(state.files.get(TYPST_ARGS_CONFIG.outputPath)).toBe("previous artifact");
-    expect(state.ops).toContain(`unlink:${TYPST_ARGS_CONFIG.tempOutputPath}.typ`);
-    expect(state.ops).toContain(`unlink:${TYPST_ARGS_CONFIG.tempOutputPath}.pdf`);
-    expect(lastRenameTo(TYPST_ARGS_CONFIG.outputPath, state.ops)).toBeUndefined();
-  });
-
-  it("typst: cancel during the typst step kills the child and cleans both temps", async () => {
-    const { ports, state, process } = makeFakePorts();
-    const controller = new AbortController();
-    const promise = runPandocExport(
-      { ...typstRunOptions(), signal: controller.signal },
-      ports,
-    );
-    await vi.waitFor(() => expect(ports.runner).toHaveBeenCalledTimes(1));
-    process.emitClose(0);
-    await vi.waitFor(() => expect(ports.runner).toHaveBeenCalledTimes(2));
-    controller.abort();
-    const result = await promise;
-
-    expect(result.status).toBe("cancelled");
-    expect(process.kill).toHaveBeenCalledWith("SIGTERM");
-    expect(state.ops).toContain(`unlink:${TYPST_ARGS_CONFIG.tempOutputPath}.typ`);
-    expect(state.ops).toContain(`unlink:${TYPST_ARGS_CONFIG.tempOutputPath}.pdf`);
-    expect(lastRenameTo(TYPST_ARGS_CONFIG.outputPath, state.ops)).toBeUndefined();
-  });
 });
 
 // ---------------------------------------------------------------------------
@@ -949,53 +811,6 @@ describe("exportPandoc", () => {
     ).toBe(true);
     expect(state.ops.some((op) => op.startsWith("rm:/tmp/paper-notes-export-"))).toBe(true);
   });
-
-  it("supports PDF jobs with the configured engine", async () => {
-    const { ports, runner, process } = makeFakePorts();
-    const promise = exportPandoc(
-      baseJob({
-        format: "pdf",
-        pdfEngine: "/opt/engines/weasyprint",
-        referenceDocx: "",
-      }),
-      ports,
-    );
-    await vi.waitFor(() => expect(ports.runner).toHaveBeenCalledTimes(1));
-    process.emitClose(0);
-    const result = await promise;
-
-    expect(result.status).toBe("success");
-    expect(result.targetPath).toBe("/exports/manuscript file.pdf");
-    const args = runner.mock.calls[0][1] as string[];
-    expect(args[args.indexOf("--pdf-engine") + 1]).toBe("/opt/engines/weasyprint");
-    expect(args).not.toContain("--reference-doc");
-  });
-
-  it("supports the two-step typst PDF path end to end (R10)", async () => {
-    const { ports, runner, state, process } = makeFakePorts();
-    const promise = exportPandoc(
-      baseJob({
-        format: "pdf",
-        pdfEngine: "/opt/homebrew/bin/typst",
-        referenceDocx: "",
-      }),
-      ports,
-    );
-    await vi.waitFor(() => expect(runner).toHaveBeenCalledTimes(1));
-    process.emitClose(0);
-    await vi.waitFor(() => expect(runner).toHaveBeenCalledTimes(2));
-    process.emitClose(0);
-    const result = await promise;
-
-    expect(result.status).toBe("success");
-    expect(result.targetPath).toBe("/exports/manuscript file.pdf");
-    const pandocArgs = runner.mock.calls[0][1] as string[];
-    expect(pandocArgs[pandocArgs.indexOf("--to") + 1]).toBe("typst");
-    expect(pandocArgs).not.toContain("--pdf-engine");
-    expect(runner.mock.calls[1][0]).toBe("/opt/homebrew/bin/typst");
-    // Temp working directory is cleaned up on the two-step path too.
-    expect(state.ops.some((op) => op.startsWith("rm:/tmp/paper-notes-export-"))).toBe(true);
-  });
 });
 
 // ---------------------------------------------------------------------------
@@ -1072,7 +887,6 @@ function healthInput(overrides: Partial<ExportHealthInput> = {}): ExportHealthIn
     format: "docx",
     exportDirectory: "/exports",
     pandocPath: "pandoc",
-    pdfEngine: "xelatex",
     referenceDocx: "/ref/reference.docx",
     csl: OK_CSL,
     ...overrides,
@@ -1140,43 +954,6 @@ describe("checkExportHealth", () => {
     if (!health.ok) {
       expect(health.problems).toContain("No CSL style selected.");
     }
-  });
-
-  it("blocks a PDF export without a configured engine", async () => {
-    const { port } = makeHealthPort();
-    const health = await checkExportHealth(
-      port,
-      healthInput({ format: "pdf", pdfEngine: "  " }),
-    );
-    expect(health.ok).toBe(false);
-    if (!health.ok) {
-      expect(health.problems[0]).toContain("No PDF engine configured");
-    }
-  });
-
-  it("blocks a PDF export whose engine cannot be resolved", async () => {
-    const { port } = makeHealthPort({
-      resolveBinary: (binary) => (binary === "pandoc" ? "/bin/pandoc" : null),
-    });
-    const health = await checkExportHealth(
-      port,
-      healthInput({ format: "pdf", pdfEngine: "xelatex" }),
-    );
-    expect(health.ok).toBe(false);
-    if (!health.ok) {
-      expect(health.problems.join(" ")).toContain("PDF engine not found");
-    }
-  });
-
-  it("resolves the configured engine for PDF and clears the reference DOCX", async () => {
-    const { port } = makeHealthPort();
-    const health = (await checkExportHealth(
-      port,
-      healthInput({ format: "pdf", referenceDocx: "/ref/reference.docx" }),
-    )) as Extract<ExportHealth, { ok: true }>;
-    expect(health.ok).toBe(true);
-    expect(health.pdfEngine).toBe("/resolved/xelatex");
-    expect(health.referenceDocx).toBe("");
   });
 
   it("blocks a missing reference DOCX for DOCX output", async () => {
@@ -1543,5 +1320,100 @@ describe("export confirmation modal wiring (fake DOM)", () => {
     await vi.waitFor(() => {
       expect(statusOf(handle)?.textContent).toContain("cancelled");
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Bibliography layout hook (DOCX post-processing before atomic promotion).
+// ---------------------------------------------------------------------------
+
+describe("bibliography layout hook", () => {
+  const hookOptions = () => ({
+    config: DOCX_ARGS_CONFIG,
+    workDir: "/tmp/work",
+    libraryJson: JSON.stringify([{ id: "smith2024current" }]),
+    aliasFilterLua: buildAliasLuaFilter({ oldSmith2020: "smith2024current" }),
+  });
+
+  function bibliographyDocx(label: string, author: string): Uint8Array {
+    const documentXml =
+      '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+      '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">' +
+      '<w:body>' +
+      `<w:p><w:pPr><w:pStyle w:val="Bibliography"/></w:pPr>` +
+      `<w:r><w:t xml:space="preserve">${label}</w:t></w:r>` +
+      `<w:r><w:t xml:space="preserve"> </w:t></w:r>` +
+      `<w:r><w:t xml:space="preserve">\t</w:t></w:r>` +
+      `<w:r><w:t xml:space="preserve">${author}</w:t></w:r></w:p>` +
+      "</w:body></w:document>";
+    return zipSync({
+      "[Content_Types].xml": strToU8('<?xml version="1.0" encoding="UTF-8"?><Types/>'),
+      "word/document.xml": strToU8(documentXml),
+    });
+  }
+
+  it("aligns the temp DOCX before promotion and records binary I/O", async () => {
+    const { ports, state, process } = makeFakePorts();
+    const aligned = { current: null as Uint8Array | null };
+    const originalRead = ports.fs.readBytes;
+    ports.fs.readBytes = async (path: string) => {
+      const bytes = bibliographyDocx("1.", "Thomas, T.");
+      state.binaries.set(path, bytes);
+      return originalRead(path);
+    };
+    const originalWrite = ports.fs.writeBytes;
+    ports.fs.writeBytes = async (path: string, data: Uint8Array) => {
+      aligned.current = data;
+      return originalWrite(path, data);
+    };
+    const promise = runPandocExport(hookOptions(), ports);
+    await vi.waitFor(() => expect(ports.runner).toHaveBeenCalledTimes(1));
+    process.emitClose(0);
+    const result = await promise;
+
+    expect(result.status).toBe("success");
+    expect(state.ops).toContain(`readBytes:${DOCX_ARGS_CONFIG.tempOutputPath}`);
+    expect(state.ops).toContain(`writeBytes:${DOCX_ARGS_CONFIG.tempOutputPath}`);
+    expect(aligned.current).not.toBeNull();
+    expect(lastRenameTo(DOCX_ARGS_CONFIG.outputPath, state.ops)).toBeDefined();
+  });
+
+  it("failed transform preserves the old target and cleans the temp", async () => {
+    const { ports, state, process } = makeFakePorts([
+      [DOCX_ARGS_CONFIG.outputPath, "previous artifact"],
+    ]);
+    ports.fs.readBytes = async (path: string) => {
+      state.ops.push(`readBytes:${path}`);
+      return new Uint8Array([1, 2, 3]);
+    };
+    const promise = runPandocExport(hookOptions(), ports);
+    await vi.waitFor(() => expect(ports.runner).toHaveBeenCalledTimes(1));
+    process.emitClose(0);
+    const result = await promise;
+
+    expect(result.status).toBe("failed");
+    expect(result.stderr).toContain("[bibliography layout]");
+    expect(state.files.get(DOCX_ARGS_CONFIG.outputPath)).toBe("previous artifact");
+    expect(lastRenameTo(DOCX_ARGS_CONFIG.outputPath, state.ops)).toBeUndefined();
+    expect(state.ops).toContain(`unlink:${DOCX_ARGS_CONFIG.tempOutputPath}`);
+  });
+
+  it("abort during the async transform cancels before rename", async () => {
+    const { ports, state, process } = makeFakePorts();
+    const controller = new AbortController();
+    ports.fs.readBytes = async (path: string) => {
+      state.ops.push(`readBytes:${path}`);
+      controller.abort();
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      return bibliographyDocx("1.", "Thomas, T.");
+    };
+    const promise = runPandocExport({ ...hookOptions(), signal: controller.signal }, ports);
+    await vi.waitFor(() => expect(ports.runner).toHaveBeenCalledTimes(1));
+    process.emitClose(0);
+    const result = await promise;
+
+    expect(result.status).toBe("cancelled");
+    expect(lastRenameTo(DOCX_ARGS_CONFIG.outputPath, state.ops)).toBeUndefined();
+    expect(state.ops).toContain(`unlink:${DOCX_ARGS_CONFIG.tempOutputPath}`);
   });
 });

@@ -6,7 +6,7 @@
  * adapter (in the view or `main.ts`) feeds cached reads.
  */
 
-import { parseMocNote, type MocListItem } from "./moc-parse";
+import { parseMocIdentity, type MocListItem } from "./moc-parse";
 
 export type { MocListItem };
 
@@ -21,7 +21,7 @@ export function listTopicMocs(
     if (parentSegment !== "MOCs") {
       continue;
     }
-    const parsed = parseMocNote(note.path, note.text);
+    const parsed = parseMocIdentity(note.path, note.text);
     if (!parsed) {
       continue;
     }

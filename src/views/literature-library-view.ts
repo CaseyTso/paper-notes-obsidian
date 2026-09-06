@@ -97,6 +97,9 @@ import {
   type LibraryFilters,
 } from "../components/library-filters";
 import { buildPaperDetail } from "../components/paper-detail";
+import { MocDirectory, type MocDirectorySource } from "../components/moc-directory";
+
+export type LibraryPage = "library" | "moc";
 
 export const VIEW_TYPE_PAPER_NOTES = "paper-notes-open-library";
 
@@ -363,8 +366,38 @@ export class PaperNotesLibraryView extends ItemView {
     null;
   private boundColumnPointerUp: ((event: PointerEvent) => void) | null = null;
 
-  constructor(leaf: WorkspaceLeaf, private readonly source: LibraryViewSource) {
+  private page: LibraryPage = "library";
+  private readonly mocDirectory: MocDirectory | undefined;
+  private mocHost: HTMLElement | null = null;
+
+  constructor(leaf: WorkspaceLeaf, private readonly source: LibraryViewSource, mocSource?: MocDirectorySource) {
     super(leaf);
+    this.mocDirectory = mocSource ? new MocDirectory(mocSource) : undefined;
+  }
+
+  showPage(page: LibraryPage): void {
+    if (this.page === page) return;
+    this.mocDirectory?.dispose();
+    this.mocHost = null;
+    this.cancelFullTextSearch();
+    this.clearRowClickTimer();
+    this.clearFocusRetryTimer();
+    this.closeDetailDrawer();
+    this.page = page;
+    if (this.isOpen) {
+      this.render();
+      this.containerEl.querySelector<HTMLElement>('[aria-current="page"]')?.focus();
+      this.app.workspace?.requestSaveLayout?.();
+    }
+  }
+
+  getState(): Record<string, unknown> {
+    return { page: this.page };
+  }
+
+  async setState(state: { page?: string }, result: import("obsidian").ViewStateResult): Promise<void> {
+    this.showPage(state.page === "moc" ? "moc" : "library");
+    await super.setState(state, result);
   }
 
   getViewType(): string {
@@ -394,6 +427,8 @@ export class PaperNotesLibraryView extends ItemView {
 
   async onClose(): Promise<void> {
     this.isOpen = false;
+    this.mocDirectory?.dispose();
+    this.mocHost = null;
     this.clearFocusRetryTimer();
     this.pendingFocus = undefined;
     this.cancelFullTextSearch();
@@ -421,7 +456,8 @@ export class PaperNotesLibraryView extends ItemView {
   /** Re-render after vault events; a no-op while the view is closed. */
   refresh(): void {
     if (this.isOpen) {
-      this.render();
+      if (this.page === "moc") void this.mocDirectory?.refresh();
+      else this.render();
     }
   }
 
@@ -431,6 +467,7 @@ export class PaperNotesLibraryView extends ItemView {
    * the Detail Drawer, and scrolls the row into view.
    */
   focusPaper(citationKey: string, path?: string): void {
+    this.showPage("library");
     this.clearFocusRetryTimer();
     if (!this.isOpen) {
       // The view is still being created; apply the focus when it opens.
@@ -505,10 +542,45 @@ export class PaperNotesLibraryView extends ItemView {
   }
 
   private render(): void {
+    if (this.page === "moc") {
+      this.tableHost = this.drawerHost = null;
+      if (
+        this.mocHost !== null &&
+        (typeof this.containerEl.contains !== "function" || this.containerEl.contains(this.mocHost))
+      ) {
+        return;
+      }
+      const container = this.containerEl;
+      container.empty();
+      container.addClass("paper-notes-library");
+      const nav = container.createEl("nav", { cls: "paper-notes-page-nav", attr: { "aria-label": "Paper Notes" } });
+      for (const [page, label] of [["library", "Library"], ["moc", "Topic MOC"]] as const) {
+        const button = nav.createEl("button", { text: label, attr: { type: "button", "aria-current": this.page === page ? "page" : "false" } });
+        button.addEventListener("click", () => {
+          this.showPage(page);
+          this.containerEl.querySelector<HTMLElement>('[aria-current="page"]')?.focus();
+        });
+      }
+      const host = container.createDiv({ cls: "paper-notes-moc-directory" });
+      this.mocHost = host;
+      if (this.mocDirectory) this.mocDirectory.mount(host);
+      else host.createDiv({ text: "Topic MOC unavailable." });
+      return;
+    }
+
+    this.mocHost = null;
     const scrollPosition = this.tableScrollPosition();
     const container = this.containerEl;
     container.empty();
     container.addClass("paper-notes-library");
+    const nav = container.createEl("nav", { cls: "paper-notes-page-nav", attr: { "aria-label": "Paper Notes" } });
+    for (const [page, label] of [["library", "Library"], ["moc", "Topic MOC"]] as const) {
+      const button = nav.createEl("button", { text: label, attr: { type: "button", "aria-current": this.page === page ? "page" : "false" } });
+      button.addEventListener("click", () => {
+        this.showPage(page);
+        this.containerEl.querySelector<HTMLElement>('[aria-current="page"]')?.focus();
+      });
+    }
 
     const toolbar = container.createDiv({ cls: "paper-notes-library-toolbar" });
     const searchWrap = toolbar.createDiv({
@@ -593,8 +665,7 @@ export class PaperNotesLibraryView extends ItemView {
       "Open topic MOC",
     );
     mocBtn.addEventListener("click", () => {
-      const bridge = this.resolvePluginBridge();
-      bridge?.activateMocView?.();
+      this.showPage("moc");
     });
 
     this.renderFilterBar(container);
@@ -1958,7 +2029,7 @@ export class PaperNotesLibraryView extends ItemView {
       return;
     }
     const result = await cache.refresh(item.record);
-    if (this.isOpen) {
+    if (this.isOpen && this.page === "library") {
       this.render();
     }
     this.notify(this.metricsNotice(result));
@@ -1994,7 +2065,7 @@ export class PaperNotesLibraryView extends ItemView {
       return;
     }
     const results = await cache.refreshExpired(this.source.getRecords());
-    if (this.isOpen) {
+    if (this.isOpen && this.page === "library") {
       this.render();
     }
     if (notify) {

@@ -1750,291 +1750,78 @@
   }
 }
 
-/* ── Topic MOC View ─────────────────────────────────────────────────── */
-
-.paper-notes-moc {
+/* Internal Library / MOC navigation: Obsidian theme tokens, no second view. */
+.paper-notes-page-nav {
   display: flex;
-  height: 100%;
-  overflow: hidden;
+  flex-shrink: 0;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: var(--pn-pad-md) var(--pn-pad-lg);
+  border-bottom: 1px solid var(--background-modifier-border);
 }
 
-.paper-notes-moc-sidebar {
-  flex: 0 0 220px;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  padding: 10px;
-  border-right: 1px solid var(--background-modifier-border);
+.paper-notes-page-nav [aria-current="page"] {
+  color: var(--text-accent);
+  background: var(--background-modifier-hover);
+  font-weight: var(--font-semibold);
+}
+
+.paper-notes-moc-directory {
+  flex: 1;
+  min-height: 0;
+  padding: 0 var(--pn-pad-lg) var(--pn-pad-md);
   overflow-y: auto;
 }
 
-.paper-notes-moc-list {
+.paper-notes-moc-toolbar {
   display: flex;
-  flex-direction: column;
-  gap: 2px;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 0;
+}
+
+.paper-notes-moc-toolbar h2 {
+  flex: 1;
+  margin: 0;
+  font-size: var(--font-ui-medium);
+}
+
+.paper-notes-moc-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
 }
 
 .paper-notes-moc-list-item {
   width: 100%;
+  height: auto;
+  min-height: 32px;
+  padding: 6px 8px;
   text-align: left;
-  padding: 6px 10px;
-  border-radius: var(--pn-radius-sm, 4px);
-  cursor: pointer;
-  background: transparent;
-  border: none;
+  white-space: normal;
+  overflow-wrap: anywhere;
   color: var(--text-normal);
-  font-size: var(--font-ui-small);
-  transition:
-    background-color var(--pn-transition, 160ms ease),
-    color var(--pn-transition, 160ms ease);
+  background: transparent;
+  box-shadow: none;
+  border: none;
+  cursor: pointer;
 }
 
 .paper-notes-moc-list-item:hover {
   background: var(--background-modifier-hover);
 }
 
-.paper-notes-moc-list-item:focus-visible {
+.paper-notes-page-nav button:focus-visible,
+.paper-notes-moc-directory button:focus-visible {
   outline: 2px solid var(--interactive-accent);
-  outline-offset: 1px;
+  outline-offset: -2px;
 }
 
-.paper-notes-moc-list-item.is-active {
-  background: var(--interactive-accent);
-  color: var(--text-on-accent);
-}
-
-.paper-notes-moc-empty {
+.paper-notes-moc-status {
   color: var(--text-muted);
   font-size: var(--font-ui-small);
-  padding: 8px 4px;
-}
-
-.paper-notes-moc-main {
-  flex: 1;
-  padding: 16px;
-  overflow-y: auto;
-}
-
-.paper-notes-moc-placeholder {
-  color: var(--text-muted);
-  font-size: var(--font-ui-small);
-}
-
-/* — MOC sidebar "新建主题" button — */
-
-.paper-notes-moc-sidebar > button:first-child {
-  width: 100%;
-  padding: 6px 12px;
-  border-radius: var(--pn-radius-sm, 4px);
-  cursor: pointer;
-  font-size: var(--font-ui-small);
-  font-weight: var(--font-medium);
-  background: var(--interactive-accent);
-  color: var(--text-on-accent, #fff);
-  border: 1px solid var(--interactive-accent);
-  transition:
-    background-color var(--pn-transition, 160ms ease),
-    border-color var(--pn-transition, 160ms ease);
-}
-
-.paper-notes-moc-sidebar > button:first-child:hover {
-  background: var(--interactive-accent-hover, var(--interactive-accent));
-  border-color: var(--interactive-accent-hover, var(--interactive-accent));
-}
-
-.paper-notes-moc-sidebar > button:first-child:focus-visible {
-  outline: 2px solid var(--interactive-accent);
-  outline-offset: 2px;
-}
-
-/* — MOC table — */
-
-.paper-notes-moc-table-wrap {
-  overflow-x: auto;
-  -webkit-overflow-scrolling: touch;
-}
-
-.paper-notes-moc-table {
-  width: 100%;
-  table-layout: fixed;
-  border-collapse: collapse;
-  font-size: var(--font-ui-small);
-}
-
-.paper-notes-moc-table thead th {
-  position: sticky;
-  top: 0;
-  z-index: 1;
-  text-align: left;
-  padding: 6px 10px;
-  border-bottom: 1px solid var(--background-modifier-border);
-  background: var(--background-secondary);
-  font-weight: var(--font-semibold);
-  color: var(--text-muted);
-  white-space: nowrap;
-}
-
-/* Column widths: Title wide, Figure moderate, Summary widest, Cards narrow */
-.paper-notes-moc-table th:nth-child(1),
-.paper-notes-moc-table td:nth-child(1) { width: 22%; }
-
-.paper-notes-moc-table th:nth-child(2),
-.paper-notes-moc-table td:nth-child(2) { width: 16%; }
-
-.paper-notes-moc-table th:nth-child(3),
-.paper-notes-moc-table td:nth-child(3) { width: 46%; }
-
-.paper-notes-moc-table th:nth-child(4),
-.paper-notes-moc-table td:nth-child(4) { width: 16%; }
-
-.paper-notes-moc-table tbody td {
-  padding: 8px 10px;
-  border-bottom: 1px solid var(--background-modifier-border);
-  vertical-align: top;
-  word-break: break-word;
-  overflow-wrap: break-word;
-}
-
-/* Zebra striping */
-.paper-notes-moc-table tbody tr:nth-child(even) {
-  background: color-mix(in srgb, var(--background-modifier-hover) 55%, var(--background-primary));
-}
-
-/* Hover feedback (rows are not clickable, but hover aids visual tracking) */
-.paper-notes-moc-table tbody tr:hover {
-  background: var(--background-modifier-hover);
-}
-
-/* — MOC Figure解读 link — */
-
-.paper-notes-moc-link {
-  cursor: pointer;
-  color: var(--text-accent, var(--interactive-accent));
-  text-decoration: none;
-  word-break: break-all;
-  transition: color var(--pn-transition, 160ms ease);
-}
-
-.paper-notes-moc-link:hover {
-  text-decoration: underline;
-}
-
-.paper-notes-moc-link:focus-visible {
-  outline: 2px solid var(--interactive-accent);
-  outline-offset: 2px;
-  border-radius: 2px;
-}
-
-/* — MOC summary list — */
-
-.paper-notes-moc-summary-list {
-  margin: 0;
-  padding-left: 18px;
-  list-style: none;
-}
-
-.paper-notes-moc-summary-list > li {
-  position: relative;
-  margin-bottom: 2px;
-  line-height: 1.5;
-}
-
-.paper-notes-moc-summary-list > li::before {
-  content: "•";
-  position: absolute;
-  left: -12px;
-  color: var(--text-muted);
-}
-
-.paper-notes-moc-summary-plain {
-  margin: 0 0 4px 0;
-  line-height: 1.5;
-  color: var(--text-normal);
-}
-
-/* — MOC card chips — */
-
-.paper-notes-moc-card-cell {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: flex-start;
-  gap: 2px 0;
-}
-
-.paper-notes-moc-card-chip {
-  display: inline-flex;
-  align-items: center;
-  max-width: 100%;
-  padding: 2px 8px;
-  margin: 2px 4px 2px 0;
-  border-radius: 999px;
-  border: 1px solid var(--background-modifier-border);
-  background: var(--background-primary);
-  color: var(--text-muted);
-  font-size: var(--font-ui-smaller);
-  font-weight: var(--font-medium);
-  cursor: pointer;
-  text-decoration: none;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  transition:
-    background-color var(--pn-transition, 160ms ease),
-    border-color var(--pn-transition, 160ms ease),
-    color var(--pn-transition, 160ms ease);
-}
-
-.paper-notes-moc-card-chip:hover {
-  color: var(--text-normal);
-  border-color: var(--background-modifier-border-hover, var(--background-modifier-border));
-  background: var(--background-modifier-hover);
-}
-
-.paper-notes-moc-card-chip:focus-visible {
-  outline: 2px solid var(--interactive-accent);
-  outline-offset: 1px;
-}
-
-/* — MOC empty table message — */
-
-.paper-notes-moc-empty-table {
-  color: var(--text-muted);
-  font-size: var(--font-ui-small);
-  padding: 16px 10px;
-  text-align: center;
-}
-
-/* — MOC toolbar (edit button) — */
-
-.paper-notes-moc-toolbar {
-  display: flex;
-  justify-content: flex-end;
-  margin-bottom: 8px;
-}
-
-.paper-notes-moc-edit-btn {
-  padding: 4px 12px;
-  border-radius: var(--pn-radius-sm, 4px);
-  cursor: pointer;
-  font-size: var(--font-ui-small);
-  font-weight: var(--font-medium);
-  background: var(--background-primary);
-  color: var(--text-normal);
-  border: 1px solid var(--background-modifier-border);
-  transition:
-    background-color var(--pn-transition, 160ms ease),
-    border-color var(--pn-transition, 160ms ease),
-    color var(--pn-transition, 160ms ease);
-}
-
-.paper-notes-moc-edit-btn:hover {
-  background: var(--background-modifier-hover);
-  border-color: var(--background-modifier-border-hover, var(--background-modifier-border));
-}
-
-.paper-notes-moc-edit-btn:focus-visible {
-  outline: 2px solid var(--interactive-accent);
-  outline-offset: 2px;
+  overflow-wrap: anywhere;
 }
 
 /* ---------------------------------------------------------------------------

@@ -18,7 +18,11 @@ import {
   CliError,
   sanitizeDiagnostics,
 } from "../src/services/cli-client";
-import { DEFAULT_SETTINGS, normalizeSettings } from "../src/settings";
+import {
+  DEFAULT_SETTINGS,
+  exportConfigOf,
+  normalizeSettings,
+} from "../src/settings";
 import { PROTOCOL_VERSION, isProtocolEnvelope } from "../src/types/protocol";
 import { buildEnvelope, writeFakeCli } from "./fixtures/fake-paper-notes";
 
@@ -279,11 +283,11 @@ describe("plugin settings", () => {
       literatureRoot: "05 Literature",
       exportDirectory: "",
       pandocPath: "pandoc",
-      pdfEngine: "xelatex",
       referenceDocx: "",
       selectedCsl: "",
       metricTtlDays: 30,
     });
+    expect("pdfEngine" in (DEFAULT_SETTINGS as unknown as Record<string, unknown>)).toBe(false);
   });
 
   it("keeps defaults when nothing was loaded", () => {
@@ -319,11 +323,49 @@ describe("plugin settings", () => {
   it("is stable under round-trip normalization", () => {
     const loaded = {
       pandocPath: "/opt/homebrew/bin/pandoc",
-      pdfEngine: "weasyprint",
       referenceDocx: "/tmp/ref.docx",
       selectedCsl: "nature.csl",
     };
     const once = normalizeSettings(loaded);
     expect(normalizeSettings(once)).toEqual(once);
+  });
+
+  it("safely ignores legacy pdfEngine without losing other config", () => {
+    const loaded = {
+      cliPath: "/custom/paper-notes",
+      literatureRoot: "Custom Literature",
+      exportDirectory: "/custom/exports",
+      pandocPath: "/custom/pandoc",
+      pdfEngine: "xelatex",
+      referenceDocx: "/custom/ref.docx",
+      selectedCsl: "nature.csl",
+      metricTtlDays: 14,
+    };
+    const normalized = normalizeSettings(loaded);
+    expect(normalized.cliPath).toBe("/custom/paper-notes");
+    expect(normalized.literatureRoot).toBe("Custom Literature");
+    expect(normalized.exportDirectory).toBe("/custom/exports");
+    expect(normalized.pandocPath).toBe("/custom/pandoc");
+    expect(normalized.referenceDocx).toBe("/custom/ref.docx");
+    expect(normalized.selectedCsl).toBe("nature.csl");
+    expect(normalized.metricTtlDays).toBe(14);
+    expect("pdfEngine" in (normalized as unknown as Record<string, unknown>)).toBe(false);
+  });
+
+  it("does not include pdfEngine in exportConfigOf", () => {
+    const config = exportConfigOf({
+      ...DEFAULT_SETTINGS,
+      exportDirectory: "/out",
+      pandocPath: "/usr/bin/pandoc",
+      referenceDocx: "/out/ref.docx",
+      selectedCsl: "nature.csl",
+    });
+    expect(config).toEqual({
+      exportDirectory: "/out",
+      pandocPath: "/usr/bin/pandoc",
+      referenceDocx: "/out/ref.docx",
+      selectedCsl: "nature.csl",
+    });
+    expect("pdfEngine" in (config as unknown as Record<string, unknown>)).toBe(false);
   });
 });

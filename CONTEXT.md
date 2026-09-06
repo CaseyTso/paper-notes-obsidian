@@ -93,7 +93,7 @@ The read-only Plugin Settings status showing whether the paper-fetch CLI can use
 _Avoid_: 科研通登录获取, ableSci session grabber, 科研通账号配置
 
 **Plugin Settings**:
-The Obsidian settings tab exposing plugin configuration persisted in `data.json` (paper-notes CLI path, paper-fetch CLI path, export directory, Pandoc path, PDF engine, reference DOCX, selected CSL, metric TTL, metrics toggle). The literature root is display-only and cannot be edited from the tab.
+The Obsidian settings tab exposing plugin configuration persisted in `data.json` (paper-notes CLI path, paper-fetch CLI path, export directory, Pandoc path, reference DOCX, selected CSL, metric TTL, metrics toggle). The literature root is display-only and cannot be edited from the tab.
 _Avoid_: settings in Markdown, hidden config file editing, editable literature root
 
 **Drawer Toggle**:
@@ -136,7 +136,7 @@ _Avoid_: search-results page, multi-item page, book page
 
 ## Topic MOC
 
-**Topic MOC**:
+**Topic MOC (MOC 主题笔记)**:
 A markdown note that collects papers around one research theme. One note is one theme; it is not a Canonical Paper Directory and does not live inside one.
 _Avoid_: 文献总览 section, mega-overview heading, generic Obsidian MOC, theme tag
 
@@ -145,19 +145,19 @@ The dedicated directory `05 Literature/MOCs/` that holds Topic MOC notes. It is 
 _Avoid_: Topic MOCs next to paper folders, vault-root MOC, `10 Projects`
 
 **MOC Marker**:
-The frontmatter field `kind: topic-moc` that identifies a note in the MOC Folder as a Topic MOC. An optional `title` is the display name; if absent, the filename stem is used. Notes in that folder without this `kind` are ignored by MOC View.
+The frontmatter field `kind: topic-moc` that identifies a note in the MOC Folder as a Topic MOC. An optional `title` is the display name; if absent, the filename stem is used. Notes in that folder without this `kind` are not Topic MOCs.
 _Avoid_: `type: topic-moc`, `moc: true`, “any markdown in the folder”, heading-only detection, settings whitelist
 
 **Create Topic MOC**:
-The MOC View action that asks for a theme name and calls the paper-notes CLI to write a new Topic MOC: `kind: topic-moc`, optional `title`, filename equal to the typed name, and an empty Topic Table. Duplicate names are rejected. It does not add papers or attach cards.
+The action that asks for a theme name and calls the paper-notes CLI to write a new Topic MOC: `kind: topic-moc`, optional `title`, filename equal to the typed name, and an empty Topic Table. Duplicate names are rejected. It does not add papers or attach cards.
 _Avoid_: plugin `vault.create`, creating a theme by adding a `##` section, adding rows from the panel
 
-**MOC View**:
-The independent plugin view, opened in the center leaf, that lets the user pick a Topic MOC and read its Topic Table. It is not the Literature Library (which stays in the right leaf). Clicks follow Figure解读 Links and Attached Cards only; a row is not an activation target and does not open the Detail Drawer.
-_Avoid_: Library tab, theme filter, overview preview, merged library-and-moc table, row activation, right-leaf MOC
+**MOC Directory Page (MOC 目录页)**:
+The page within the plugin’s navigation that lists Topic MOC names as links to their notes. It is a directory, not a second presentation of note bodies, Topic Tables, or paper cards.
+_Avoid_: MOC View, MOC 面板, standalone Obsidian sidebar tab, topic-table preview
 
 **Overview Archive**:
-The retired mega-overview note after its topic tables have been split into Topic MOCs. It is moved to `40 Archive/` and is no longer a live source for MOC View.
+The retired mega-overview note after its topic tables have been split into Topic MOCs. It is moved to `40 Archive/` and is no longer a live source for the MOC Directory Page.
 _Avoid_: keeping 文献总览 as a second live table, leaving an index in `05 Literature`
 
 **Topic Table**:

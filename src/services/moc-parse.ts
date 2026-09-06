@@ -147,19 +147,24 @@ function isCellEmpty(cell: string): boolean {
   return cell.replace(/<br\s*\/?>/giu, "").trim() === "";
 }
 
+/** Directory identity only: never parse or depend on the note body. */
+export function parseMocIdentity(path: string, text: string): MocListItem | undefined {
+  const fm = parseFrontmatter(text);
+  if ((fm["kind"] ?? "").trim() !== "topic-moc") return undefined;
+  const title = fm["title"]?.trim() || path.replace(/\.md$/u, "").split("/").pop() || path;
+  return { path, title };
+}
+
 /**
  * Parse a Topic MOC note from its full markdown text and vault path.
  *
  * Returns `undefined` when the note is not a Topic MOC (missing
- * `kind: topic-moc` frontmatter, or no valid four-column table).
+ * `kind: topic-moc` frontmatter). The body/table is optional.
  */
 export function parseMocNote(path: string, text: string): ParsedMoc | undefined {
-  const fm = parseFrontmatter(text);
-  if ((fm["kind"] ?? "").trim() !== "topic-moc") {
-    return undefined;
-  }
-
-  const title = fm["title"]?.trim() || path.replace(/\.md$/u, "").split("/").pop() || path;
+  const identity = parseMocIdentity(path, text);
+  if (!identity) return undefined;
+  const { title } = identity;
 
   // Find the first four-column table
   const lines = text.split(/\r?\n/u);

@@ -102,7 +102,7 @@ export class PaperNotesSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName("Export directory")
-      .setDesc("Fixed global output directory for Pandoc DOCX/PDF export (no fallback).")
+      .setDesc("Fixed global output directory for Pandoc DOCX export (no fallback).")
       .addText((text) =>
         text
           .setValue(this.plugin.settings.exportDirectory)
@@ -121,21 +121,6 @@ export class PaperNotesSettingTab extends PluginSettingTab {
             const next = value.trim();
             if (next.length > 0) {
               this.plugin.settings.pandocPath = next;
-              await this.plugin.saveSettings();
-            }
-          }),
-      );
-
-    new Setting(containerEl)
-      .setName("PDF engine")
-      .setDesc("Engine passed to Pandoc for PDF export (e.g. xelatex).")
-      .addText((text) =>
-        text
-          .setValue(this.plugin.settings.pdfEngine)
-          .onChange(async (value) => {
-            const next = value.trim();
-            if (next.length > 0) {
-              this.plugin.settings.pdfEngine = next;
               await this.plugin.saveSettings();
             }
           }),

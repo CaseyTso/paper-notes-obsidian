@@ -104,6 +104,18 @@ vi.mock("obsidian", () => {
     getAttribute(name: string): string | null {
       return this.attrs[name] ?? null;
     }
+    querySelector(selector: string): El | null {
+      for (const child of this.children) {
+        if (selector === '[aria-current="page"]' && child.attrs["aria-current"] === "page") return child;
+        const nested = child.querySelector(selector);
+        if (nested) return nested;
+      }
+      return null;
+    }
+    contains(child: El): boolean {
+      return this.children.some((c) => c === child || c.contains(child));
+    }
+    focus(): void {}
   }
 
   class ItemView {
@@ -116,6 +128,7 @@ vi.mock("obsidian", () => {
       this.containerEl.clientWidth = 1000;
     }
     open(): void {}
+    async setState(): Promise<void> {}
   }
 
   class WorkspaceLeaf {}
@@ -258,6 +271,7 @@ interface ElLike {
   scrollTop?: number;
   attrs?: Record<string, string>;
   getAttribute?: (name: string) => string | null;
+  disabled?: boolean;
 }
 
 function findByClass(root: ElLike, cls: string): ElLike[] {
@@ -1966,5 +1980,159 @@ describe("Batch 1 library shell", () => {
     expect(ths[0].style.width).toBe("500px");
     expect(ths[3].style.width).toBe("220px");
     expect(ths[2].style.width).toBe("70px"); // year keeps its default
+  });
+});
+
+
+describe("Library internal MOC navigation", () => {
+  const flush = async (): Promise<void> => { for (let i = 0; i < 10; i++) await Promise.resolve(); };
+  function directorySource() {
+    return {
+      literatureRoot: "Custom",
+      listMarkdownFiles: vi.fn(() => ["Theme.md"]),
+      readText: vi.fn(async () => "---\nkind: topic-moc\ntitle: Theme\n---\n"),
+      openNote: vi.fn(async () => {}),
+    };
+  }
+  it("legacy toolbar and persistent navigation switch pages in the same view and retain Library search", async () => {
+    const source = directorySource();
+    const view = new PaperNotesLibraryView({} as WorkspaceLeaf, makeSource(), source);
+    await view.onOpen();
+    const root = view.containerEl as unknown as ElLike;
+    const search = findByClass(root, "paper-notes-library-search")[0] as ElLike & { value: string };
+    search.value = "alpha";
+    search.listeners.input();
+    findByClass(root, "paper-notes-library-moc")[0].listeners.click();
+    await flush();
+    expect(view.getState()).toEqual({ page: "moc" });
+    expect(findByClass(root, "paper-notes-library-table")).toHaveLength(0);
+    expect(findByClass(root, "paper-notes-moc-list-item")).toHaveLength(1);
+    expect(findByClass(root, "paper-notes-page-nav")).toHaveLength(1);
+    findByClass(root, "paper-notes-moc-list-item")[0].listeners.click({ ctrlKey: true });
+    expect(source.openNote).toHaveBeenCalledWith("Custom/MOCs/Theme.md", true, expect.any(AbortSignal));
+    expect(findByClass(root, "paper-notes-moc-list-item")).toHaveLength(1);
+    const nav = findByClass(root, "paper-notes-page-nav")[0];
+    nav.children[0].listeners.click();
+    expect(view.getState()).toEqual({ page: "library" });
+    expect((findByClass(root, "paper-notes-library-search")[0] as ElLike & { value: string }).value).toBe("alpha");
+    await view.onClose();
+  });
+  it("restores the MOC page, refreshes it on source events, and ignores refresh after close", async () => {
+    const source = directorySource();
+    const view = new PaperNotesLibraryView({} as WorkspaceLeaf, makeSource(), source);
+    await view.setState({ page: "moc" }, { history: false });
+    await view.onOpen();
+    await flush();
+    source.listMarkdownFiles.mockReturnValue([]);
+    view.refresh();
+    await flush();
+    const root = view.containerEl as unknown as ElLike;
+    expect(findByClass(root, "paper-notes-moc-list-item")).toHaveLength(0);
+    await view.onClose();
+    source.listMarkdownFiles.mockClear();
+    view.refresh();
+    expect(source.listMarkdownFiles).not.toHaveBeenCalled();
+    expect(root.children).toEqual([]);
+  });
+  it("preserves mounted directory across unrelated updates and resolves pending create after journal metrics refresh", async () => {
+    let resolveCreate!: (path: string) => void;
+    const pendingCreate = new Promise<string>((resolve) => { resolveCreate = resolve; });
+    const source = {
+      literatureRoot: "Custom",
+      listMarkdownFiles: vi.fn(() => ["Theme.md"]),
+      readText: vi.fn(async () => "---\nkind: topic-moc\ntitle: Theme\n---\n"),
+      openNote: vi.fn(async () => {}),
+      createMoc: vi.fn(() => pendingCreate),
+    };
+    const view = new PaperNotesLibraryView({} as WorkspaceLeaf, makeSource(), source);
+    await view.setState({ page: "moc" }, { history: false });
+    await view.onOpen();
+    await flush();
+
+    const root = view.containerEl as unknown as ElLike;
+    const dirBefore = findByClass(root, "paper-notes-moc-directory")[0];
+    expect(dirBefore).toBeDefined();
+
+    const createBtn = findByClass(root, "mod-cta")[0];
+    expect(createBtn).toBeDefined();
+    createBtn.listeners.click();
+    expect(source.createMoc).toHaveBeenCalledOnce();
+
+    // Trigger unrelated journal metrics refresh and rerender while create is in flight
+    (view as unknown as { metricsCache: unknown; metricsResolved: boolean }).metricsCache = {
+      refreshExpired: vi.fn(async () => [{ status: "refreshed" }]),
+    };
+    (view as unknown as { metricsResolved: boolean }).metricsResolved = true;
+    await (view as unknown as { refreshAllExpired(): Promise<void> }).refreshAllExpired();
+    (view as unknown as { render(): void }).render();
+
+    // Mounted directory was preserved across the updates
+    const dirAfter = findByClass(root, "paper-notes-moc-directory")[0];
+    expect(dirAfter).toBe(dirBefore);
+
+    // Resolving create after metrics refresh successfully opens the created note
+    resolveCreate("Custom/MOCs/NewTheme.md");
+    await flush();
+    expect(source.openNote).toHaveBeenCalledWith("Custom/MOCs/NewTheme.md", false, expect.any(AbortSignal));
+    await view.onClose();
+  });
+  it("aborts pending create and does not open note on true page leave", async () => {
+    let resolveCreate!: (path: string) => void;
+    const pendingCreate = new Promise<string>((resolve) => { resolveCreate = resolve; });
+    const source = {
+      literatureRoot: "Custom",
+      listMarkdownFiles: vi.fn(() => ["Theme.md"]),
+      readText: vi.fn(async () => "---\nkind: topic-moc\ntitle: Theme\n---\n"),
+      openNote: vi.fn(async () => {}),
+      createMoc: vi.fn(() => pendingCreate),
+    };
+    const view = new PaperNotesLibraryView({} as WorkspaceLeaf, makeSource(), source);
+    await view.setState({ page: "moc" }, { history: false });
+    await view.onOpen();
+    await flush();
+
+    const root = view.containerEl as unknown as ElLike;
+    const createBtn = findByClass(root, "mod-cta")[0];
+    createBtn.listeners.click();
+    expect(source.createMoc).toHaveBeenCalledOnce();
+
+    // True page leave to Library
+    view.showPage("library");
+    await flush();
+
+    // Late resolution after page leave is discarded by the abort gate
+    resolveCreate("Custom/MOCs/LateTheme.md");
+    await flush();
+    expect(source.openNote).not.toHaveBeenCalled();
+    await view.onClose();
+  });
+  it("aborts pending create and does not open note on view close", async () => {
+    let resolveCreate!: (path: string) => void;
+    const pendingCreate = new Promise<string>((resolve) => { resolveCreate = resolve; });
+    const source = {
+      literatureRoot: "Custom",
+      listMarkdownFiles: vi.fn(() => ["Theme.md"]),
+      readText: vi.fn(async () => "---\nkind: topic-moc\ntitle: Theme\n---\n"),
+      openNote: vi.fn(async () => {}),
+      createMoc: vi.fn(() => pendingCreate),
+    };
+    const view = new PaperNotesLibraryView({} as WorkspaceLeaf, makeSource(), source);
+    await view.setState({ page: "moc" }, { history: false });
+    await view.onOpen();
+    await flush();
+
+    const root = view.containerEl as unknown as ElLike;
+    const createBtn = findByClass(root, "mod-cta")[0];
+    createBtn.listeners.click();
+    expect(source.createMoc).toHaveBeenCalledOnce();
+
+    // True close
+    await view.onClose();
+    await flush();
+
+    // Late resolution after view close is discarded by the abort gate
+    resolveCreate("Custom/MOCs/LateTheme.md");
+    await flush();
+    expect(source.openNote).not.toHaveBeenCalled();
   });
 });

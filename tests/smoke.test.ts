@@ -4,6 +4,7 @@ vi.mock("obsidian", () => import("./obsidian.mock"));
 
 import type { App, PluginManifest } from "obsidian";
 import PaperNotesPlugin, {
+  EXPORT_DOCX_COMMAND,
   OPEN_LIBRARY_COMMAND,
   VIEW_TYPE_PAPER_NOTES,
 } from "../src/main";
@@ -53,6 +54,18 @@ describe("paper-notes plugin scaffold", () => {
     await plugin.onload();
 
     expect(registeredViews).toContain(VIEW_TYPE_PAPER_NOTES);
+    expect(registeredViews).toContain("paper-notes-topic-moc");
+    expect(registeredCommands).toContain("paper-notes-open-topic-moc");
     expect(registeredCommands).toContain(OPEN_LIBRARY_COMMAND);
+  });
+
+  it("registers DOCX export command but does not register PDF export command", async () => {
+    const plugin = makePlugin();
+    await plugin.onload();
+
+    expect(registeredCommands).toContain(EXPORT_DOCX_COMMAND);
+    expect(registeredCommands).toContain("paper-notes-export-docx");
+    expect(registeredCommands).not.toContain("paper-notes-export-pdf");
+    expect("EXPORT_PDF_COMMAND" in (await import("../src/main"))).toBe(false);
   });
 });

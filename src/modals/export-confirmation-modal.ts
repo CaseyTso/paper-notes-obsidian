@@ -70,7 +70,7 @@ export function createExportConfirmationModal(
     }
 
     onOpen(): void {
-      this.titleEl.setText(props.format === "docx" ? "Export DOCX" : "Export PDF");
+      this.titleEl.setText("Export DOCX");
 
       const summary = this.contentEl.createDiv({
         cls: "paper-notes-export-summary",

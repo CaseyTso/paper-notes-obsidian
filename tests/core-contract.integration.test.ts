@@ -1044,7 +1044,6 @@ describe.skipIf(!hasCore)("core/plugin contract against the fixture vault", () =
           markdownPath: manuscript,
           exportDirectory: root,
           pandocPath: pandocBinaryPath(),
-          pdfEngine: "",
           cslPath,
           referenceDocx: "",
           records,

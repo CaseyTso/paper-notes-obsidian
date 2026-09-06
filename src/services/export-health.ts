@@ -2,7 +2,7 @@
  * Export preflight health (Task 29).
  *
  * Validates every external dependency before a Pandoc export launches
- * (design spec §14.2: "Validate Pandoc, PDF engine, CSL, reference DOCX,
+ * (design spec §14.2: "Validate Pandoc, CSL, reference DOCX,
  * citation index, and output directory before launch"). The fixed global
  * output directory is *required* — there is no same-directory fallback, and
  * a missing or unwritable directory blocks export with an actionable
@@ -34,10 +34,9 @@ export interface HealthProcess {
 }
 
 export interface ExportHealthInput {
-  format: ExportFormat;
+  format?: ExportFormat;
   exportDirectory: string;
   pandocPath: string;
-  pdfEngine: string;
   referenceDocx: string;
   /** Result of `requireExportStyle` (Task 28 gate), computed by the caller. */
   csl: ExportStyleCheck;
@@ -49,9 +48,7 @@ export type ExportHealth =
       exportDirectory: string;
       /** Resolved absolute pandoc binary path. */
       pandocPath: string;
-      /** Resolved absolute PDF engine path (pdf; "" when unset). */
-      pdfEngine: string;
-      /** Reference DOCX path as configured (docx; "" when unset). */
+      /** Reference DOCX path as configured (empty when unset). */
       referenceDocx: string;
       /** Vault-relative path of the selected CSL style. */
       cslPath: string;
@@ -99,27 +96,9 @@ export async function checkExportHealth(
     problems.push(csl.error);
   }
 
-  let pdfEngine = "";
-  if (input.format === "pdf") {
-    if (input.pdfEngine.trim().length === 0) {
-      problems.push(
-        "No PDF engine configured. Set a PDF engine (e.g. xelatex, weasyprint, typst) in the plugin settings.",
-      );
-    } else {
-      const resolved = await port.resolveBinary(input.pdfEngine.trim());
-      if (resolved === null) {
-        problems.push(
-          `PDF engine not found: ${input.pdfEngine}. Install it or fix the PDF engine setting.`,
-        );
-      } else {
-        pdfEngine = resolved;
-      }
-    }
-  }
-
   let referenceDocx = "";
   const configuredReferenceDocx = input.referenceDocx.trim();
-  if (input.format === "docx" && configuredReferenceDocx.length > 0) {
+  if (configuredReferenceDocx.length > 0) {
     if (await port.isFile(configuredReferenceDocx)) {
       referenceDocx = configuredReferenceDocx;
     } else {
@@ -136,7 +115,6 @@ export async function checkExportHealth(
     ok: true,
     exportDirectory,
     pandocPath: pandocPath as string,
-    pdfEngine,
     referenceDocx,
     cslPath,
     cslTitle,

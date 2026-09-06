@@ -2,8 +2,8 @@
  * Plugin settings (Task 22).
  *
  * Pure data model: `PaperNotesSettings` mirrors the plan's setting list
- * (CLI path, literature root, fixed export directory, Pandoc path, PDF
- * engine, reference DOCX, selected CSL, metric TTL). Persistence happens
+ * (CLI path, literature root, fixed export directory, Pandoc path,
+ * reference DOCX, selected CSL, metric TTL). Persistence happens
  * through `Plugin.loadData`/`saveData` in `main.ts`; `normalizeSettings`
  * merges whatever was loaded over the defaults and drops unknown keys so
  * older `data.json` files keep working.
@@ -37,10 +37,8 @@ export interface PaperNotesSettings {
   literatureRoot: string;
   /** Required, user-configured global export directory (no fallback). */
   exportDirectory: string;
-  /** Pandoc binary used for DOCX/PDF export. */
+  /** Pandoc binary used for DOCX export. */
   pandocPath: string;
-  /** PDF engine passed to Pandoc (e.g. xelatex). */
-  pdfEngine: string;
   /** Reference DOCX used for export styling (empty when unset). */
   referenceDocx: string;
   /**
@@ -84,7 +82,6 @@ export const DEFAULT_SETTINGS: PaperNotesSettings = {
   literatureRoot: "05 Literature",
   exportDirectory: "",
   pandocPath: "pandoc",
-  pdfEngine: "xelatex",
   referenceDocx: "",
   selectedCsl: "",
   metricTtlDays: 30,
@@ -103,7 +100,6 @@ const STRING_FIELDS = [
   "literatureRoot",
   "exportDirectory",
   "pandocPath",
-  "pdfEngine",
   "referenceDocx",
   "selectedCsl",
 ] as const satisfies readonly (keyof PaperNotesSettings)[];
@@ -185,14 +181,12 @@ export function browserConnectorEnabledOf(settings: PaperNotesSettings): boolean
 export function exportConfigOf(settings: PaperNotesSettings): {
   exportDirectory: string;
   pandocPath: string;
-  pdfEngine: string;
   referenceDocx: string;
   selectedCsl: string;
 } {
   return {
     exportDirectory: settings.exportDirectory,
     pandocPath: settings.pandocPath,
-    pdfEngine: settings.pdfEngine,
     referenceDocx: settings.referenceDocx,
     selectedCsl: settings.selectedCsl,
   };
