@@ -12,6 +12,8 @@ export interface MocEntry {
   figureKey: string | undefined;
   summaryText: string;
   cardLinks: string[];
+  figureText?: string;
+  cardText?: string;
 }
 
 export interface MocListItem {
@@ -40,6 +42,61 @@ export function figureKeyOf(target: string): string | undefined {
     return undefined;
   }
   return stem.slice(FIGURE_PREFIX.length) || undefined;
+}
+
+/**
+ * Extract clean visible text from a table cell:
+ * - Converts <br> tags to spaces and strips HTML tags
+ * - Resolves standard Markdown links [label](target) to label only (target discarded)
+ * - Resolves wikilinks [[target|label]] to label, or [[target]] to target without .md
+ * - Unescapes escaped pipes (\\| → |) and backslash escapes
+ * - Strips basic markdown formatting (bold, italic, strikethrough, inline code)
+ *   while carefully preserving underscores inside scientific identifiers (e.g. scRNA_seq, Gene_A_1)
+ */
+export function extractCellVisibleText(cell: string): string {
+  if (!cell) return "";
+  // 1. Replace <br> tags with spaces
+  let text = cell.replace(/<br\s*\/?>/giu, " ");
+  // 2. Remove HTML tags
+  text = text.replace(/<[^>]+>/gu, "");
+  // 3. Protect backslash-escaped characters in Unicode Private Use Area so escaped
+  // syntax (e.g. \* or \[) is neither treated as formatting nor prematurely stripped.
+  text = text.replace(/\\([\\*_{}[\]()#+\-.!|])/gu, (_match, char: string) => {
+    return String.fromCharCode(0xe000 + char.charCodeAt(0));
+  });
+  // 4. Process standard markdown links [label](url) -> label only (destination discarded)
+  text = text.replace(/\[([^[\]]+)\]\([^)]*\)/gu, "$1");
+  // 5. Process wikilinks [[target|label]] vs [[target]]
+  text = text.replace(/\[\[([^\]]+)\]\]/gu, (_match, rawInner: string) => {
+    const inner = rawInner.replace(/\\\|/gu, "|").replace(/\uE07C/gu, "|");
+    const pipeIdx = inner.indexOf("|");
+    if (pipeIdx >= 0) {
+      // Alias is present: visible text is label ONLY (hidden destination excluded)
+      return inner.slice(pipeIdx + 1).trim();
+    }
+    // No alias: visible text is target without .md
+    return inner.replace(/\.md$/u, "").trim();
+  });
+  // 6. Markdown formatting cleanup
+  // Inline code `code`
+  text = text.replace(/`([^`]+)`/gu, "$1");
+  // Bold **bold** and strikethrough ~~strike~~
+  text = text.replace(/\*\*([^*]+)\*\*/gu, "$1");
+  text = text.replace(/~~([^~]+)~~/gu, "$1");
+  // Italic with asterisks *italic*
+  text = text.replace(/\*([^*]+)\*/gu, "$1");
+  // Underscore emphasis (__bold__ and _italic_):
+  // Preserve underscores inside scientific identifiers (e.g. scRNA_seq_sample, Gene_A_1, CART_CRS_IL6).
+  // CommonMark emphasis requires underscores not to be preceded or followed by alphanumeric characters.
+  text = text.replace(/(^|[^\p{L}\p{N}])__([^_]+)__(?=[^\p{L}\p{N}]|$)/gu, "$1$2");
+  text = text.replace(/(^|[^\p{L}\p{N}])_([^_]+)_(?=[^\p{L}\p{N}]|$)/gu, "$1$2");
+  // 7. Restore protected escaped characters as plain literals
+  text = text.replace(/[\uE000-\uE0FF]/gu, (ch) => {
+    return String.fromCharCode(ch.charCodeAt(0) - 0xe000);
+  });
+  // 8. Normalize newlines and consecutive whitespace to spaces
+  text = text.replace(/[\r\n\s]+/gu, " ");
+  return text.trim();
 }
 
 /**
@@ -226,6 +283,8 @@ export function parseMocNote(path: string, text: string): ParsedMoc | undefined 
       figureKey,
       summaryText: cleanSummary(summaryCell),
       cardLinks,
+      figureText: extractCellVisibleText(figureCell),
+      cardText: extractCellVisibleText(cardCell),
     });
   }
 

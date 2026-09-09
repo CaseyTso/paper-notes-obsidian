@@ -153,8 +153,16 @@ The action that asks for a theme name and calls the paper-notes CLI to write a n
 _Avoid_: plugin `vault.create`, creating a theme by adding a `##` section, adding rows from the panel
 
 **MOC Directory Page (MOC 目录页)**:
-The page within the plugin’s navigation that lists Topic MOC names as links to their notes. It is a directory, not a second presentation of note bodies, Topic Tables, or paper cards.
+The page within the plugin’s navigation that lists Topic MOC names as links to their notes, with matching excerpts during MOC Content Search. It remains a directory, not a second presentation of full note bodies, Topic Tables, or paper cards.
 _Avoid_: MOC View, MOC 面板, standalone Obsidian sidebar tab, topic-table preview
+
+**MOC Content Search (MOC 内容搜索)**:
+A search across Topic MOC names and the text of all four Topic Table columns, including link labels but excluding linked-note bodies and paragraphs outside the table. A content match belongs to one Topic Entry, with its Topic MOC name providing shared context; words scattered across unrelated entries do not form a match.
+_Avoid_: title-only topic filter, vault-wide search
+
+**MOC Search Result (MOC 搜索结果)**:
+A Topic MOC matching MOC Content Search, accompanied by excerpts from matching Topic Entries when the match involves table content. It represents a topic to open, not a separate paper result or a full Topic Table preview.
+_Avoid_: paper search result, topic detail page
 
 **Overview Archive**:
 The retired mega-overview note after its topic tables have been split into Topic MOCs. It is moved to `40 Archive/` and is no longer a live source for the MOC Directory Page.
