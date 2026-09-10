@@ -128,3 +128,347 @@ describe("MOC plugin compatibility wiring", () => {
     expect(await source.readText(file.path)).toBe("");
   });
 });
+
+describe("Library activation and ribbon wiring", () => {
+  it("registers exactly one ribbon icon on load and callback opens the library", async () => {
+    const ribbonIcons: Array<{ icon: string; title: string; callback: () => void }> = [];
+    const workspace = {
+      getLeavesOfType: vi.fn(() => []),
+      getLeaf: vi.fn(() => ({ setViewState: vi.fn(async () => {}) })),
+      revealLeaf: vi.fn(async () => {}),
+      getRightLeaf: vi.fn(),
+    };
+    const plugin = pluginFor({ workspace });
+    plugin.addRibbonIcon = (icon: string, title: string, callback: (evt: MouseEvent) => any) => {
+      ribbonIcons.push({ icon, title, callback: () => callback({} as MouseEvent) });
+      return {} as HTMLElement;
+    };
+    const activateSpy = vi.spyOn(plugin, "activateLibraryView");
+
+    await plugin.onload();
+
+    expect(ribbonIcons).toHaveLength(1);
+    expect(ribbonIcons[0].icon).toBe("library");
+    expect(ribbonIcons[0].title).toBe("Open literature library");
+
+    ribbonIcons[0].callback();
+    expect(activateSpy).toHaveBeenCalledOnce();
+  });
+
+  it("creates a central leaf when no leaf exists without using getRightLeaf or getLeaf(false)", async () => {
+    const freshLeaf = {
+      setViewState: vi.fn(async () => {}),
+    };
+    const workspace = {
+      getLeavesOfType: vi.fn(() => []),
+      getLeaf: vi.fn(() => freshLeaf),
+      getRightLeaf: vi.fn(),
+      revealLeaf: vi.fn(async () => {}),
+    };
+    const plugin = pluginFor({ workspace });
+
+    await plugin.activateLibraryView();
+
+    expect(workspace.getLeaf).toHaveBeenCalledExactlyOnceWith(true);
+    expect(workspace.getRightLeaf).not.toHaveBeenCalled();
+    expect(freshLeaf.setViewState).toHaveBeenCalledExactlyOnceWith({
+      type: VIEW_TYPE_PAPER_NOTES,
+      active: true,
+    });
+    expect(workspace.revealLeaf).toHaveBeenCalledExactlyOnceWith(freshLeaf);
+  });
+
+  it("reuses an existing central leaf and switches to library page without creating a new leaf", async () => {
+    const rootSplit = {};
+    const view = new PaperNotesLibraryView({} as WorkspaceLeaf, {} as never);
+    const showPage = vi.spyOn(view, "showPage");
+    const centralLeaf = {
+      view,
+      parent: rootSplit,
+      getRoot: vi.fn(() => rootSplit),
+      setViewState: vi.fn(),
+    };
+    const workspace = {
+      rootSplit,
+      getLeavesOfType: vi.fn(() => [centralLeaf]),
+      getLeaf: vi.fn(),
+      getRightLeaf: vi.fn(),
+      revealLeaf: vi.fn(async () => {}),
+    };
+    const plugin = pluginFor({ workspace });
+
+    await plugin.activateLibraryView();
+
+    expect(workspace.getLeavesOfType).toHaveBeenCalledWith(VIEW_TYPE_PAPER_NOTES);
+    expect(workspace.getLeaf).not.toHaveBeenCalled();
+    expect(workspace.getRightLeaf).not.toHaveBeenCalled();
+    expect(centralLeaf.setViewState).not.toHaveBeenCalled();
+    expect(workspace.revealLeaf).toHaveBeenCalledWith(centralLeaf);
+    expect(showPage).toHaveBeenCalledWith("library");
+  });
+
+  it("migrates a right sidebar leaf to the central workspace, preserves view state, and detaches old leaf", async () => {
+    const rootSplit = { id: "rootSplit" };
+    const rightSplit = { id: "rightSplit" };
+
+    const oldView = new PaperNotesLibraryView({} as WorkspaceLeaf, {} as never);
+    await oldView.setState(
+      {
+        page: "library",
+        searchQuery: "einstein",
+        filters: { journal: "Physical Review", requiredArtifacts: ["pdf"] },
+        sort: { columnId: "journal", direction: "asc" },
+        selectedPath: "papers/einstein.md",
+        drawerOpen: true,
+      },
+      { history: false },
+    );
+
+    const oldLeaf = {
+      view: oldView,
+      parent: rightSplit,
+      getRoot: vi.fn(() => rightSplit),
+      getViewState: vi.fn(() => ({
+        type: VIEW_TYPE_PAPER_NOTES,
+        active: true,
+        state: oldView.getState(),
+      })),
+      detach: vi.fn(),
+      setViewState: vi.fn(),
+    };
+
+    const newView = new PaperNotesLibraryView({} as WorkspaceLeaf, {} as never);
+    const newShowPage = vi.spyOn(newView, "showPage");
+    const newLeaf = {
+      view: newView,
+      parent: rootSplit,
+      getRoot: vi.fn(() => rootSplit),
+      setViewState: vi.fn(async (vs: { state?: Record<string, unknown> }) => {
+        if (vs.state) {
+          await newView.setState(vs.state, { history: false });
+        }
+      }),
+      detach: vi.fn(),
+    };
+
+    const workspace = {
+      rootSplit,
+      rightSplit,
+      getLeavesOfType: vi.fn(() => [oldLeaf]),
+      getLeaf: vi.fn((newTab: unknown) => {
+        expect(newTab).toBe(true);
+        return newLeaf;
+      }),
+      getRightLeaf: vi.fn(),
+      revealLeaf: vi.fn(async () => {}),
+    };
+
+    const plugin = pluginFor({ workspace });
+    await plugin.activateLibraryView();
+
+    // Leaf created in center (getLeaf(true)), never via getRightLeaf
+    expect(workspace.getLeaf).toHaveBeenCalledWith(true);
+    expect(workspace.getRightLeaf).not.toHaveBeenCalled();
+
+    // Old view state transferred to new leaf via setViewState
+    expect(newLeaf.setViewState).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: VIEW_TYPE_PAPER_NOTES,
+        active: true,
+        state: expect.objectContaining({
+          page: "library",
+          searchQuery: "einstein",
+          filters: { journal: "Physical Review", requiredArtifacts: ["pdf"] },
+          sort: { columnId: "journal", direction: "asc" },
+          selectedPath: "papers/einstein.md",
+          drawerOpen: true,
+        }),
+      }),
+    );
+    expect(newShowPage).toHaveBeenCalledWith("library");
+
+    // All state preserved on new view via public getState
+    expect(newView.getState()).toEqual({
+      page: "library",
+      searchQuery: "einstein",
+      filters: { journal: "Physical Review", requiredArtifacts: ["pdf"] },
+      sort: { columnId: "journal", direction: "asc" },
+      selectedPath: "papers/einstein.md",
+      drawerOpen: true,
+    });
+
+    // Old leaf detached
+    expect(oldLeaf.detach).toHaveBeenCalledOnce();
+
+    // Final leaf is in rootSplit and NOT in rightSplit
+    expect(newLeaf.getRoot()).toBe(rootSplit);
+    expect(newLeaf.getRoot()).not.toBe(rightSplit);
+    expect(newLeaf.parent).not.toBe(rightSplit);
+  });
+
+  it("migrates a sidebar leaf with MOC page, preserves search query, and routes to MOC", async () => {
+    const rootSplit = { id: "rootSplit" };
+    const rightSplit = { id: "rightSplit" };
+
+    const oldView = new PaperNotesLibraryView({} as WorkspaceLeaf, {} as never);
+    await oldView.setState(
+      {
+        page: "moc",
+        searchQuery: "quantum",
+      },
+      { history: false },
+    );
+
+    const oldLeaf = {
+      view: oldView,
+      parent: rightSplit,
+      getRoot: vi.fn(() => rightSplit),
+      getViewState: vi.fn(() => ({
+        type: VIEW_TYPE_PAPER_NOTES,
+        active: true,
+        state: oldView.getState(),
+      })),
+      detach: vi.fn(),
+      setViewState: vi.fn(),
+    };
+
+    const newView = new PaperNotesLibraryView({} as WorkspaceLeaf, {} as never);
+    const newShowPage = vi.spyOn(newView, "showPage");
+    const newLeaf = {
+      view: newView,
+      parent: rootSplit,
+      getRoot: vi.fn(() => rootSplit),
+      setViewState: vi.fn(async (vs: { state?: Record<string, unknown> }) => {
+        if (vs.state) {
+          await newView.setState(vs.state, { history: false });
+        }
+      }),
+      detach: vi.fn(),
+    };
+
+    const workspace = {
+      rootSplit,
+      rightSplit,
+      getLeavesOfType: vi.fn(() => [oldLeaf]),
+      getLeaf: vi.fn(() => newLeaf),
+      getRightLeaf: vi.fn(),
+      revealLeaf: vi.fn(async () => {}),
+    };
+
+    const plugin = pluginFor({ workspace });
+    await plugin.activateLibraryView();
+
+    expect(newShowPage).toHaveBeenCalledWith("moc");
+    expect(newView.getState()).toEqual(
+      expect.objectContaining({
+        page: "moc",
+        searchQuery: "quantum",
+        drawerOpen: false,
+      }),
+    );
+    expect(oldLeaf.detach).toHaveBeenCalledOnce();
+  });
+
+  it("migrates a sidebar leaf when drawerOpen is true but selectedPath is missing without opening drawer", async () => {
+    const rootSplit = { id: "rootSplit" };
+    const rightSplit = { id: "rightSplit" };
+
+    const oldLeaf = {
+      view: {},
+      parent: rightSplit,
+      getRoot: vi.fn(() => rightSplit),
+      getViewState: vi.fn(() => ({
+        type: VIEW_TYPE_PAPER_NOTES,
+        active: true,
+        state: {
+          page: "library",
+          searchQuery: "curie",
+          drawerOpen: true,
+        },
+      })),
+      detach: vi.fn(),
+      setViewState: vi.fn(),
+    };
+
+    const newView = new PaperNotesLibraryView({} as WorkspaceLeaf, {} as never);
+    const newLeaf = {
+      view: newView,
+      parent: rootSplit,
+      getRoot: vi.fn(() => rootSplit),
+      setViewState: vi.fn(async (vs: { state?: Record<string, unknown> }) => {
+        if (vs.state) {
+          await newView.setState(vs.state, { history: false });
+        }
+      }),
+      detach: vi.fn(),
+    };
+
+    const workspace = {
+      rootSplit,
+      rightSplit,
+      getLeavesOfType: vi.fn(() => [oldLeaf]),
+      getLeaf: vi.fn(() => newLeaf),
+      getRightLeaf: vi.fn(),
+      revealLeaf: vi.fn(async () => {}),
+    };
+
+    const plugin = pluginFor({ workspace });
+    await plugin.activateLibraryView();
+
+    expect(newView.getState()).toEqual(
+      expect.objectContaining({
+        page: "library",
+        searchQuery: "curie",
+        drawerOpen: false,
+        selectedPath: null,
+      }),
+    );
+    expect(oldLeaf.detach).toHaveBeenCalledOnce();
+  });
+
+  it("falls back safely when sidebar leaf view is not a PaperNotesLibraryView", async () => {
+    const rootSplit = { id: "rootSplit" };
+    const rightSplit = { id: "rightSplit" };
+
+    const oldLeaf = {
+      view: {},
+      parent: rightSplit,
+      getRoot: vi.fn(() => rightSplit),
+      getViewState: vi.fn(() => ({
+        type: VIEW_TYPE_PAPER_NOTES,
+        active: true,
+        state: { page: "moc" },
+      })),
+      detach: vi.fn(),
+      setViewState: vi.fn(),
+    };
+
+    const newView = new PaperNotesLibraryView({} as WorkspaceLeaf, {} as never);
+    const newLeaf = {
+      view: newView,
+      parent: rootSplit,
+      getRoot: vi.fn(() => rootSplit),
+      setViewState: vi.fn(async (vs: { state?: Record<string, unknown> }) => {
+        if (vs.state) {
+          await newView.setState(vs.state, { history: false });
+        }
+      }),
+      detach: vi.fn(),
+    };
+
+    const workspace = {
+      rootSplit,
+      rightSplit,
+      getLeavesOfType: vi.fn(() => [oldLeaf]),
+      getLeaf: vi.fn(() => newLeaf),
+      getRightLeaf: vi.fn(),
+      revealLeaf: vi.fn(async () => {}),
+    };
+
+    const plugin = pluginFor({ workspace });
+    await plugin.activateLibraryView();
+
+    expect(newView.getState().page).toBe("moc");
+    expect(oldLeaf.detach).toHaveBeenCalledOnce();
+  });
+});

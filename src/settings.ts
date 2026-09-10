@@ -25,6 +25,7 @@ const COLUMN_IDS: readonly LibraryColumnId[] = [
   "if",
   "jci",
   "artifacts",
+  "moc",
   "readingStatus",
 ];
 

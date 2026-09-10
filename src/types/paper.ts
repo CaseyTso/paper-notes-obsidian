@@ -50,6 +50,8 @@ export interface PaperRecord {
   /** Title aliases (searchable text only, not reserved identity). */
   titleAliases: string[];
   abstract?: string;
+  /** ISO timestamp when the paper was created/imported into the library. */
+  createdAt?: string;
 }
 
 export type IndexInvalidReason =

@@ -7,14 +7,14 @@
  * starts MinerU or Hermes jobs (design spec §9.5). The core CLI performs
  * all managed writes (lock, staging, atomic replacement, index rebuild).
  *
- * Confirmation flows (design spec §7.3, §8.2, §8.3, §9.5):
+ * Confirmation flows (design spec §7.3, §8.2, §8.3, §9.5, Phase C1/C2):
  * - `needs_confirmation` envelopes carry a `confirmation_token` plus a
  *   machine-readable `plan` (and `candidates` for fuzzy duplicates). The
  *   caller shows the rendered plan and resubmits with the token.
- * - `item create` has no `--confirm-token` flag: its token is derived
- *   deterministically from identifiers + PDF hash + confirmed values, so
- *   the resubmission carrier is the `--confirmed` JSON file holding the
- *   user-confirmed values (core recomputes and verifies the token).
+ * - `item create` supports preview via `--dry-run` and explicit confirmation
+ *   via `--confirm-token <token>` alongside `--confirmed <json>`.
+ *   The confirmation token binds immutable decision inputs (identifiers,
+ *   candidate state, and PDF hash; it does not hash confirmed values).
  * - `item rename-key` and `item delete` always preview (`--dry-run`)
  *   before any confirm; delete additionally requires the exact citation
  *   key (`--confirm-key`) per spec §8.3.
@@ -142,6 +142,79 @@ export function outcomeOf(envelope: ProtocolEnvelope): ActionOutcome {
   };
 }
 
+/**
+ * Detect whether an error from `item create --dry-run` indicates that the
+ * underlying core CLI does not support preview / `--dry-run` (e.g. an older core).
+ */
+export function isPreviewUnsupportedError(outcome: ActionOutcome): boolean {
+  if (outcome.status !== "error") {
+    return false;
+  }
+  if (outcome.code === "preview_unsupported" || outcome.code === "usage_error") {
+    return true;
+  }
+  const text = (
+    outcome.message +
+    " " +
+    (outcome.envelope?.errors?.map((e) => `${e.code} ${e.message}`).join(" ") ?? "")
+  ).toLowerCase();
+  if (
+    text.includes("unrecognized argument") ||
+    text.includes("unrecognized option") ||
+    text.includes("unknown option")
+  ) {
+    return true;
+  }
+  if (
+    text.includes("--dry-run") &&
+    (text.includes("unrecognized") || text.includes("unknown") || text.includes("invalid"))
+  ) {
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Structured data returned in `data` for an `item create --dry-run`
+ * needs_confirmation envelope (Phase C1/C2 contract).
+ */
+export interface CreatePreviewData {
+  confirmation_token: string;
+  action: "create" | "create_with_confirmation" | "confirm_candidates" | "duplicate_exists" | string;
+  plan?: Record<string, unknown>;
+  candidates?: Array<Record<string, unknown>>;
+  citation_key?: string;
+  paper_id?: string;
+  path?: string;
+  pdf_sha256?: string | null;
+}
+
+/**
+ * Extract strongly-typed create preview data from a `needs_confirmation` outcome.
+ * Returns `undefined` if the outcome is not needs_confirmation.
+ */
+export function parseCreatePreview(outcome: ActionOutcome): CreatePreviewData | undefined {
+  if (outcome.status !== "needs_confirmation") {
+    return undefined;
+  }
+  const data = outcome.envelope.data as Record<string, unknown>;
+  return {
+    confirmation_token: outcome.token,
+    action: typeof data.action === "string" ? data.action : "create_with_confirmation",
+    plan:
+      typeof data.plan === "object" && data.plan !== null && !Array.isArray(data.plan)
+        ? (data.plan as Record<string, unknown>)
+        : undefined,
+    candidates: Array.isArray(data.candidates)
+      ? (data.candidates as Array<Record<string, unknown>>)
+      : undefined,
+    citation_key: typeof data.citation_key === "string" ? data.citation_key : undefined,
+    paper_id: typeof data.paper_id === "string" ? data.paper_id : undefined,
+    path: typeof data.path === "string" ? data.path : undefined,
+    pdf_sha256: typeof data.pdf_sha256 === "string" ? data.pdf_sha256 : null,
+  };
+}
+
 export class ItemActions {
   private readonly io: TempJsonIo;
 
@@ -158,7 +231,9 @@ export class ItemActions {
       return outcomeOf(envelope);
     } catch (error) {
       if (error instanceof CliError) {
-        return { status: "error", code: error.code, message: error.message };
+        const detail = error.stderr.trim();
+        const message = detail.length > 0 ? `${error.message}: ${detail}` : error.message;
+        return { status: "error", code: error.code, message };
       }
       return {
         status: "error",
@@ -168,15 +243,16 @@ export class ItemActions {
     }
   }
 
-  /** Run a CLI command whose last flag points at a temp JSON payload. */
+  /** Run a CLI command whose flag points at a temp JSON payload. */
   private async runWithJsonFile(
     args: string[],
     flag: string,
     payload: unknown,
+    suffixArgs: string[] = [],
   ): Promise<ActionOutcome> {
     const path = await this.io.write(payload);
     try {
-      return await this.run([...args, flag, path]);
+      return await this.run([...args, flag, path, ...suffixArgs]);
     } finally {
       await this.io.remove(path);
     }
@@ -195,13 +271,17 @@ export class ItemActions {
   }
 
   /**
-   * Resubmit `item create` with the user-confirmed values. The confirmed
-   * file is the deterministic confirmation-token carrier: the core
-   * recomputes the token from identifiers + PDF hash + confirmed values.
+   * Preview `item create` via `--dry-run` without mutating the vault (spec Phase C1).
+   *
+   * Reuses `createArgs` and appends `--dry-run`. Returns a `needs_confirmation`
+   * outcome containing the confirmation token, plan, candidates, citation key,
+   * etc. If the core CLI lacks preview support (reports usage_error or
+   * unrecognized argument), returns `{ status: "error", code: "preview_unsupported" }`
+   * without ever falling back to a mutating create.
    */
-  async confirmCreate(
+  async previewCreate(
     input: CreateItemInput,
-    confirmed: Record<string, unknown>,
+    confirmed?: Record<string, unknown>,
   ): Promise<ActionOutcome> {
     if (!hasSource(input)) {
       return {
@@ -210,7 +290,53 @@ export class ItemActions {
         message: "Create requires an identifier, URL, or local PDF path.",
       };
     }
-    return this.runWithJsonFile(createArgs(this.config.vaultRoot, input), "--confirmed", confirmed);
+    const baseArgs = createArgs(this.config.vaultRoot, input);
+    const outcome =
+      confirmed !== undefined
+        ? await this.runWithJsonFile(baseArgs, "--confirmed", confirmed, ["--dry-run"])
+        : await this.run([...baseArgs, "--dry-run"]);
+
+    if (outcome.status === "error" && isPreviewUnsupportedError(outcome)) {
+      return {
+        status: "error",
+        code: "preview_unsupported",
+        message:
+          "paper-notes CLI does not support preview (--dry-run). Please upgrade the core CLI.",
+        envelope: outcome.envelope,
+      };
+    }
+    return outcome;
+  }
+
+  /**
+   * Resubmit `item create` with user-confirmed values and confirmation token (Phase C2).
+   *
+   * The confirmation token binds immutable decision inputs (identifiers,
+   * candidate state, and PDF hash; confirmed values are not hashed into
+   * the token). The token is verified by the core CLI upon confirmation.
+   * Confirmed payload is written to a temporary JSON file and cleaned up
+   * unconditionally in finally.
+   */
+  async confirmCreate(
+    input: CreateItemInput,
+    confirmed: Record<string, unknown>,
+    confirmToken?: string,
+  ): Promise<ActionOutcome> {
+    if (!hasSource(input)) {
+      return {
+        status: "error",
+        code: "no_input",
+        message: "Create requires an identifier, URL, or local PDF path.",
+      };
+    }
+    const suffixArgs =
+      confirmToken !== undefined ? ["--confirm-token", confirmToken] : [];
+    return this.runWithJsonFile(
+      createArgs(this.config.vaultRoot, input),
+      "--confirmed",
+      confirmed,
+      suffixArgs,
+    );
   }
 
   /** Reading-status shortcuts always go through `item update`. */

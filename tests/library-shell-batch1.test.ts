@@ -36,7 +36,18 @@ vi.mock("obsidian", () => {
   class El {
     tag: string;
     cls = "";
-    textContent = "";
+    // Real DOM: `textContent` reads aggregate an element's own text plus the
+    // text of all descendant elements. We mirror that with a backing field
+    // (own text) + a getter that concatenates children, so assertions on a
+    // parent's textContent still pass when content lives in inner children
+    // (e.g. the title cell's .paper-notes-col-title-text span).
+    private _ownText = "";
+    set textContent(value: string) {
+      this._ownText = value;
+    }
+    get textContent(): string {
+      return this._ownText + this.children.map((c) => c.textContent).join("");
+    }
     value = "";
     checked = false;
     selected = false;
@@ -1963,7 +1974,7 @@ describe("Batch 1 library shell", () => {
       const root = view.containerEl as unknown as ElLike;
       const table = findByClass(root, "paper-notes-library-table")[0];
       const sum =
-        2740 + 150 + 70 + 200 + 100 + 70 + 70 + 70 + 180 + 130;
+        2740 + 150 + 70 + 200 + 100 + 70 + 70 + 70 + 180 + 150 + 130;
       expect(table.style.width).toBe(`${sum}px`);
     } finally {
       uninstallDocumentStub();
@@ -1994,7 +2005,7 @@ describe("Library internal MOC navigation", () => {
       openNote: vi.fn(async () => {}),
     };
   }
-  it("legacy toolbar and persistent navigation switch pages in the same view and retain Library search", async () => {
+  it("persistent navigation switches pages in the same view and retains Library search with duplicate toolbar button removed", async () => {
     const source = directorySource();
     const view = new PaperNotesLibraryView({} as WorkspaceLeaf, makeSource(), source);
     await view.onOpen();
@@ -2002,9 +2013,18 @@ describe("Library internal MOC navigation", () => {
     const search = findByClass(root, "paper-notes-library-search")[0] as ElLike & { value: string };
     search.value = "alpha";
     search.listeners.input();
-    findByClass(root, "paper-notes-library-moc")[0].listeners.click();
+    expect(findByClass(root, "paper-notes-library-moc")).toHaveLength(0);
+    const initialNav = findByClass(root, "paper-notes-page-nav")[0];
+    initialNav.children[1].listeners.click();
     await flush();
-    expect(view.getState()).toEqual({ page: "moc" });
+    expect(view.getState()).toEqual({
+      page: "moc",
+      searchQuery: "alpha",
+      filters: { requiredArtifacts: [] },
+      sort: { columnId: "year", direction: "desc" },
+      selectedPath: null,
+      drawerOpen: false,
+    });
     expect(findByClass(root, "paper-notes-library-table")).toHaveLength(0);
     expect(findByClass(root, "paper-notes-moc-list-item")).toHaveLength(1);
     expect(findByClass(root, "paper-notes-page-nav")).toHaveLength(1);
@@ -2013,7 +2033,14 @@ describe("Library internal MOC navigation", () => {
     expect(findByClass(root, "paper-notes-moc-list-item")).toHaveLength(1);
     const nav = findByClass(root, "paper-notes-page-nav")[0];
     nav.children[0].listeners.click();
-    expect(view.getState()).toEqual({ page: "library" });
+    expect(view.getState()).toEqual({
+      page: "library",
+      searchQuery: "alpha",
+      filters: { requiredArtifacts: [] },
+      sort: { columnId: "year", direction: "desc" },
+      selectedPath: null,
+      drawerOpen: false,
+    });
     expect((findByClass(root, "paper-notes-library-search")[0] as ElLike & { value: string }).value).toBe("alpha");
     await view.onClose();
   });
@@ -2134,5 +2161,295 @@ describe("Library internal MOC navigation", () => {
     resolveCreate("Custom/MOCs/LateTheme.md");
     await flush();
     expect(source.openNote).not.toHaveBeenCalled();
+  });
+  it("does not render the duplicate MOC button in the library toolbar while keeping top nav tabs", async () => {
+    const view = new PaperNotesLibraryView({} as WorkspaceLeaf, makeSource(), directorySource());
+    await view.onOpen();
+    const root = view.containerEl as unknown as ElLike;
+    expect(findByClass(root, "paper-notes-library-moc")).toHaveLength(0);
+    const nav = findByClass(root, "paper-notes-page-nav");
+    expect(nav).toHaveLength(1);
+    expect(nav[0].children).toHaveLength(2);
+    expect(nav[0].children[0].textContent).toBe("Library");
+    expect(nav[0].children[1].textContent).toBe("Topic MOC");
+    await view.onClose();
+  });
+});
+
+describe("Library Title cell and MOC membership column (R3b + R4)", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  const flush = async (): Promise<void> => {
+    for (let i = 0; i < 10; i++) await Promise.resolve();
+  };
+
+  function makeCustomRecord(
+    key: string,
+    title = "Title",
+    path = `05 Literature/${key}/${key}.md`,
+  ): PaperRecord {
+    return {
+      path,
+      key,
+      paperId: `550e8400-e29b-41d4-a716-${key}`,
+      title,
+      authors: [{ family: "Shiau", given: "Wen" }],
+      journal: "Nature Methods",
+      year: 2024,
+      identifiers: { doi: "10.1000/alpha" },
+      citationKeyAliases: [],
+      titleAliases: [],
+      abstract: "Abstract text.",
+    };
+  }
+
+  function makeMoc(
+    path: string,
+    title: string,
+    figureKeys: string[],
+  ): import("../src/services/moc-parse").ParsedMoc {
+    return {
+      path,
+      title,
+      entries: figureKeys.map((figureKey) => ({
+        titleText: "Paper",
+        figureLink: `Figure解读_${figureKey}`,
+        figureKey,
+        summaryText: "",
+        cardLinks: [],
+        figureText: "",
+        cardText: "",
+      })),
+    };
+  }
+
+  it("sets the title attribute on title cells to the complete paper title", async () => {
+    const paper = makeCustomRecord(
+      "longTitleKey",
+      "A Very Long Paper Title That Exceeds Two Lines In Display",
+    );
+    const view = new PaperNotesLibraryView({} as WorkspaceLeaf, makeSource([paper]));
+    await view.onOpen();
+
+    const row = rowsOf(view)[0];
+    const titleCell = findByClass(row, "paper-notes-col-title")[0];
+    expect(titleCell).toBeDefined();
+    expect(titleCell.attrs?.["title"]).toBe(paper.title);
+    expect(titleCell.textContent).toBe(paper.title);
+    await view.onClose();
+  });
+
+  it("renders '—' for papers without Topic MOC membership", async () => {
+    const paper = makeCustomRecord("nomoc2024");
+    const source = makeSource([paper]);
+    source.getParsedMocs = () => [];
+    const view = new PaperNotesLibraryView({} as WorkspaceLeaf, source);
+    await view.onOpen();
+
+    const row = rowsOf(view)[0];
+    const mocCell = findByClass(row, "paper-notes-col-moc")[0];
+    expect(mocCell).toBeDefined();
+    const emptySpan = findByClass(mocCell, "paper-notes-moc-empty")[0];
+    expect(emptySpan).toBeDefined();
+    expect(emptySpan.textContent).toBe("—");
+    await view.onClose();
+  });
+
+  it("renders up to 2 MOC name tags directly", async () => {
+    const paper = makeCustomRecord("paper1");
+    const source = makeSource([paper]);
+    source.getParsedMocs = () => [
+      makeMoc("05 Literature/MOCs/TopicA.md", "Topic A", ["paper1"]),
+      makeMoc("05 Literature/MOCs/TopicB.md", "Topic B", ["paper1"]),
+    ];
+    const view = new PaperNotesLibraryView({} as WorkspaceLeaf, source);
+    await view.onOpen();
+
+    const row = rowsOf(view)[0];
+    const mocCell = findByClass(row, "paper-notes-col-moc")[0];
+    const tags = findByClass(mocCell, "paper-notes-moc-tag");
+    expect(tags).toHaveLength(2);
+    expect(tags[0].textContent).toBe("Topic A");
+    expect(tags[1].textContent).toBe("Topic B");
+    const moreBtn = findByClass(mocCell, "paper-notes-moc-more");
+    expect(moreBtn).toHaveLength(0);
+    await view.onClose();
+  });
+
+  it("renders 2 tags plus an actionable '+N' button when paper belongs to >2 MOCs", async () => {
+    const paper = makeCustomRecord("paperMulti");
+    const source = makeSource([paper]);
+    source.getParsedMocs = () => [
+      makeMoc("MOCs/A.md", "Alpha", ["paperMulti"]),
+      makeMoc("MOCs/B.md", "Beta", ["paperMulti"]),
+      makeMoc("MOCs/C.md", "Gamma", ["paperMulti"]),
+      makeMoc("MOCs/D.md", "Delta", ["paperMulti"]),
+    ];
+    const view = new PaperNotesLibraryView({} as WorkspaceLeaf, source);
+    await view.onOpen();
+
+    const row = rowsOf(view)[0];
+    const mocCell = findByClass(row, "paper-notes-col-moc")[0];
+
+    // Initially collapsed: 2 tags + "+2"
+    let tags = findByClass(mocCell, "paper-notes-moc-tag");
+    expect(tags).toHaveLength(2);
+    expect(tags.map((t) => t.textContent)).toEqual(["Alpha", "Beta"]);
+
+    let moreBtn = findByClass(mocCell, "paper-notes-moc-more")[0];
+    expect(moreBtn).toBeDefined();
+    expect(moreBtn.textContent).toBe("+2");
+    expect(moreBtn.attrs?.["aria-expanded"]).toBe("false");
+
+    // Click "+2" to expand
+    moreBtn.listeners["click"]?.({
+      preventDefault: vi.fn(),
+      stopPropagation: vi.fn(),
+    });
+
+    tags = findByClass(mocCell, "paper-notes-moc-tag");
+    expect(tags).toHaveLength(4);
+    expect(tags.map((t) => t.textContent)).toEqual(["Alpha", "Beta", "Delta", "Gamma"]);
+
+    moreBtn = findByClass(mocCell, "paper-notes-moc-more")[0];
+    expect(moreBtn.textContent).toBe("−");
+    expect(moreBtn.attrs?.["aria-expanded"]).toBe("true");
+
+    // Click "−" to collapse back
+    moreBtn.listeners["click"]?.({
+      preventDefault: vi.fn(),
+      stopPropagation: vi.fn(),
+    });
+
+    tags = findByClass(mocCell, "paper-notes-moc-tag");
+    expect(tags).toHaveLength(2);
+    moreBtn = findByClass(mocCell, "paper-notes-moc-more")[0];
+    expect(moreBtn.textContent).toBe("+2");
+
+    // Keyboard access on toggle button
+    moreBtn.listeners["keydown"]?.({
+      key: "Enter",
+      preventDefault: vi.fn(),
+      stopPropagation: vi.fn(),
+    });
+    tags = findByClass(mocCell, "paper-notes-moc-tag");
+    expect(tags).toHaveLength(4);
+
+    await view.onClose();
+  });
+
+  it("clicking MOC tag invokes navigation and stops propagation without triggering row activation", async () => {
+    const paper = makeCustomRecord("navPaper");
+    const source = makeSource([paper]);
+    source.getParsedMocs = () => [
+      makeMoc("05 Literature/MOCs/TargetMoc.md", "Target MOC", ["navPaper"]),
+    ];
+    const directorySource = {
+      literatureRoot: "05 Literature",
+      listMarkdownFiles: vi.fn(() => ["TargetMoc.md"]),
+      readText: vi.fn(async () => ""),
+      openNote: vi.fn(async () => {}),
+    };
+    const view = new PaperNotesLibraryView({} as WorkspaceLeaf, source, directorySource);
+    await view.onOpen();
+
+    const row = rowsOf(view)[0];
+    const mocCell = findByClass(row, "paper-notes-col-moc")[0];
+    const tag = findByClass(mocCell, "paper-notes-moc-tag")[0];
+    expect(tag).toBeDefined();
+
+    const stopPropagation = vi.fn();
+    const preventDefault = vi.fn();
+
+    // Click the MOC tag
+    tag.listeners["click"]?.({
+      stopPropagation,
+      preventDefault,
+      ctrlKey: false,
+    });
+    await flush();
+
+    // Navigation was invoked
+    expect(directorySource.openNote).toHaveBeenCalledWith("05 Literature/MOCs/TargetMoc.md", false);
+    // Event propagation was stopped
+    expect(stopPropagation).toHaveBeenCalled();
+
+    // Row activation (Detail Drawer / PDF) was NOT scheduled/triggered
+    await flushRowClickDelay();
+    expect(view.getState().drawerOpen).toBe(false);
+
+    // Keyboard navigation via Enter key
+    tag.listeners["keydown"]?.({
+      key: "Enter",
+      stopPropagation,
+      preventDefault,
+    });
+    await flush();
+    expect(directorySource.openNote).toHaveBeenCalledTimes(2);
+
+    await view.onClose();
+  });
+
+  it("renders reading status chips with correct modifier classes", async () => {
+    const paperUnread = makeCustomRecord("unreadPaper", "Unread", "lit/unread/unread.md");
+    const paperReading = makeCustomRecord("readingPaper", "Reading", "lit/reading/reading.md");
+    const paperRead = makeCustomRecord("readPaper", "Read", "lit/read/read.md");
+
+    const source = makeSource([paperUnread, paperReading, paperRead]);
+    source.getFrontmatter = (path: string) => {
+      if (path.includes("unread")) return { reading_status: "unread" };
+      if (path.includes("reading")) return { reading_status: "reading" };
+      if (path.includes("read")) return { reading_status: "read" };
+      return undefined;
+    };
+
+    const view = new PaperNotesLibraryView({} as WorkspaceLeaf, source);
+    await view.onOpen();
+
+    const rows = rowsOf(view);
+    const chips = rows.map((r) => {
+      const cell = findByClass(r, "paper-notes-col-readingStatus")[0];
+      return findByClass(cell, "paper-notes-status-chip")[0];
+    });
+
+    expect(chips[0].cls).toContain("paper-notes-status-chip--unread");
+    expect(chips[1].cls).toContain("paper-notes-status-chip--reading");
+    expect(chips[2].cls).toContain("paper-notes-status-chip--read");
+
+    await view.onClose();
+  });
+
+  it("openPaperDetail opens the detail drawer without altering searchQuery or filters", async () => {
+    const source = makeSource();
+    const view = new PaperNotesLibraryView({} as WorkspaceLeaf, source);
+    await view.onOpen();
+
+    const root = view.containerEl as unknown as ElLike;
+    const search = findByClass(root, "paper-notes-library-search")[0] as ElLike & {
+      value: string;
+    };
+    search.value = "something";
+    search.listeners["input"]?.({});
+
+    expect(view.getState().searchQuery).toBe("something");
+    expect(view.getState().drawerOpen).toBe(false);
+
+    // openPaperDetail must not clear search query
+    view.openPaperDetail("alpha2024");
+    expect(view.getState().drawerOpen).toBe(true);
+    expect(view.getState().searchQuery).toBe("something");
+    expect(view.getState().selectedPath).toBe(NOTE_PATH);
+    expect(findByClass(root, "paper-notes-library-drawer-panel")).toHaveLength(1);
+
+    // Calling again with same key keeps drawer open (no toggle-close)
+    view.openPaperDetail("alpha2024");
+    expect(view.getState().drawerOpen).toBe(true);
+
+    await view.onClose();
   });
 });

@@ -42,8 +42,11 @@ import {
   renderPlanLines,
   resolveOpenTarget,
   assetPathOf,
+  isPreviewUnsupportedError,
+  parseCreatePreview,
   type ActionOutcome,
   type CreateItemInput,
+  type CreatePreviewData,
 } from "../src/services/item-actions";
 import { CreateItemModal, type CreateItemCallbacks } from "../src/modals/create-item-modal";
 import { ConfirmationModal, TextPromptModal } from "../src/modals/confirmation-modal";
@@ -116,8 +119,8 @@ function successOutcome(overrides: Partial<ProtocolEnvelope> = {}): ActionOutcom
   return { status: "success", envelope: buildEnvelope(overrides) };
 }
 
-function needsConfirmationOutcome(data: Record<string, unknown>): ActionOutcome {
-  return { status: "needs_confirmation", token: "tok", envelope: buildEnvelope({ status: "needs_confirmation", data }) };
+function needsConfirmationOutcome(data: Record<string, unknown>, token = "tok"): ActionOutcome {
+  return { status: "needs_confirmation", token, envelope: buildEnvelope({ status: "needs_confirmation", data }) };
 }
 
 interface IoSpy {
@@ -375,6 +378,360 @@ describe("ItemActions.create / confirmCreate", () => {
     expect(outcome).toMatchObject({ status: "error", code: "user_error" });
     expect(listFiles(vaultDir)).toEqual(before);
     expect(readFileSync(notePath, "utf8")).toBe("---\ntitle: keep\n---\n");
+  });
+});
+
+describe("ItemActions.previewCreate / confirmCreate (Phase P6 / C1 / C2 contract)", () => {
+  let tempDir: string;
+  let vaultDir: string;
+
+  beforeEach(() => {
+    tempDir = mkdtempSync(join(tmpdir(), "paper-notes-preview-test-"));
+    vaultDir = mkdtempSync(join(tempDir, "vault-"));
+  });
+
+  afterEach(() => {
+    rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  it("generates CLI arguments containing --dry-run and no --confirm-token", async () => {
+    const cliPath = writeFakeCli(tempDir, {});
+    const client = new CliClient(cliPath);
+    const runSpy = vi.spyOn(client, "run");
+    const actions = new ItemActions({ client, vaultRoot: vaultDir });
+    const outcome = await actions.previewCreate({ doi: "10.1000/test-preview" });
+    expect(outcome.status).toBe("success");
+    expect(runSpy).toHaveBeenCalledTimes(1);
+    const argv = (outcome as { envelope: ProtocolEnvelope }).envelope.data.argv as string[];
+    expect(argv).toEqual([
+      "--json", "item", "create", "--vault", vaultDir, "--doi", "10.1000/test-preview", "--dry-run",
+    ]);
+    expect(argv).toContain("--dry-run");
+    expect(argv).not.toContain("--confirm-token");
+  });
+
+  it("combines identifier, url, and pdf flags with --dry-run", async () => {
+    const cliPath = writeFakeCli(tempDir, {});
+    const client = new CliClient(cliPath);
+    const actions = new ItemActions({ client, vaultRoot: vaultDir });
+    const outcome = await actions.previewCreate({
+      url: "https://doi.org/10.1000/test",
+      pdf: "/tmp/article.pdf",
+    });
+    expect(outcome.status).toBe("success");
+    const argv = (outcome as { envelope: ProtocolEnvelope }).envelope.data.argv as string[];
+    expect(argv).toEqual([
+      "--json", "item", "create", "--vault", vaultDir, "--url", "https://doi.org/10.1000/test",
+      "--pdf", "/tmp/article.pdf", "--dry-run",
+    ]);
+    expect(argv).not.toContain("--confirm-token");
+  });
+
+  it("rejects previewCreate call without any source", async () => {
+    const cliPath = writeFakeCli(tempDir, {});
+    const client = new CliClient(cliPath);
+    const runSpy = vi.spyOn(client, "run");
+    const actions = new ItemActions({ client, vaultRoot: vaultDir });
+    const outcome = await actions.previewCreate({});
+    expect(outcome).toMatchObject({ status: "error", code: "no_input" });
+    expect(runSpy).not.toHaveBeenCalled();
+  });
+
+  it("generates --confirmed payload and --dry-run when previewing with confirmed values", async () => {
+    const cliPath = writeFakeCli(tempDir, {});
+    const io = recordingIo();
+    const actions = new ItemActions({ client: new CliClient(cliPath), vaultRoot: vaultDir }, io);
+    const outcome = await actions.previewCreate(
+      { doi: "10.1000/preview-confirmed" },
+      { title: "Confirmed for preview" },
+    );
+    expect(outcome.status).toBe("success");
+    expect(io.payloads).toEqual([{ title: "Confirmed for preview" }]);
+    const argv = (outcome as { envelope: ProtocolEnvelope }).envelope.data.argv as string[];
+    expect(argv).toEqual([
+      "--json", "item", "create", "--vault", vaultDir, "--doi", "10.1000/preview-confirmed",
+      "--confirmed", "/tmp/paper-notes-actions/payload.json", "--dry-run",
+    ]);
+    expect(io.removed).toEqual(["/tmp/paper-notes-actions/payload.json"]);
+  });
+
+  it("parses needs_confirmation results preserving token, action, citation_key, plan, and candidates", async () => {
+    const cliPath = writeFakeCli(tempDir, {
+      stdoutRaw:
+        JSON.stringify(
+          buildEnvelope({
+            status: "needs_confirmation",
+            data: {
+              confirmation_token: "preview-token-xyz-123",
+              action: "create_with_confirmation",
+              citation_key: "shiau2024",
+              paper_id: "550e8400-e29b-41d4-a716-446655440000",
+              path: "05 Literature/shiau2024/shiau2024.md",
+              pdf_sha256: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              plan: {
+                action: "create_with_confirmation",
+                values: { title: "Spatially resolved analysis of lung adenocarcinoma" },
+              },
+              candidates: [
+                { citation_key: "cand2023", title: "Earlier study" },
+              ],
+            },
+          }),
+        ) + "\n",
+    });
+    const actions = new ItemActions({ client: new CliClient(cliPath), vaultRoot: vaultDir });
+    const outcome = await actions.previewCreate({ doi: "10.1038/s41591" });
+    expect(outcome.status).toBe("needs_confirmation");
+    if (outcome.status === "needs_confirmation") {
+      expect(outcome.token).toBe("preview-token-xyz-123");
+      expect(outcome.envelope.data.action).toBe("create_with_confirmation");
+      expect(outcome.envelope.data.citation_key).toBe("shiau2024");
+      expect(outcome.envelope.data.paper_id).toBe("550e8400-e29b-41d4-a716-446655440000");
+      expect(outcome.envelope.data.path).toBe("05 Literature/shiau2024/shiau2024.md");
+      expect(outcome.envelope.data.pdf_sha256).toBe(
+        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      );
+
+      const parsed: CreatePreviewData | undefined = parseCreatePreview(outcome);
+      expect(parsed).toEqual({
+        confirmation_token: "preview-token-xyz-123",
+        action: "create_with_confirmation",
+        citation_key: "shiau2024",
+        paper_id: "550e8400-e29b-41d4-a716-446655440000",
+        path: "05 Literature/shiau2024/shiau2024.md",
+        pdf_sha256: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        plan: {
+          action: "create_with_confirmation",
+          values: { title: "Spatially resolved analysis of lung adenocarcinoma" },
+        },
+        candidates: [{ citation_key: "cand2023", title: "Earlier study" }],
+      });
+    }
+  });
+
+  it("parses duplicate_exists preview result allowing caller to identify existing paper", async () => {
+    const cliPath = writeFakeCli(tempDir, {
+      stdoutRaw:
+        JSON.stringify(
+          buildEnvelope({
+            status: "needs_confirmation",
+            data: {
+              confirmation_token: "dup-tok-999",
+              action: "duplicate_exists",
+              citation_key: "existingPaper2024",
+              paper_id: "uuid-dup",
+              path: "05 Literature/existingPaper2024/existingPaper2024.md",
+              pdf_sha256: "hash-dup",
+              plan: { message: "Item already exists in library" },
+              candidates: [],
+            },
+          }),
+        ) + "\n",
+    });
+    const actions = new ItemActions({ client: new CliClient(cliPath), vaultRoot: vaultDir });
+    const outcome = await actions.previewCreate({ doi: "10.1000/existing" });
+    expect(outcome.status).toBe("needs_confirmation");
+    if (outcome.status === "needs_confirmation") {
+      expect(outcome.token).toBe("dup-tok-999");
+      const parsed = parseCreatePreview(outcome);
+      expect(parsed?.action).toBe("duplicate_exists");
+      expect(parsed?.citation_key).toBe("existingPaper2024");
+      expect(parsed?.path).toBe("05 Literature/existingPaper2024/existingPaper2024.md");
+    }
+  });
+
+  it("generates confirmCreate args with --confirmed and --confirm-token, and cleans up temp file in finally", async () => {
+    const cliPath = writeFakeCli(tempDir, {});
+    const io = recordingIo();
+    const actions = new ItemActions({ client: new CliClient(cliPath), vaultRoot: vaultDir }, io);
+    const outcome = await actions.confirmCreate(
+      { doi: "10.1000/abc" },
+      { title: "Confirmed Title", year: 2024 },
+      "confirm-token-valid-456",
+    );
+    expect(outcome.status).toBe("success");
+    expect(io.payloads).toEqual([{ title: "Confirmed Title", year: 2024 }]);
+    const argv = (outcome as { envelope: ProtocolEnvelope }).envelope.data.argv as string[];
+    expect(argv).toEqual([
+      "--json", "item", "create", "--vault", vaultDir, "--doi", "10.1000/abc",
+      "--confirmed", "/tmp/paper-notes-actions/payload.json",
+      "--confirm-token", "confirm-token-valid-456",
+    ]);
+    expect(io.removed).toEqual(["/tmp/paper-notes-actions/payload.json"]);
+  });
+
+  it("cleans up confirmCreate temp file even when CLI reports conflict error", async () => {
+    const cliPath = writeFakeCli(tempDir, {
+      stdoutRaw:
+        JSON.stringify(
+          buildEnvelope({
+            status: "conflict",
+            errors: [
+              {
+                code: "confirmation_token_mismatch",
+                message: "confirmation token does not match decision inputs",
+              },
+            ],
+          }),
+        ) + "\n",
+      exitCode: 3,
+    });
+    const io = recordingIo();
+    const actions = new ItemActions({ client: new CliClient(cliPath), vaultRoot: vaultDir }, io);
+    const outcome = await actions.confirmCreate(
+      { doi: "10.1000/abc" },
+      { title: "Stale confirm" },
+      "stale-token-123",
+    );
+    expect(outcome.status).toBe("error");
+    expect(outcome).toMatchObject({ status: "error", code: "confirmation_token_mismatch" });
+    expect(io.removed).toEqual(["/tmp/paper-notes-actions/payload.json"]);
+  });
+
+  it("supports legacy confirmCreate call without confirmToken", async () => {
+    const cliPath = writeFakeCli(tempDir, {});
+    const io = recordingIo();
+    const actions = new ItemActions({ client: new CliClient(cliPath), vaultRoot: vaultDir }, io);
+    const outcome = await actions.confirmCreate(
+      { doi: "10.1000/legacy" },
+      { title: "Legacy Confirm" },
+    );
+    expect(outcome.status).toBe("success");
+    const argv = (outcome as { envelope: ProtocolEnvelope }).envelope.data.argv as string[];
+    expect(argv).toEqual([
+      "--json", "item", "create", "--vault", vaultDir, "--doi", "10.1000/legacy",
+      "--confirmed", "/tmp/paper-notes-actions/payload.json",
+    ]);
+    expect(argv).not.toContain("--confirm-token");
+    expect(io.removed).toEqual(["/tmp/paper-notes-actions/payload.json"]);
+  });
+
+  it("detects unsupported preview via JSON usage_error and never falls back to direct create", async () => {
+    const cliPath = writeFakeCli(tempDir, {
+      stdoutRaw:
+        JSON.stringify(
+          buildEnvelope({
+            status: "error",
+            errors: [{ code: "usage_error", message: "unrecognized arguments: --dry-run" }],
+          }),
+        ) + "\n",
+      exitCode: 2,
+    });
+    const client = new CliClient(cliPath);
+    const runSpy = vi.spyOn(client, "run");
+    const actions = new ItemActions({ client, vaultRoot: vaultDir });
+    const outcome = await actions.previewCreate({ doi: "10.1000/abc" });
+    expect(outcome.status).toBe("error");
+    expect(outcome).toMatchObject({
+      status: "error",
+      code: "preview_unsupported",
+    });
+    expect((outcome as { message: string }).message).toContain("does not support preview");
+    // CRITICAL: CLI was called exactly once with --dry-run; NEVER fell back to mutating create!
+    expect(runSpy).toHaveBeenCalledTimes(1);
+    expect(runSpy.mock.calls[0][0]).toContain("--dry-run");
+  });
+
+  it("detects unsupported preview via stderr unrecognized arguments and never falls back to direct create", async () => {
+    const cliPath = writeFakeCli(tempDir, {
+      stderr: "paper-notes: error: unrecognized arguments: --dry-run\n",
+      stdoutRaw: "",
+      exitCode: 2,
+    });
+    const client = new CliClient(cliPath);
+    const runSpy = vi.spyOn(client, "run");
+    const actions = new ItemActions({ client, vaultRoot: vaultDir });
+    const outcome = await actions.previewCreate({ doi: "10.1000/abc" });
+    expect(outcome.status).toBe("error");
+    expect(outcome).toMatchObject({
+      status: "error",
+      code: "preview_unsupported",
+    });
+    // Never fell back to calling create without --dry-run
+    expect(runSpy).toHaveBeenCalledTimes(1);
+    expect(runSpy.mock.calls[0][0]).toContain("--dry-run");
+  });
+
+  it("does not map normal domain errors (e.g. user_error) to preview_unsupported", async () => {
+    const cliPath = writeFakeCli(tempDir, {
+      stdoutRaw:
+        JSON.stringify(
+          buildEnvelope({
+            status: "error",
+            errors: [{ code: "user_error", message: "unrecognized DOI: 'bad-doi'" }],
+          }),
+        ) + "\n",
+      exitCode: 2,
+    });
+    const actions = new ItemActions({ client: new CliClient(cliPath), vaultRoot: vaultDir });
+    const outcome = await actions.previewCreate({ doi: "bad-doi" });
+    expect(outcome.status).toBe("error");
+    expect(outcome).toMatchObject({
+      status: "error",
+      code: "user_error",
+      message: "unrecognized DOI: 'bad-doi'",
+    });
+    if (outcome.status === "error") {
+      expect(outcome.code).not.toBe("preview_unsupported");
+    }
+  });
+
+  it("treats needs_confirmation without a token as missing_token error in preview", async () => {
+    const cliPath = writeFakeCli(tempDir, {
+      stdoutRaw:
+        JSON.stringify(
+          buildEnvelope({ status: "needs_confirmation", data: { plan: {} } }),
+        ) + "\n",
+    });
+    const actions = new ItemActions({ client: new CliClient(cliPath), vaultRoot: vaultDir });
+    const outcome = await actions.previewCreate({ doi: "10.1000/abc" });
+    expect(outcome).toMatchObject({ status: "error", code: "missing_token" });
+  });
+
+  it("isPreviewUnsupportedError returns true for usage_error and unrecognized arguments", () => {
+    expect(
+      isPreviewUnsupportedError({
+        status: "error",
+        code: "usage_error",
+        message: "unrecognized arguments: --dry-run",
+      }),
+    ).toBe(true);
+    expect(
+      isPreviewUnsupportedError({
+        status: "error",
+        code: "preview_unsupported",
+        message: "unsupported",
+      }),
+    ).toBe(true);
+    expect(
+      isPreviewUnsupportedError({
+        status: "error",
+        code: "cli_error",
+        message: "CLI error: unrecognized option '--dry-run'",
+      }),
+    ).toBe(true);
+    expect(
+      isPreviewUnsupportedError({
+        status: "error",
+        code: "user_error",
+        message: "unrecognized DOI: '10.1000/abc'",
+      }),
+    ).toBe(false);
+    expect(
+      isPreviewUnsupportedError({
+        status: "success",
+        envelope: buildEnvelope(),
+      }),
+    ).toBe(false);
+  });
+
+  it("parseCreatePreview returns undefined for non-needs_confirmation outcomes", () => {
+    expect(
+      parseCreatePreview({ status: "success", envelope: buildEnvelope() }),
+    ).toBeUndefined();
+    expect(
+      parseCreatePreview({ status: "error", code: "no_input", message: "no input" }),
+    ).toBeUndefined();
   });
 });
 
@@ -728,24 +1085,48 @@ describe("confirmation plan rendering", () => {
 describe("CreateItemModal wiring", () => {
   let app: App;
   let callbacks: CreateItemCallbacks;
+  let previewCreateMock: ReturnType<typeof vi.fn<(input: CreateItemInput) => Promise<ActionOutcome>>>;
+  let confirmCreateMock: ReturnType<
+    typeof vi.fn<(input: CreateItemInput, confirmed: Record<string, unknown>, confirmToken?: string) => Promise<ActionOutcome>>
+  >;
   let createMock: ReturnType<typeof vi.fn<(input: CreateItemInput) => Promise<ActionOutcome>>>;
-  let confirmMock: ReturnType<typeof vi.fn<(input: CreateItemInput, confirmed: Record<string, unknown>) => Promise<ActionOutcome>>>;
+  let confirmMock: ReturnType<
+    typeof vi.fn<(input: CreateItemInput, confirmed: Record<string, unknown>, confirmToken?: string) => Promise<ActionOutcome>>
+  >;
+  let openExistingMock: ReturnType<typeof vi.fn<(pathOrKey: string) => void>>;
   let notifyMock: ReturnType<typeof vi.fn<(message: string) => void>>;
   let fileExistsMock: ReturnType<typeof vi.fn<(path: string) => boolean>>;
 
   beforeEach(() => {
     app = {} as App;
+    previewCreateMock = vi.fn<(input: CreateItemInput) => Promise<ActionOutcome>>(async () =>
+      needsConfirmationOutcome({
+        confirmation_token: "preview-tok-default",
+        action: "create",
+        plan: {
+          action: "create",
+          values: { title: "Default Preview Title" },
+        },
+      }),
+    );
+    confirmCreateMock = vi.fn<
+      (input: CreateItemInput, confirmed: Record<string, unknown>, confirmToken?: string) => Promise<ActionOutcome>
+    >(async () => successOutcome({ data: { citation_key: "alpha2024" } }));
     createMock = vi.fn<(input: CreateItemInput) => Promise<ActionOutcome>>(async (_input) =>
       successOutcome({ data: { citation_key: "alpha2024" } }),
     );
-    confirmMock = vi.fn<(input: CreateItemInput, confirmed: Record<string, unknown>) => Promise<ActionOutcome>>(
-      async () => successOutcome({ data: { citation_key: "alpha2024" } }),
-    );
+    confirmMock = vi.fn<
+      (input: CreateItemInput, confirmed: Record<string, unknown>, confirmToken?: string) => Promise<ActionOutcome>
+    >(async () => successOutcome({ data: { citation_key: "alpha2024" } }));
+    openExistingMock = vi.fn<(pathOrKey: string) => void>();
     notifyMock = vi.fn<(message: string) => void>();
     fileExistsMock = vi.fn<(path: string) => boolean>(() => true);
     callbacks = {
+      previewCreate: previewCreateMock,
+      confirmCreate: confirmCreateMock,
       create: createMock,
       confirm: confirmMock,
+      openExisting: openExistingMock,
       notify: notifyMock,
       fileExists: fileExistsMock,
     };
@@ -758,68 +1139,407 @@ describe("CreateItemModal wiring", () => {
     return modal;
   }
 
-  it("submits an identifier input as item create input", async () => {
+  function clickButton(btn: HTMLButtonElement | undefined): void {
+    (btn as unknown as { listeners: Record<string, (event?: unknown) => void> })?.listeners["click"]?.(undefined);
+  }
+
+  it("submits an identifier input to previewCreate rather than mutating create", async () => {
     const modal = openModal("10.1000/abc");
     await modal.submit();
-    expect(createMock).toHaveBeenCalledWith({ doi: "10.1000/abc" });
+    expect(previewCreateMock).toHaveBeenCalledWith({ doi: "10.1000/abc" });
+    expect(createMock).not.toHaveBeenCalled();
   });
 
-  it("submits a URL and a local PDF path", async () => {
+  it("submits a URL and a local PDF path to previewCreate rather than create", async () => {
     const modal = openModal("https://doi.org/10.1000/x");
     await modal.submit();
-    expect(createMock).toHaveBeenCalledWith({ url: "https://doi.org/10.1000/x" });
+    expect(previewCreateMock).toHaveBeenCalledWith({ url: "https://doi.org/10.1000/x" });
+    expect(createMock).not.toHaveBeenCalled();
 
     const pdfModal = openModal("/Users/me/Downloads/paper.pdf");
     await pdfModal.submit();
-    expect(createMock).toHaveBeenCalledWith({ pdf: "/Users/me/Downloads/paper.pdf" });
+    expect(previewCreateMock).toHaveBeenCalledWith({ pdf: "/Users/me/Downloads/paper.pdf" });
+    expect(createMock).not.toHaveBeenCalled();
   });
 
-  it("rejects a missing PDF file without calling create", async () => {
+  it("rejects a missing PDF file without calling previewCreate or create", async () => {
     fileExistsMock.mockReturnValue(false);
     const modal = openModal("/tmp/missing.pdf");
     await modal.submit();
+    expect(previewCreateMock).not.toHaveBeenCalled();
     expect(createMock).not.toHaveBeenCalled();
     expect(notifyMock).toHaveBeenCalledWith(expect.stringContaining("not found"));
   });
 
-  it("shows inline validation error for empty input", async () => {
+  it("shows inline validation error for empty input without calling previewCreate or create", async () => {
     const modal = openModal("   ");
     await modal.submit();
     const error = (modal as unknown as { errorEl: { textContent: string } }).errorEl;
     expect(error.textContent).toContain("Enter an identifier");
+    expect(previewCreateMock).not.toHaveBeenCalled();
+    expect(createMock).not.toHaveBeenCalled();
   });
 
   it("notifies instead of submitting empty or unrecognized input", async () => {
     const modal = openModal("   ");
     await modal.submit();
+    expect(previewCreateMock).not.toHaveBeenCalled();
     expect(createMock).not.toHaveBeenCalled();
     expect(notifyMock).toHaveBeenCalled();
 
     const badModal = openModal("hello world");
     await badModal.submit();
+    expect(previewCreateMock).not.toHaveBeenCalled();
     expect(createMock).not.toHaveBeenCalled();
   });
 
-  it("shows needs_confirmation values and resubmits with the confirmed payload", async () => {
-    createMock.mockResolvedValue(
+  it("renders full metadata preview correctly: title/authors/journal/year/identifiers/abstract", async () => {
+    previewCreateMock.mockResolvedValue(
       needsConfirmationOutcome({
-        confirmation_token: "create-tok",
-        plan: { action: "create_with_confirmation", values: { title: "Alpha" } },
-        candidates: [],
+        confirmation_token: "tok-preview-1",
+        action: "create",
+        plan: {
+          action: "create",
+          message: "Ready to create item.",
+          values: {
+            title: "Spatially resolved transcriptomics",
+            authors: [
+              { family: "Stahl", given: "Patrik" },
+              { family: "Salmen", given: "Fredrik" },
+            ],
+            journal: "Science",
+            year: 2016,
+            doi: "10.1126/science.aaf2403",
+            pmid: "27365449",
+            abstract: "Spatial transcriptomics provides quantitative gene expression data.",
+          },
+        },
+      }),
+    );
+    const modal = openModal("10.1126/science.aaf2403");
+    await modal.submit();
+
+    expect(modal.mode).toBe("preview");
+    const texts = collectText(modal.contentEl as unknown as { children: StubNode[] });
+    expect(texts).toContain("可创建");
+    expect(texts).toContain("Ready to create item.");
+    expect(texts).toContain("Spatially resolved transcriptomics");
+    expect(texts).toContain("Stahl Patrik; Salmen Fredrik");
+    expect(texts).toContain("Science");
+    expect(texts).toContain("2016");
+    expect(texts.some((t) => t.includes("10.1126/science.aaf2403"))).toBe(true);
+    expect(texts.some((t) => t.includes("27365449"))).toBe(true);
+    expect(texts).toContain("Spatial transcriptomics provides quantitative gene expression data.");
+    expect(modal.confirmButton).toBeDefined();
+    expect(modal.confirmButton?.textContent).toBe("确认创建");
+  });
+
+  it("renders '缺失' label for missing metadata fields", async () => {
+    previewCreateMock.mockResolvedValue(
+      needsConfirmationOutcome({
+        confirmation_token: "tok-preview-2",
+        action: "create_with_confirmation",
+        plan: {
+          action: "create_with_confirmation",
+          values: {
+            title: "Incomplete Metadata Paper",
+          },
+        },
+      }),
+    );
+    const modal = openModal("10.1000/incomplete");
+    await modal.submit();
+
+    expect(modal.mode).toBe("preview");
+    const texts = collectText(modal.contentEl as unknown as { children: StubNode[] });
+    expect(texts).toContain("需确认");
+    expect(texts).toContain("Incomplete Metadata Paper");
+    expect(texts).toContain("缺失");
+  });
+
+  it("confirm button calls confirmCreate with matching token and confirmed payload", async () => {
+    previewCreateMock.mockResolvedValue(
+      needsConfirmationOutcome(
+        {
+          confirmation_token: "tok-preview-confirmed",
+          plan: {
+            action: "create_with_confirmation",
+            values: { title: "Confirmed Title", year: 2024 },
+          },
+          candidates: [],
+        },
+        "tok-preview-confirmed",
+      ),
+    );
+    const modal = openModal("10.1000/abc");
+    await modal.submit();
+    expect(modal.confirmButton).toBeDefined();
+
+    clickButton(modal.confirmButton);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(confirmCreateMock).toHaveBeenCalledWith(
+      { doi: "10.1000/abc" },
+      { title: "Confirmed Title", year: 2024 },
+      "tok-preview-confirmed",
+    );
+    expect(createMock).not.toHaveBeenCalled();
+    expect(notifyMock).toHaveBeenCalledWith(expect.stringContaining("alpha2024"));
+  });
+
+  it("cancel button closes modal with zero writes (never calls confirmCreate or create)", async () => {
+    previewCreateMock.mockResolvedValue(
+      needsConfirmationOutcome({
+        confirmation_token: "tok-cancel",
+        plan: { action: "create", values: { title: "Cancelable Paper" } },
       }),
     );
     const modal = openModal("10.1000/abc");
     await modal.submit();
-    expect(modal.confirmationModal).toBeDefined();
-    const confirmation = modal.confirmationModal as unknown as {
-      contentEl: { children: StubNode[] };
-    };
-    const texts = collectText(confirmation.contentEl);
-    expect(texts).toContain("values.title: Alpha");
+    expect(modal.cancelButton).toBeDefined();
 
-    (modal.confirmationModal as unknown as { confirm: () => void }).confirm();
+    clickButton(modal.cancelButton);
+
+    expect(confirmCreateMock).not.toHaveBeenCalled();
+    expect(confirmMock).not.toHaveBeenCalled();
+    expect(createMock).not.toHaveBeenCalled();
+  });
+
+  it("back button returns to input view with zero writes and preserves entered value", async () => {
+    previewCreateMock.mockResolvedValue(
+      needsConfirmationOutcome({
+        confirmation_token: "tok-back",
+        plan: { action: "create", values: { title: "Back Paper" } },
+      }),
+    );
+    const modal = openModal("10.1000/back-test");
+    await modal.submit();
+    expect(modal.mode).toBe("preview");
+    expect(modal.backButton).toBeDefined();
+
+    clickButton(modal.backButton);
+    expect(modal.mode).toBe("input");
+    expect(modal.inputEl.value).toBe("10.1000/back-test");
+    expect(confirmCreateMock).not.toHaveBeenCalled();
+    expect(createMock).not.toHaveBeenCalled();
+  });
+
+  it("duplicate_exists state displays '库中已有', suppresses confirm, and triggers openExisting", async () => {
+    previewCreateMock.mockResolvedValue(
+      needsConfirmationOutcome({
+        action: "duplicate_exists",
+        confirmation_token: "dup-tok-123",
+        path: "05 Literature/existing2024/existing2024.md",
+        citation_key: "existing2024",
+        plan: {
+          action: "duplicate_exists",
+          path: "05 Literature/existing2024/existing2024.md",
+          citation_key: "existing2024",
+          message: "Item already exists in library with citation key 'existing2024'",
+        },
+      }),
+    );
+    const modal = openModal("10.1000/dup");
+    await modal.submit();
+
+    expect(modal.mode).toBe("preview");
+    const texts = collectText(modal.contentEl as unknown as { children: StubNode[] });
+    expect(texts).toContain("库中已有");
+    expect(texts.some((t) => t.includes("Item already exists"))).toBe(true);
+
+    // confirmButton is suppressed for duplicate_exists
+    expect(modal.confirmButton).toBeUndefined();
+
+    // openExistingButton is present and triggers openExisting callback
+    expect(modal.openExistingButton).toBeDefined();
+    expect(modal.openExistingButton?.textContent).toBe("打开已有文献");
+    clickButton(modal.openExistingButton);
+
+    expect(openExistingMock).toHaveBeenCalledWith("05 Literature/existing2024/existing2024.md");
+    expect(confirmCreateMock).not.toHaveBeenCalled();
+    expect(createMock).not.toHaveBeenCalled();
+  });
+
+  it("preview_unsupported displays upgrade notice and never falls back to create", async () => {
+    previewCreateMock.mockResolvedValue({
+      status: "error",
+      code: "preview_unsupported",
+      message: "paper-notes CLI does not support preview (--dry-run). Please upgrade the core CLI.",
+    });
+    const modal = openModal("10.1000/upgrade-test");
+    await modal.submit();
+
+    expect(modal.mode).toBe("error");
+    const texts = collectText(modal.contentEl as unknown as { children: StubNode[] });
+    expect(texts).toContain("预览不支持");
+    expect(texts.some((t) => t.includes("升级") || t.includes("upgrade"))).toBe(true);
+    expect(modal.retryButton).toBeUndefined();
+    expect(createMock).not.toHaveBeenCalled();
+    expect(confirmCreateMock).not.toHaveBeenCalled();
+  });
+
+  it("when callbacks only provide create without previewCreate, submit refuses to call create and enters preview_unsupported error state", async () => {
+    callbacks = {
+      create: createMock,
+      confirmCreate: confirmCreateMock,
+      notify: notifyMock,
+      fileExists: fileExistsMock,
+    };
+    const modal = openModal("10.1000/fallback-test");
+    await modal.submit();
+
+    // Safety contract: direct create must NEVER be called even if previewCreate is omitted
+    expect(createMock).not.toHaveBeenCalled();
+    expect(confirmCreateMock).not.toHaveBeenCalled();
+    expect(modal.mode).toBe("error");
+
+    const texts = collectText(modal.contentEl as unknown as { children: StubNode[] });
+    expect(texts).toContain("预览不支持");
+    expect(texts.some((t) => t.includes("升级") || t.includes("upgrade"))).toBe(true);
+    expect(modal.retryButton).toBeUndefined();
+  });
+
+  it("metadata fetch failure displays error, allows retry, and never calls create or confirmCreate", async () => {
+    previewCreateMock.mockResolvedValueOnce({
+      status: "error",
+      code: "network_error",
+      message: "DOI resolution timed out",
+    });
+    const modal = openModal("10.1000/retry-test");
+    await modal.submit();
+
+    expect(modal.mode).toBe("error");
+    const texts = collectText(modal.contentEl as unknown as { children: StubNode[] });
+    expect(texts).toContain("元数据获取失败");
+    expect(texts).toContain("DOI resolution timed out");
+    expect(createMock).not.toHaveBeenCalled();
+    expect(confirmCreateMock).not.toHaveBeenCalled();
+
+    // Retry button is available
+    expect(modal.retryButton).toBeDefined();
+    expect(modal.retryButton?.textContent).toBe("重试");
+
+    previewCreateMock.mockResolvedValueOnce(
+      needsConfirmationOutcome({
+        confirmation_token: "tok-retried",
+        plan: { action: "create", values: { title: "Success After Retry" } },
+      }),
+    );
+    clickButton(modal.retryButton);
     await new Promise((resolve) => setTimeout(resolve, 0));
-    expect(confirmMock).toHaveBeenCalledWith({ doi: "10.1000/abc" }, { title: "Alpha" });
+
+    expect(previewCreateMock).toHaveBeenCalledTimes(2);
+    expect(createMock).not.toHaveBeenCalled();
+    expect(confirmCreateMock).not.toHaveBeenCalled();
+    expect(modal.mode).toBe("preview");
+  });
+
+  it("when preview rejects with an exception (preview failure), neither create nor confirmCreate is called", async () => {
+    previewCreateMock.mockRejectedValue(new Error("CLI process spawn error"));
+    const modal = openModal("10.1000/throw-err");
+    await modal.submit();
+
+    expect(modal.mode).toBe("error");
+    const texts = collectText(modal.contentEl as unknown as { children: StubNode[] });
+    expect(texts).toContain("元数据获取失败");
+    expect(texts.some((t) => t.includes("CLI process spawn error"))).toBe(true);
+    expect(createMock).not.toHaveBeenCalled();
+    expect(confirmCreateMock).not.toHaveBeenCalled();
+  });
+
+  it("when user cancels from input mode, preview mode, or error mode, neither create nor confirmCreate is called", async () => {
+    // 1. Cancel from initial input view
+    const inputModal = openModal("10.1000/cancel-input");
+    expect(inputModal.cancelButton).toBeDefined();
+    clickButton(inputModal.cancelButton);
+    expect(createMock).not.toHaveBeenCalled();
+    expect(confirmCreateMock).not.toHaveBeenCalled();
+
+    // 2. Cancel from preview view
+    previewCreateMock.mockResolvedValueOnce(
+      needsConfirmationOutcome({
+        confirmation_token: "tok-cancel-test",
+        plan: { action: "create", values: { title: "Cancel Test Paper" } },
+      }),
+    );
+    const previewModal = openModal("10.1000/cancel-preview");
+    await previewModal.submit();
+    expect(previewModal.mode).toBe("preview");
+    expect(previewModal.cancelButton).toBeDefined();
+    clickButton(previewModal.cancelButton);
+    expect(createMock).not.toHaveBeenCalled();
+    expect(confirmCreateMock).not.toHaveBeenCalled();
+
+    // 3. Cancel from error view
+    previewCreateMock.mockResolvedValueOnce({
+      status: "error",
+      code: "network_error",
+      message: "Gateway timeout",
+    });
+    const errorModal = openModal("10.1000/cancel-error");
+    await errorModal.submit();
+    expect(errorModal.mode).toBe("error");
+    expect(errorModal.cancelButton).toBeDefined();
+    clickButton(errorModal.cancelButton);
+    expect(createMock).not.toHaveBeenCalled();
+    expect(confirmCreateMock).not.toHaveBeenCalled();
+  });
+
+  it("prevents multiple confirm calls when confirm button is clicked repeatedly", async () => {
+    let resolveConfirm!: (outcome: ActionOutcome) => void;
+    confirmCreateMock.mockReturnValue(
+      new Promise<ActionOutcome>((resolve) => {
+        resolveConfirm = resolve;
+      }),
+    );
+    previewCreateMock.mockResolvedValue(
+      needsConfirmationOutcome({
+        confirmation_token: "tok-anti-double",
+        plan: { action: "create", values: { title: "Single Submit" } },
+      }),
+    );
+    const modal = openModal("10.1000/single");
+    await modal.submit();
+    expect(modal.confirmButton).toBeDefined();
+
+    // Click confirm twice
+    clickButton(modal.confirmButton);
+    clickButton(modal.confirmButton);
+
+    expect(confirmCreateMock).toHaveBeenCalledTimes(1);
+
+    // Resolve confirm
+    resolveConfirm(successOutcome({ data: { citation_key: "single2024" } }));
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+
+  it("suppresses late preview responses after modal is closed", async () => {
+    let resolvePreview!: (outcome: ActionOutcome) => void;
+    previewCreateMock.mockReturnValue(
+      new Promise<ActionOutcome>((resolve) => {
+        resolvePreview = resolve;
+      }),
+    );
+    const modal = openModal("10.1000/late");
+    void modal.submit();
+
+    // Modal closed while preview in flight
+    modal.close();
+
+    resolvePreview(
+      needsConfirmationOutcome({
+        confirmation_token: "tok-late",
+        plan: { action: "create", values: { title: "Late Paper" } },
+      }),
+    );
+    await Promise.resolve();
+    await Promise.resolve();
+
+    // Remained in input mode, preview view was never rendered
+    expect(modal.mode).toBe("input");
+    expect(confirmCreateMock).not.toHaveBeenCalled();
+    expect(createMock).not.toHaveBeenCalled();
   });
 });
 

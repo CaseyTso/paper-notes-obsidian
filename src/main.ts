@@ -6,6 +6,7 @@ import {
   type MetadataCache,
   type TFile,
   type Vault,
+  type WorkspaceLeaf,
 } from "obsidian";
 
 import { CliClient } from "./services/cli-client";
@@ -44,6 +45,13 @@ import {
   mocCreateNoticeText,
 } from "./services/item-actions";
 import { MineruQueue, type MineruQueueSnapshot, type MineruQueueSummary } from "./services/mineru-queue";
+import {
+  classifyOpenedFile,
+  RecentActivityStore,
+  type ActivityStorageBridge,
+  type RecentImportEntry,
+  type RecentReadEntry,
+} from "./services/recent-activity";
 import type { PaperRecord } from "./types/paper";
 import {
   PaperNotesLibraryView,
@@ -56,6 +64,7 @@ import {
 } from "./views/topic-moc-view";
 import type { MocDirectorySource } from "./components/moc-directory";
 import { openMocNote } from "./services/moc-navigation";
+import { parseMocNote, type ParsedMoc } from "./services/moc-parse";
 import { requireExportStyle, type CslVaultPort } from "./services/csl-style-manager";
 import { checkExportHealth, defaultHealthPort } from "./services/export-health";
 import {
@@ -136,6 +145,9 @@ export default class PaperNotesPlugin extends Plugin {
   /** paper-fetch CLI bridge (Fetch PDF) + startup availability probe. */
   private fetchClient: FetchClient | undefined;
   private fetchAvailable = false;
+
+  /** In-memory cache of parsed Topic MOCs for Library MOC membership. */
+  private mocCache = new Map<string, ParsedMoc>();
   /** In-flight Fetch PDF runs, aborted on unload. */
   private runningFetches = new Set<AbortController>();
 
@@ -153,6 +165,9 @@ export default class PaperNotesPlugin extends Plugin {
 
   /** Pending metadata-cache readiness rescan (Gate D R2), cancelled on unload. */
   private metadataRescanTimer: ReturnType<typeof setTimeout> | undefined;
+
+  /** Persistent recent activity store (Task: R2). */
+  private recentActivity: RecentActivityStore | undefined;
 
   /** Session-bound FIFO MinerU conversion queue (Task: MinerU). */
   private mineruQueue: MineruQueue | undefined;
@@ -183,7 +198,12 @@ export default class PaperNotesPlugin extends Plugin {
     this.addCommand({
       id: OPEN_LIBRARY_COMMAND,
       name: "Open literature library",
-      callback: () => this.activateLibraryView(),
+      callback: () => {
+        void this.activateLibraryView();
+      },
+    });
+    this.addRibbonIcon("library", "Open literature library", () => {
+      void this.activateLibraryView();
     });
     // Keep old saved workspace entries as redirects to the internal page.
     this.registerView(VIEW_TYPE_TOPIC_MOC, (leaf) => {
@@ -218,6 +238,7 @@ export default class PaperNotesPlugin extends Plugin {
     await this.initializeCliBridge();
     await this.initializeFetchBridge();
     this.initializeLibraryIndex();
+    await this.initializeRecentActivity();
     this.initializeMineruQueue();
     this.addSettingTab(new PaperNotesSettingTab(this.app, this));
     if (typeof this.registerObsidianProtocolHandler === "function") {
@@ -250,9 +271,20 @@ export default class PaperNotesPlugin extends Plugin {
   /** Surface a Browser Capture result as a concise Notice. */
   private showWebCaptureResult(result: import("../browser-connector/src/protocol").BrowserCaptureResult): void {
     switch (result.status) {
-      case "created":
+      case "created": {
         new Notice(`Created ${result.title} (${result.citationKey})`);
+        const root = this.settings.literatureRoot.replace(/\/+$/, "");
+        void this.recentActivity
+          ?.recordImport({
+            key: result.citationKey,
+            path: `${root}/${result.citationKey}/${result.citationKey}.md`,
+            createdAt: new Date().toISOString(),
+          })
+          .then(() => {
+            this.libraryView?.refresh();
+          });
         break;
+      }
       case "existing":
         new Notice(`Already in library: ${result.title} (${result.citationKey})`);
         break;
@@ -274,7 +306,7 @@ export default class PaperNotesPlugin extends Plugin {
    * the row into view (user-visible result of a successful capture).
    */
   private focusPaperInLibrary(citationKey: string, path?: string): void {
-    this.activateLibraryView();
+    void this.activateLibraryView();
     const attempt = (remaining: number): void => {
       // Obsidian's vault file cache can lag the CLI write by a moment;
       // rescan on each attempt so the imported note becomes visible.
@@ -314,6 +346,7 @@ export default class PaperNotesPlugin extends Plugin {
       controller.abort();
     }
     this.runningFetches.clear();
+    this.recentActivity = undefined;
   }
 
   /**
@@ -709,6 +742,7 @@ export default class PaperNotesPlugin extends Plugin {
       this.settings.literatureRoot,
     );
     this.libraryIndex.scanAll();
+    void this.scanMocs();
     this.registerVaultEvents(vault);
     this.registerMetadataCacheRescan(metadataCache);
   }
@@ -752,6 +786,7 @@ export default class PaperNotesPlugin extends Plugin {
     this.metadataRescanTimer = setTimeout(() => {
       this.metadataRescanTimer = undefined;
       this.libraryIndex?.scanAll();
+      void this.scanMocs();
       this.libraryView?.refresh();
     }, METADATA_RESCAN_DEBOUNCE_MS);
   }
@@ -802,6 +837,7 @@ export default class PaperNotesPlugin extends Plugin {
       // cache first and only falls back here; keep this undefined so the
       // cache remains the single source of truth.
       getMetrics: () => undefined,
+      getParsedMocs: () => Array.from(this.mocCache.values()),
       // On-demand MinerU full-text search (design spec §9.4; Repair: Task
       // 23 R7): the view calls this after its debounce; the index skips
       // MinerU reads for records already matched by default fields, and
@@ -811,6 +847,14 @@ export default class PaperNotesPlugin extends Plugin {
         return index === undefined
           ? Promise.resolve([])
           : index.searchFullText(query, { signal });
+      },
+      getRecentReads: (limit?: number) => {
+        const records = this.libraryIndex?.getRecords();
+        return this.recentActivity?.getRecentReads(limit, records) ?? [];
+      },
+      getRecentImports: (limit?: number) => {
+        const records = this.libraryIndex?.getRecords();
+        return this.recentActivity?.getRecentImports(limit, records) ?? [];
       },
     };
   }
@@ -847,22 +891,283 @@ export default class PaperNotesPlugin extends Plugin {
     oldPath?: string,
   ): void {
     this.libraryIndex?.handleVaultEvent(event, path, oldPath);
+    this.handleMocVaultEvent(event, path, oldPath);
     this.libraryView?.refresh();
   }
 
-  private activateLibraryView(): void {
-    const workspace = this.app.workspace;
-    const leaves = workspace.getLeavesOfType(VIEW_TYPE_PAPER_NOTES);
-    const leaf = leaves.length > 0 ? leaves[0] : workspace.getRightLeaf(false);
-    if (leaf === null) {
+  /**
+   * Initialize persistent recent activity store (Task: R2).
+   * Safe in headless/test contexts where loadData/saveData are missing.
+   */
+  private async initializeRecentActivity(): Promise<void> {
+    const bridge: ActivityStorageBridge = {
+      loadData: async () =>
+        typeof this.loadData === "function" ? this.loadData() : {},
+      saveData: async (data: unknown) => {
+        if (typeof this.saveData === "function") {
+          await this.saveData(data);
+        }
+      },
+    };
+    this.recentActivity = new RecentActivityStore({ bridge });
+    await this.recentActivity.load();
+    this.registerFileOpenTracking();
+  }
+
+  /**
+   * Register workspace `file-open` event listener for reading tracking (Contract 1).
+   * Protects against layout restoration file-open events by waiting for
+   * `workspace.onLayoutReady` when layout is not yet ready (Contract 4).
+   */
+  private registerFileOpenTracking(): void {
+    const workspace = this.app?.workspace;
+    if (workspace === undefined || typeof workspace.on !== "function") {
       return;
     }
-    if (leaves.length === 0) {
-      leaf.setViewState({ type: VIEW_TYPE_PAPER_NOTES, active: true });
-    } else if (leaf.view instanceof PaperNotesLibraryView) {
-      leaf.view.showPage("library");
+    if (typeof this.registerEvent !== "function") {
+      return;
     }
-    void workspace.revealLeaf(leaf);
+
+    let isLayoutReady = workspace.layoutReady === true;
+    if (!isLayoutReady && typeof workspace.onLayoutReady === "function") {
+      workspace.onLayoutReady(() => {
+        isLayoutReady = true;
+      });
+    } else if (workspace.layoutReady === undefined) {
+      // In minimal test environments without layoutReady property, treat as ready.
+      isLayoutReady = true;
+    }
+
+    this.registerEvent(
+      workspace.on("file-open", (file: unknown) => {
+        if (!isLayoutReady) {
+          return;
+        }
+        const path =
+          typeof file === "object" &&
+          file !== null &&
+          "path" in file &&
+          typeof (file as { path: unknown }).path === "string"
+            ? (file as { path: string }).path
+            : undefined;
+        if (!path) {
+          return;
+        }
+        this.handleFileOpen(path);
+      }),
+    );
+  }
+
+  /**
+   * Handle an opened file path.
+   * Only records Primary PDF and Figure notes matching canonical paper directory (Contract 3).
+   */
+  handleFileOpen(path: string): void {
+    const classified = classifyOpenedFile(this.settings.literatureRoot, path);
+    if (classified === null) {
+      return;
+    }
+    const root = this.settings.literatureRoot.replace(/\/+$/, "");
+    const canonicalNotePath = `${root}/${classified.key}/${classified.key}.md`;
+    void this.recentActivity
+      ?.recordRead({
+        key: classified.key,
+        path: canonicalNotePath,
+        kind: classified.kind,
+      })
+      .then(() => {
+        this.libraryView?.refresh();
+      });
+  }
+
+  /** Expose recent activity store for tests/diagnostic querying. */
+  getRecentActivityStore(): RecentActivityStore | undefined {
+    return this.recentActivity;
+  }
+
+  /** Query top N recent reads validated against active library records. */
+  getRecentReads(limit?: number): RecentReadEntry[] {
+    const records = this.libraryIndex?.getRecords();
+    return this.recentActivity?.getRecentReads(limit, records) ?? [];
+  }
+
+  /** Query top N recent imports validated against active library records. */
+  getRecentImports(limit?: number): RecentImportEntry[] {
+    const records = this.libraryIndex?.getRecords();
+    return this.recentActivity?.getRecentImports(limit, records) ?? [];
+  }
+
+  private isMocPath(path: string): boolean {
+    const root = this.settings.literatureRoot.replace(/\/$/u, "");
+    const mocDir = `${root}/MOCs`;
+    const parent = path.slice(0, path.lastIndexOf("/"));
+    return parent === mocDir && path.endsWith(".md");
+  }
+
+  private async scanMocs(): Promise<void> {
+    const vault = this.app.vault;
+    if (!vault) return;
+    const root = this.settings.literatureRoot.replace(/\/$/u, "");
+    const mocDir = `${root}/MOCs`;
+    const files = vault.getMarkdownFiles().filter((file) => {
+      const parent = file.path.slice(0, file.path.lastIndexOf("/"));
+      return parent === mocDir;
+    });
+    const nextMap = new Map<string, ParsedMoc>();
+    await Promise.all(
+      files.map(async (file) => {
+        try {
+          const text = await vault.cachedRead(file);
+          const parsed = parseMocNote(file.path, text);
+          if (parsed) {
+            nextMap.set(file.path, parsed);
+          }
+        } catch {
+          // File read error ignored
+        }
+      }),
+    );
+    this.mocCache = nextMap;
+    this.libraryView?.refresh();
+  }
+
+  private handleMocVaultEvent(
+    event: IndexVaultEvent,
+    path: string,
+    oldPath?: string,
+  ): void {
+    const isMoc = this.isMocPath(path);
+    const wasMoc = oldPath !== undefined && this.isMocPath(oldPath);
+    if (!isMoc && !wasMoc) {
+      return;
+    }
+
+    if (event === "delete") {
+      this.mocCache.delete(path);
+      this.libraryView?.refresh();
+      return;
+    }
+
+    if (event === "rename") {
+      if (oldPath) {
+        this.mocCache.delete(oldPath);
+      }
+      if (!isMoc) {
+        this.libraryView?.refresh();
+        return;
+      }
+    }
+
+    const vault = this.app.vault;
+    if (!vault) return;
+    const file = vault.getAbstractFileByPath(path);
+    if (file && "extension" in file && file.extension === "md") {
+      void vault.cachedRead(file as TFile).then((text) => {
+        const parsed = parseMocNote(path, text);
+        if (parsed) {
+          this.mocCache.set(path, parsed);
+        } else {
+          this.mocCache.delete(path);
+        }
+        this.libraryView?.refresh();
+      }).catch(() => {
+        // Ignore read error
+      });
+    }
+  }
+
+  private isSidebarLeaf(leaf: WorkspaceLeaf): boolean {
+    const workspace = this.app.workspace;
+    if (!workspace) return false;
+
+    if (typeof leaf.getRoot === "function") {
+      try {
+        const root = leaf.getRoot();
+        if (root && (root === workspace.leftSplit || root === workspace.rightSplit)) {
+          return true;
+        }
+        if (root && workspace.rootSplit && root === workspace.rootSplit) {
+          return false;
+        }
+      } catch {
+        // Fall through to parent traversal
+      }
+    }
+
+    let current: unknown = leaf.parent;
+    while (current) {
+      if (current === workspace.leftSplit || current === workspace.rightSplit) {
+        return true;
+      }
+      if (workspace.rootSplit && current === workspace.rootSplit) {
+        return false;
+      }
+      current = (current as { parent?: unknown }).parent;
+    }
+
+    return false;
+  }
+
+  async activateLibraryView(): Promise<void> {
+    const workspace = this.app.workspace;
+    if (!workspace) return;
+
+    const leaves = workspace.getLeavesOfType(VIEW_TYPE_PAPER_NOTES);
+
+    // 1. If an existing Library leaf is in the central workspace, reuse it.
+    const centralLeaf = leaves.find((leaf) => !this.isSidebarLeaf(leaf));
+    if (centralLeaf) {
+      await workspace.revealLeaf(centralLeaf);
+      if (typeof (centralLeaf as unknown as { loadIfDeferred?: () => Promise<void> }).loadIfDeferred === "function") {
+        await (centralLeaf as unknown as { loadIfDeferred: () => Promise<void> }).loadIfDeferred();
+      }
+      if (centralLeaf.view instanceof PaperNotesLibraryView) {
+        centralLeaf.view.showPage("library");
+      }
+      return;
+    }
+
+    // 2. If a Library leaf exists in a sidebar, migrate it to the central workspace.
+    const sidebarLeaf = leaves.find((leaf) => this.isSidebarLeaf(leaf));
+    if (sidebarLeaf) {
+      const oldViewState = typeof sidebarLeaf.getViewState === "function"
+        ? sidebarLeaf.getViewState()
+        : undefined;
+      const oldState = {
+        ...(oldViewState?.state ?? {}),
+        ...(sidebarLeaf.view instanceof PaperNotesLibraryView ? sidebarLeaf.view.getState() : {}),
+      };
+      const newViewState = {
+        ...oldViewState,
+        type: VIEW_TYPE_PAPER_NOTES,
+        active: true,
+        state: Object.keys(oldState).length > 0 ? oldState : { page: "library" },
+      };
+
+      const newLeaf = workspace.getLeaf(true);
+      await newLeaf.setViewState(newViewState);
+      await workspace.revealLeaf(newLeaf);
+      if (typeof (newLeaf as unknown as { loadIfDeferred?: () => Promise<void> }).loadIfDeferred === "function") {
+        await (newLeaf as unknown as { loadIfDeferred: () => Promise<void> }).loadIfDeferred();
+      }
+      for (const leaf of leaves) {
+        if (leaf !== newLeaf && this.isSidebarLeaf(leaf) && typeof leaf.detach === "function") {
+          leaf.detach();
+        }
+      }
+      return;
+    }
+
+    // 3. No leaf exists: create a new tab in the central workspace.
+    const newLeaf = workspace.getLeaf(true);
+    await newLeaf.setViewState({ type: VIEW_TYPE_PAPER_NOTES, active: true });
+    await workspace.revealLeaf(newLeaf);
+    if (typeof (newLeaf as unknown as { loadIfDeferred?: () => Promise<void> }).loadIfDeferred === "function") {
+      await (newLeaf as unknown as { loadIfDeferred: () => Promise<void> }).loadIfDeferred();
+    }
+    if (newLeaf.view instanceof PaperNotesLibraryView) {
+      newLeaf.view.showPage("library");
+    }
   }
 
   /** Legacy command/button entry: route to the existing plugin navigation. */

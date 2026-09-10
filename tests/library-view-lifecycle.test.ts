@@ -90,6 +90,10 @@ vi.mock("obsidian", () => {
 
     /** Mirrors the real Obsidian runtime `View.open()` called by the workspace. */
     open(): void {}
+    async setState(_state?: unknown, _result?: unknown): Promise<void> {}
+    getState(): Record<string, unknown> {
+      return {};
+    }
   }
 
   class WorkspaceLeaf {}
@@ -149,5 +153,149 @@ describe("PaperNotesLibraryView lifecycle", () => {
     renderSpy.mockClear();
     view.refresh();
     expect(renderSpy).not.toHaveBeenCalled();
+  });
+});
+
+describe("PaperNotesLibraryView public state contract (getState/setState)", () => {
+  it("returns a JSON-safe state object that survives JSON round-trip identically", async () => {
+    const view = makeView();
+    const state = view.getState();
+    const serialized = JSON.stringify(state);
+    const parsed = JSON.parse(serialized);
+    expect(parsed).toEqual(state);
+
+    // Also with populated state
+    await view.setState(
+      {
+        page: "library",
+        searchQuery: "quantum computing",
+        filters: {
+          yearFrom: 2020,
+          yearTo: 2024,
+          journal: "Nature",
+          readingStatus: "reading",
+          requiredArtifacts: ["pdf"],
+        },
+        sort: { columnId: "journal", direction: "asc" },
+        selectedPath: "papers/quantum.md",
+        drawerOpen: true,
+      },
+      { history: false },
+    );
+    const activeState = view.getState();
+    expect(JSON.parse(JSON.stringify(activeState))).toEqual(activeState);
+    expect(activeState).toEqual({
+      page: "library",
+      searchQuery: "quantum computing",
+      filters: {
+        yearFrom: 2020,
+        yearTo: 2024,
+        journal: "Nature",
+        readingStatus: "reading",
+        requiredArtifacts: ["pdf"],
+      },
+      sort: { columnId: "journal", direction: "asc" },
+      selectedPath: "papers/quantum.md",
+      drawerOpen: true,
+    });
+  });
+
+  it("restores complete UI state via setState and reflects it across onOpen", async () => {
+    const view = makeView();
+    await view.setState(
+      {
+        page: "library",
+        searchQuery: "einstein relativity",
+        filters: {
+          journal: "Annalen der Physik",
+          yearFrom: 1905,
+          requiredArtifacts: ["pdf", "minerU"],
+        },
+        sort: { columnId: "year", direction: "asc" },
+        selectedPath: "papers/einstein1905.md",
+        drawerOpen: true,
+      },
+      { history: false },
+    );
+
+    expect(view.getState()).toEqual({
+      page: "library",
+      searchQuery: "einstein relativity",
+      filters: {
+        journal: "Annalen der Physik",
+        yearFrom: 1905,
+        requiredArtifacts: ["pdf", "minerU"],
+      },
+      sort: { columnId: "year", direction: "asc" },
+      selectedPath: "papers/einstein1905.md",
+      drawerOpen: true,
+    });
+
+    // Opening the view does not crash and renders with drawer open
+    await view.onOpen();
+    expect(view.getState().drawerOpen).toBe(true);
+    await view.onClose();
+  });
+
+  it("boundary: drawerOpen=true with missing or invalid selectedPath does not crash and does not open drawer", async () => {
+    const view = makeView();
+
+    // 1. Missing selectedPath (omitted)
+    await view.setState({ page: "library", drawerOpen: true }, { history: false });
+    expect(view.getState().drawerOpen).toBe(false);
+    expect(view.getState().selectedPath).toBeNull();
+
+    // 2. null selectedPath
+    await view.setState({ page: "library", drawerOpen: true, selectedPath: null }, { history: false });
+    expect(view.getState().drawerOpen).toBe(false);
+    expect(view.getState().selectedPath).toBeNull();
+
+    // 3. empty string selectedPath
+    await view.setState({ page: "library", drawerOpen: true, selectedPath: "" }, { history: false });
+    expect(view.getState().drawerOpen).toBe(false);
+    expect(view.getState().selectedPath).toBeNull();
+
+    // 4. invalid non-string selectedPath
+    await view.setState({ page: "library", drawerOpen: true, selectedPath: 12345 }, { history: false });
+    expect(view.getState().drawerOpen).toBe(false);
+    expect(view.getState().selectedPath).toBeNull();
+
+    // Render pass with drawerOpen=false does not crash
+    await view.onOpen();
+    expect(view.getState().drawerOpen).toBe(false);
+    await view.onClose();
+  });
+
+  it("backward compatibility: restores legacy workspace layout states containing only page", async () => {
+    const view = makeView();
+
+    // Legacy MOC state
+    await view.setState({ page: "moc" }, { history: false });
+    expect(view.getState().page).toBe("moc");
+    expect(view.getState().drawerOpen).toBe(false);
+
+    // Legacy Library state
+    await view.setState({ page: "library" }, { history: false });
+    expect(view.getState().page).toBe("library");
+    expect(view.getState().drawerOpen).toBe(false);
+  });
+
+  it("ignores malformed or garbage values in setState without throwing", async () => {
+    const view = makeView();
+    const initial = view.getState();
+
+    await view.setState(
+      {
+        searchQuery: 99999,
+        filters: "not-an-object",
+        sort: { columnId: "nonexistent", direction: "diagonal" },
+        selectedPath: { invalid: true },
+        drawerOpen: "yes",
+      },
+      { history: false },
+    );
+
+    // Defaults remain intact, no error thrown
+    expect(view.getState()).toEqual(initial);
   });
 });

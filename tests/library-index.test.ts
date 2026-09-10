@@ -285,6 +285,68 @@ describe("LibraryIndex scan", () => {
       "P16<sup>+</sup> Cells Drive Adverse Remodeling",
     );
   });
+
+  it("parses created_at when present in frontmatter", () => {
+    const vault = new FakeVault();
+    vault.add(
+      `${ROOT}/time2026/time2026.md`,
+      makeFrontmatter({
+        citation_key: "time2026",
+        paper_id: UUID_A,
+        title: "Time test",
+        created_at: "2026-08-02T00:00:00+08:00",
+      }),
+    );
+    const index = new LibraryIndex(vault, ROOT);
+    index.scanAll();
+    const record = index.getRecords()[0];
+    expect(record.createdAt).toBe("2026-08-02T00:00:00+08:00");
+  });
+
+  it("parses created_at when YAML provides a Date object", () => {
+    const vault = new FakeVault();
+    const testDate = new Date("2026-09-10T12:00:00Z");
+    vault.add(
+      `${ROOT}/date2026/date2026.md`,
+      makeFrontmatter({
+        citation_key: "date2026",
+        paper_id: UUID_A,
+        title: "Date test",
+        created_at: testDate,
+      }),
+    );
+    const index = new LibraryIndex(vault, ROOT);
+    index.scanAll();
+    const record = index.getRecords()[0];
+    expect(record.createdAt).toBe("2026-09-10T12:00:00.000Z");
+  });
+
+  it("leaves createdAt undefined when absent or invalid", () => {
+    const vault = new FakeVault();
+    vault.add(
+      `${ROOT}/absent/absent.md`,
+      makeFrontmatter({
+        citation_key: "absent",
+        paper_id: UUID_A,
+        title: "Absent created_at",
+      }),
+    );
+    vault.add(
+      `${ROOT}/invalid/invalid.md`,
+      makeFrontmatter({
+        citation_key: "invalid",
+        paper_id: UUID_B,
+        title: "Invalid created_at",
+        created_at: "not-a-valid-date",
+      }),
+    );
+    const index = new LibraryIndex(vault, ROOT);
+    index.scanAll();
+    const absentRecord = index.getRecordByKey("absent");
+    const invalidRecord = index.getRecordByKey("invalid");
+    expect(absentRecord?.createdAt).toBeUndefined();
+    expect(invalidRecord?.createdAt).toBeUndefined();
+  });
 });
 
 describe("invalid records", () => {

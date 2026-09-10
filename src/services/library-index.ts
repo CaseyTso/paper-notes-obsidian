@@ -217,6 +217,20 @@ function normalizeIdentifiers(fm: Record<string, unknown>): PaperIdentifiers {
   return identifiers;
 }
 
+function normalizeCreatedAt(value: unknown): string | undefined {
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (trimmed.length > 0 && !isNaN(Date.parse(trimmed))) {
+      return trimmed;
+    }
+  } else if (value instanceof Date && !isNaN(value.getTime())) {
+    return value.toISOString();
+  } else if (typeof value === "number" && Number.isFinite(value) && value > 0) {
+    return new Date(value).toISOString();
+  }
+  return undefined;
+}
+
 function parsePaper(
   path: string,
   key: string,
@@ -292,6 +306,7 @@ function parsePaper(
       citationKeyAliases: declaredAliases,
       titleAliases: stringList(fm.aliases),
       abstract: stringValue(fm.abstract),
+      createdAt: normalizeCreatedAt(fm.created_at),
     },
   };
 }

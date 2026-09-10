@@ -15,7 +15,7 @@ import {
 import { normalizeSettings } from "../src/settings";
 
 describe("default column widths (Batch 2 D)", () => {
-  it("keeps all ten columns visible in the approved order", () => {
+  it("keeps all eleven columns visible in the approved order", () => {
     expect(DEFAULT_LIBRARY_COLUMNS.map((column) => column.id)).toEqual([
       "title",
       "firstAuthor",
@@ -26,6 +26,7 @@ describe("default column widths (Batch 2 D)", () => {
       "if",
       "jci",
       "artifacts",
+      "moc",
       "readingStatus",
     ]);
     expect(DEFAULT_LIBRARY_COLUMNS.every((column) => column.visible)).toBe(true);

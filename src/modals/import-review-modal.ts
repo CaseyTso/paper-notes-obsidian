@@ -233,7 +233,7 @@ export class ImportReviewModal extends Modal {
       valueArea.createDiv({ cls: "paper-notes-review-evidence", text: "Choose one source:" });
       const options = valueArea.createDiv({ cls: "paper-notes-review-options" });
       for (const option of row.conflictOptions) {
-        const wrap = options.createDiv({ cls: "paper-notes-review-option" });
+        const wrap = options.createEl("label", { cls: "paper-notes-review-option" });
         const radio = wrap.createEl("input", {
           attr: {
             type: "radio",

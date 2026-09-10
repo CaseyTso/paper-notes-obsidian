@@ -46,6 +46,7 @@ export type LibraryColumnId =
   | "if"
   | "jci"
   | "artifacts"
+  | "moc"
   | "readingStatus";
 
 export interface LibraryColumn {
@@ -79,6 +80,7 @@ export const DEFAULT_LIBRARY_COLUMNS: LibraryColumn[] = [
   { id: "if", label: "IF", visible: true, width: 70 },
   { id: "jci", label: "JCI", visible: true, width: 70 },
   { id: "artifacts", label: "PDF/MinerU/Figure", visible: true, width: 180 },
+  { id: "moc", label: "MOC", visible: true, width: 150 },
   { id: "readingStatus", label: "Reading status", visible: true, width: 130 },
 ];
 
@@ -157,6 +159,8 @@ export interface LibraryItem {
   readingStatus?: ReadingStatus;
   artifacts: ArtifactAvailability;
   metrics?: PaperMetrics;
+  /** Topic MOC names that include this paper. */
+  mocs?: string[];
   /** Present only for invalid-metadata rows (design spec §17.1). */
   invalid?: { reasons: string[] };
   record?: PaperRecord;
@@ -169,6 +173,10 @@ export interface LibraryItemBuildOptions {
   listDirectory?: (dir: string) => string[];
   /** Volatile EasyScholar metrics per paper id (never written anywhere). */
   metrics?: (paperId: string) => PaperMetrics | undefined;
+  /** Topic MOC membership per citation key. */
+  mocs?:
+    | Map<string, string[]>
+    | ((key: string) => string[] | undefined);
 }
 
 export const INVALID_METADATA_TITLE = "Invalid metadata";
@@ -243,7 +251,16 @@ export function buildLibraryItems(
   invalidRecords: Array<{ path: string; reasons: string[] }>,
   options: LibraryItemBuildOptions = {},
 ): LibraryItem[] {
-  const { frontmatter, listDirectory, metrics } = options;
+  const { frontmatter, listDirectory, metrics, mocs } = options;
+  const getMocs = (key: string): string[] => {
+    if (typeof mocs === "function") {
+      return mocs(key) ?? [];
+    }
+    if (mocs instanceof Map) {
+      return mocs.get(key) ?? [];
+    }
+    return [];
+  };
   const items: LibraryItem[] = records.map((record) => {
     const clone = cloneRecord(record);
     const dir = clone.path.slice(0, clone.path.lastIndexOf("/"));
@@ -270,20 +287,25 @@ export function buildLibraryItems(
               ...(injected.if !== undefined ? { if: injected.if } : {}),
               ...(injected.jci !== undefined ? { jci: injected.jci } : {}),
             },
+      mocs: getMocs(clone.key),
       record: clone,
     };
   });
   const invalidItems: LibraryItem[] = [...invalidRecords]
     .sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0))
-    .map((invalid) => ({
-      path: invalid.path,
-      key: fallbackKeyOf(invalid.path),
-      paperId: "",
-      title: INVALID_METADATA_TITLE,
-      firstAuthor: "",
-      artifacts: { pdf: false, minerU: false, figure: false },
-      invalid: { reasons: [...invalid.reasons] },
-    }));
+    .map((invalid) => {
+      const key = fallbackKeyOf(invalid.path);
+      return {
+        path: invalid.path,
+        key,
+        paperId: "",
+        title: INVALID_METADATA_TITLE,
+        firstAuthor: "",
+        artifacts: { pdf: false, minerU: false, figure: false },
+        mocs: getMocs(key),
+        invalid: { reasons: [...invalid.reasons] },
+      };
+    });
   return [...items, ...invalidItems];
 }
 
@@ -299,6 +321,7 @@ function searchTextOf(item: LibraryItem): string {
     record.year !== undefined ? String(record.year) : "",
     record.key,
     record.abstract ?? "",
+    ...(item.mocs ?? []),
     ...record.authors.flatMap((author) => [
       author.family ?? "",
       author.given ?? "",
@@ -356,6 +379,8 @@ function sortValueOf(item: LibraryItem, columnId: LibraryColumnId): unknown {
       return item.metrics?.if;
     case "jci":
       return item.metrics?.jci;
+    case "moc":
+      return item.mocs && item.mocs.length > 0 ? item.mocs[0] : undefined;
     default:
       return formatColumnValue(item, columnId);
   }
@@ -424,6 +449,8 @@ export function formatColumnValue(
       return ARTIFACT_LABELS.filter(([key]) => item.artifacts[key])
         .map(([, label]) => label)
         .join(" · ");
+    case "moc":
+      return item.mocs && item.mocs.length > 0 ? item.mocs.join(", ") : "";
     case "readingStatus":
       return item.readingStatus ?? "";
   }

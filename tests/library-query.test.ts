@@ -161,7 +161,7 @@ function fixtureItems(): LibraryItem[] {
 }
 
 describe("default library columns", () => {
-  it("defines the ten approved columns in the default order", () => {
+  it("defines the eleven approved columns in the default order", () => {
     expect(DEFAULT_LIBRARY_COLUMNS.map((column) => column.id)).toEqual([
       "title",
       "firstAuthor",
@@ -172,6 +172,7 @@ describe("default library columns", () => {
       "if",
       "jci",
       "artifacts",
+      "moc",
       "readingStatus",
     ]);
     expect(DEFAULT_LIBRARY_COLUMNS.map((column) => column.label)).toEqual([
@@ -184,6 +185,7 @@ describe("default library columns", () => {
       "IF",
       "JCI",
       "PDF/MinerU/Figure",
+      "MOC",
       "Reading status",
     ]);
   });
@@ -204,7 +206,7 @@ describe("resolveColumns", () => {
   it("hides customized columns without disturbing the rest", () => {
     const columns = resolveColumns({ cas: { visible: false } });
     expect(columns.map((column) => column.id)).not.toContain("cas");
-    expect(columns.map((column) => column.id)).toHaveLength(9);
+    expect(columns.map((column) => column.id)).toHaveLength(10);
     expect(columns[0].id).toBe("title");
   });
 
@@ -227,6 +229,7 @@ describe("resolveColumns", () => {
       "if",
       "jci",
       "artifacts",
+      "moc",
       "readingStatus",
     ]);
   });
@@ -439,6 +442,40 @@ describe("sortLibraryItems", () => {
     ).toEqual(["Alpha", "beta", "Gamma"]);
   });
 
+  it("sorts by MOC column with missing values sorted last", () => {
+    const mocsMap = new Map([
+      ["alpha2024", ["Beta Topic"]],
+      ["beta2023", ["Alpha Topic"]],
+      // gamma2022 has no MOC
+    ]);
+    const items = fixtureItems();
+    const itemsWithMocs = buildLibraryItems(
+      items.map((i) => i.record!),
+      [],
+      { mocs: mocsMap },
+    );
+    const asc = sortLibraryItems(itemsWithMocs, {
+      columnId: "moc",
+      direction: "asc",
+    });
+    expect(asc.map((item) => item.key)).toEqual([
+      "beta2023",
+      "alpha2024",
+      "gamma2022",
+    ]);
+
+    const desc = sortLibraryItems(itemsWithMocs, {
+      columnId: "moc",
+      direction: "desc",
+    });
+    // Missing gamma2022 stays last even in desc order
+    expect(desc.map((item) => item.key)).toEqual([
+      "alpha2024",
+      "beta2023",
+      "gamma2022",
+    ]);
+  });
+
   it("sorts numeric metric columns with missing values last", () => {
     const [a, b, c] = buildLibraryItems(
       [
@@ -522,6 +559,21 @@ describe("formatColumnValue", () => {
     expect(formatColumnValue(item, "jci")).toBe("2.3");
     expect(formatColumnValue(item, "artifacts")).toBe("PDF · MinerU · Figure");
     expect(formatColumnValue(item, "readingStatus")).toBe("reading");
+  });
+
+  it("formats MOC column with comma-separated names or empty", () => {
+    const [withMocs] = buildLibraryItems(
+      [makeRecord({ key: "k1" })],
+      [],
+      { mocs: new Map([["k1", ["Topic 1", "Topic 2"]]]) },
+    );
+    expect(formatColumnValue(withMocs, "moc")).toBe("Topic 1, Topic 2");
+
+    const [withoutMocs] = buildLibraryItems(
+      [makeRecord({ key: "k2" })],
+      [],
+    );
+    expect(formatColumnValue(withoutMocs, "moc")).toBe("");
   });
 
   it("renders missing values as empty strings", () => {

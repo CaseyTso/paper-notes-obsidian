@@ -68,6 +68,19 @@
   --pn-tooltip-bg: var(--background-secondary);
   --pn-tooltip-text: var(--text-normal);
   --pn-tooltip-border: var(--background-modifier-border);
+
+  /* Reading status palette (light theme) - contrast verified >= 4.5:1 */
+  --pn-status-unread-text: #334155;
+  --pn-status-unread-bg: color-mix(in srgb, #64748b 12%, var(--background-primary));
+  --pn-status-unread-border: color-mix(in srgb, #64748b 28%, var(--pn-border));
+
+  --pn-status-reading-text: #1d4ed8;
+  --pn-status-reading-bg: color-mix(in srgb, #2563eb 12%, var(--background-primary));
+  --pn-status-reading-border: color-mix(in srgb, #2563eb 32%, var(--pn-border));
+
+  --pn-status-read-text: #065f46;
+  --pn-status-read-bg: color-mix(in srgb, #059669 12%, var(--background-primary));
+  --pn-status-read-border: color-mix(in srgb, #059669 32%, var(--pn-border));
 }
 
 /* Dark theme: slightly lift badge text and tame the most saturated tints. */
@@ -95,6 +108,19 @@
   --pn-metric-jci-ge5: #c4b5fd;
   --pn-metric-stale: #fbbf24;
   --pn-metric-failure: #f87171;
+
+  /* Reading status palette (dark theme) - contrast verified >= 4.5:1 */
+  --pn-status-unread-text: #cbd5e1;
+  --pn-status-unread-bg: color-mix(in srgb, #94a3b8 16%, var(--background-primary));
+  --pn-status-unread-border: color-mix(in srgb, #94a3b8 32%, var(--pn-border));
+
+  --pn-status-reading-text: #93c5fd;
+  --pn-status-reading-bg: color-mix(in srgb, #3b82f6 20%, var(--background-primary));
+  --pn-status-reading-border: color-mix(in srgb, #60a5fa 35%, var(--pn-border));
+
+  --pn-status-read-text: #6ee7b7;
+  --pn-status-read-bg: color-mix(in srgb, #10b981 20%, var(--background-primary));
+  --pn-status-read-border: color-mix(in srgb, #34d399 35%, var(--pn-border));
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -514,6 +540,123 @@
   text-align: center;
 }
 
+/* ── Recent literature section (Task: R2) ───────────────────────── */
+
+.paper-notes-recent-section {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 10px;
+  padding: 8px var(--pn-pad-lg);
+  border-bottom: 1px solid var(--pn-border);
+  background: var(--background-secondary-alt, var(--background-secondary));
+  box-sizing: border-box;
+}
+
+.paper-notes-recent-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.paper-notes-recent-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+
+.paper-notes-recent-title {
+  font-size: var(--font-ui-smaller);
+  font-weight: var(--font-semibold);
+  color: var(--text-muted);
+  letter-spacing: 0.04em;
+}
+
+.paper-notes-recent-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.paper-notes-recent-empty {
+  font-size: var(--font-ui-smaller);
+  color: var(--text-faint);
+  font-style: italic;
+  padding: 4px 6px;
+}
+
+.paper-notes-recent-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 4px 8px;
+  border-radius: var(--pn-radius-sm, 4px);
+  border: 1px solid var(--pn-border);
+  background: var(--background-primary);
+  color: var(--text-normal);
+  text-align: left;
+  font-family: inherit;
+  font-size: var(--font-ui-smaller);
+  cursor: pointer;
+  box-sizing: border-box;
+  min-height: 28px;
+  appearance: none;
+  -webkit-appearance: none;
+  transition:
+    background-color var(--pn-transition),
+    border-color var(--pn-transition),
+    box-shadow var(--pn-transition);
+}
+
+.paper-notes-recent-card:hover {
+  background: var(--background-modifier-hover);
+  border-color: var(--pn-border-strong);
+}
+
+.paper-notes-recent-card:focus-visible {
+  outline: 2px solid var(--pn-accent);
+  outline-offset: 1px;
+}
+
+.paper-notes-recent-card-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: var(--font-medium);
+  color: var(--text-normal);
+}
+
+.paper-notes-recent-card-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.paper-notes-recent-card-kind {
+  display: inline-block;
+  padding: 0 4px;
+  border-radius: 3px;
+  background: var(--pn-accent-softer);
+  color: var(--pn-accent);
+  font-size: 10px;
+  font-weight: var(--font-medium);
+  line-height: 1.4;
+}
+
+.paper-notes-recent-card-time {
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-faint);
+}
+
 /* ── Table shell (full width; detail lives in the drawer) ──────────── */
 
 /* Batch 3: overflow:auto carries BOTH scrollbars — vertical for long
@@ -656,9 +799,27 @@
 }
 
 .paper-notes-library-table td.paper-notes-col-title {
+  font-weight: var(--font-medium);
+  /* The cell keeps the base td's nowrap/hidden/ellipsis/max-width:0, which
+     reliably clips a fixed-width column. The two-line clamp lives on the inner
+     .paper-notes-col-title-text block (a normal in-flow element), not the td:
+     -webkit-line-clamp on a table cell fights the cell's own line-box under
+     table-layout:fixed (collapses to a sliver or bleeds a 3rd line), and
+     max-height on a td has no hold on table row height. A plain block child is
+     the only reliable clamp surface. */
+}
+
+.paper-notes-library-table td.paper-notes-col-title .paper-notes-col-title-text {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: normal;
   line-height: 1.35;
-  font-weight: var(--font-medium);
+  word-break: break-word;
+  overflow-wrap: anywhere;
 }
 
 .paper-notes-library-table tbody tr {
@@ -1014,20 +1175,104 @@
 }
 
 .paper-notes-status-chip--unread {
-  color: var(--text-muted);
-  background: color-mix(in srgb, var(--text-muted) 10%, transparent);
+  color: var(--pn-status-unread-text);
+  border-color: var(--pn-status-unread-border);
+  background: var(--pn-status-unread-bg);
 }
 
 .paper-notes-status-chip--reading {
-  color: color-mix(in srgb, #2563eb 70%, var(--text-normal));
-  border-color: color-mix(in srgb, #2563eb 35%, var(--pn-border));
-  background: color-mix(in srgb, #2563eb 12%, transparent);
+  color: var(--pn-status-reading-text);
+  border-color: var(--pn-status-reading-border);
+  background: var(--pn-status-reading-bg);
 }
 
 .paper-notes-status-chip--read {
-  color: color-mix(in srgb, #0d9488 70%, var(--text-normal));
-  border-color: color-mix(in srgb, #0d9488 35%, var(--pn-border));
-  background: color-mix(in srgb, #0d9488 12%, transparent);
+  color: var(--pn-status-read-text);
+  border-color: var(--pn-status-read-border);
+  background: var(--pn-status-read-bg);
+}
+
+/* ── MOC membership column ──────────────────────────────────────────── */
+
+.paper-notes-library-table td.paper-notes-col-moc {
+  white-space: normal;
+}
+
+.paper-notes-moc-cell {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  max-width: 100%;
+}
+
+.paper-notes-moc-tag {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 7px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--pn-accent) 25%, var(--pn-border));
+  background: color-mix(in srgb, var(--pn-accent) 8%, var(--background-primary));
+  color: var(--text-normal);
+  font-size: 11px;
+  line-height: 1.45;
+  white-space: nowrap;
+  cursor: pointer;
+  appearance: none;
+  -webkit-appearance: none;
+  font-family: inherit;
+  transition:
+    background-color var(--pn-transition),
+    border-color var(--pn-transition),
+    color var(--pn-transition);
+}
+
+.paper-notes-moc-tag:hover {
+  background: color-mix(in srgb, var(--pn-accent) 18%, var(--background-primary));
+  border-color: var(--pn-accent);
+  color: var(--text-accent, var(--pn-accent));
+}
+
+.paper-notes-moc-tag:focus-visible {
+  outline: 2px solid var(--pn-accent);
+  outline-offset: 1px;
+}
+
+.paper-notes-moc-more {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 6px;
+  border-radius: 999px;
+  border: 1px solid var(--pn-border);
+  background: color-mix(in srgb, var(--text-muted) 10%, var(--background-primary));
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: var(--font-medium);
+  line-height: 1.45;
+  white-space: nowrap;
+  cursor: pointer;
+  appearance: none;
+  -webkit-appearance: none;
+  font-family: inherit;
+  transition:
+    background-color var(--pn-transition),
+    border-color var(--pn-transition),
+    color var(--pn-transition);
+}
+
+.paper-notes-moc-more:hover {
+  background: color-mix(in srgb, var(--text-muted) 20%, var(--background-primary));
+  color: var(--text-normal);
+  border-color: var(--pn-border-strong);
+}
+
+.paper-notes-moc-more:focus-visible {
+  outline: 2px solid var(--pn-accent);
+  outline-offset: 1px;
+}
+
+.paper-notes-moc-empty {
+  color: var(--text-muted);
 }
 
 .paper-notes-artifact-chip {
@@ -1406,6 +1651,163 @@
   outline: none;
   border-color: var(--pn-accent);
   box-shadow: 0 0 0 2px var(--pn-accent-soft);
+}
+
+/* ── Create Item Preview (Phase P7 / R6) ────────────────────────────── */
+
+.paper-notes-create-preview {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 4px;
+}
+
+.paper-notes-preview-status {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 14px;
+  border-radius: var(--pn-radius-md);
+  border: 1px solid var(--pn-border);
+  background: var(--background-secondary);
+}
+
+.paper-notes-preview-status.is-ready {
+  border-color: var(--pn-border-accent, var(--interactive-accent));
+  background: var(--pn-accent-soft, rgba(37, 99, 235, 0.08));
+}
+
+.paper-notes-preview-status.is-warning {
+  border-color: var(--text-warning, #d97706);
+  background: rgba(217, 119, 6, 0.08);
+}
+
+.paper-notes-preview-status.is-duplicate {
+  border-color: var(--text-accent, #6366f1);
+  background: rgba(99, 102, 241, 0.08);
+}
+
+.paper-notes-preview-status.is-error {
+  border-color: var(--text-error, #dc2626);
+  background: var(--pn-error-bg, rgba(220, 38, 38, 0.08));
+}
+
+.paper-notes-preview-badge {
+  flex: none;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: var(--font-ui-smaller, 11px);
+  font-weight: 600;
+  line-height: 18px;
+  color: var(--text-on-accent, #ffffff);
+  background: var(--text-muted);
+}
+
+.paper-notes-preview-badge.is-ready {
+  background: var(--interactive-accent, #2563eb);
+}
+
+.paper-notes-preview-badge.is-warning {
+  background: var(--text-warning, #d97706);
+}
+
+.paper-notes-preview-badge.is-duplicate {
+  background: #6366f1;
+}
+
+.paper-notes-preview-badge.is-error {
+  background: var(--text-error, #dc2626);
+}
+
+.paper-notes-preview-message {
+  font-size: var(--font-ui-small, 13px);
+  line-height: 1.45;
+  color: var(--text-normal);
+  word-break: break-word;
+}
+
+.paper-notes-preview-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 14px;
+  border-radius: var(--pn-radius-md);
+  border: 1px solid var(--pn-border);
+  background: var(--background-primary);
+}
+
+.paper-notes-preview-field {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  font-size: var(--font-ui-small, 13px);
+  line-height: 1.45;
+}
+
+.paper-notes-preview-label {
+  flex: none;
+  width: 52px;
+  font-weight: 600;
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller, 12px);
+}
+
+.paper-notes-preview-value {
+  flex: 1;
+  color: var(--text-normal);
+  word-break: break-word;
+}
+
+.paper-notes-preview-value.is-missing,
+.paper-notes-preview-missing {
+  color: var(--text-muted);
+  font-style: italic;
+  opacity: 0.8;
+}
+
+.paper-notes-preview-ids {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.paper-notes-preview-id-badge {
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: var(--pn-radius-sm);
+  background: var(--background-secondary);
+  border: 1px solid var(--pn-border);
+  font-family: var(--font-monospace);
+  font-size: var(--font-ui-smaller, 11px);
+  color: var(--text-normal);
+}
+
+.paper-notes-preview-abstract {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 12px;
+  border-radius: var(--pn-radius-sm);
+  background: var(--background-secondary);
+  border: 1px solid var(--pn-border);
+  max-height: 140px;
+  overflow-y: auto;
+}
+
+.paper-notes-preview-abstract-label {
+  font-weight: 600;
+  font-size: var(--font-ui-smaller, 11px);
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.paper-notes-preview-abstract-content {
+  font-size: var(--font-ui-small, 12px);
+  line-height: 1.5;
+  color: var(--text-normal);
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 /* ── Narrow-mode detail drawer (Batch 1) ────────────────────────────── */

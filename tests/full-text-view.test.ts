@@ -50,7 +50,17 @@ vi.mock("obsidian", () => {
   class El {
     tag: string;
     cls = "";
-    textContent = "";
+    // Real DOM: `textContent` reads aggregate an element's own text plus all
+    // descendant element text. Mirror that (own text + children) so a parent
+    // cell's textContent still resolves when content lives in an inner child
+    // (e.g. the title cell's .paper-notes-col-title-text span).
+    private _ownText = "";
+    set textContent(value: string) {
+      this._ownText = value;
+    }
+    get textContent(): string {
+      return this._ownText + this.children.map((c) => c.textContent).join("");
+    }
     value = "";
     checked = false;
     selected = false;

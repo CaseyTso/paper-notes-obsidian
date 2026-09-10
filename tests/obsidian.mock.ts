@@ -8,10 +8,12 @@
 
 export const registeredViews: string[] = [];
 export const registeredCommands: string[] = [];
+export const registeredEvents: unknown[] = [];
 
 export function resetRegistries(): void {
   registeredViews.length = 0;
   registeredCommands.length = 0;
+  registeredEvents.length = 0;
 }
 
 export class Plugin {
@@ -40,6 +42,11 @@ export class Plugin {
     // Recorded for signature compatibility; settings tabs are GUI-only and
     // not exercised by the headless mock suites.
   }
+
+  registerEvent(eventRef: unknown): unknown {
+    registeredEvents.push(eventRef);
+    return eventRef;
+  }
 }
 
 export class ItemView {
@@ -52,6 +59,11 @@ export class ItemView {
       empty: () => {},
       createEl: () => {},
     };
+  }
+
+  async setState(_state?: unknown, _result?: unknown): Promise<void> {}
+  getState(): Record<string, unknown> {
+    return {};
   }
 }
 

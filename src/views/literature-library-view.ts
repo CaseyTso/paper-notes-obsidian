@@ -22,10 +22,16 @@ import {
   Notice,
   WorkspaceLeaf,
   setIcon,
+  type App,
   type TFile,
+  type ViewStateResult,
 } from "obsidian";
 
 import type { InvalidRecord, PaperRecord } from "../types/paper";
+import type {
+  RecentImportEntry,
+  RecentReadEntry,
+} from "../services/recent-activity";
 import {
   DEFAULT_SETTINGS,
   metricsEnabledOf,
@@ -98,6 +104,12 @@ import {
 } from "../components/library-filters";
 import { buildPaperDetail } from "../components/paper-detail";
 import { MocDirectory, type MocDirectorySource } from "../components/moc-directory";
+import {
+  buildMocMembership,
+  buildMocTitleToPathMap,
+} from "../services/moc-membership";
+import { openMocNote } from "../services/moc-navigation";
+import type { ParsedMoc } from "../services/moc-parse";
 
 export type LibraryPage = "library" | "moc";
 
@@ -173,6 +185,24 @@ export function formatCacheTimestamp(ms: number): string {
   const hour = String(date.getHours()).padStart(2, "0");
   const minute = String(date.getMinutes()).padStart(2, "0");
   return `${month} ${day}, ${hour}:${minute}`;
+}
+
+/**
+ * Format a timestamp into YYYY-MM-DD for recent literature cards.
+ */
+export function formatRecentDate(value: number | string | undefined): string {
+  if (value === undefined || value === null || value === "") {
+    return "";
+  }
+  const ms = typeof value === "number" ? value : Date.parse(value);
+  if (!Number.isFinite(ms) || isNaN(ms) || ms <= 0) {
+    return "";
+  }
+  const date = new Date(ms);
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, "0");
+  const d = String(date.getDate()).padStart(2, "0");
+  return `${y}-${m}-${d}`;
 }
 
 /**
@@ -265,6 +295,8 @@ export interface LibraryViewSource {
   getCards(dir: string): string[];
   /** Volatile EasyScholar metrics per paper id (Task 26 wires the cache). */
   getMetrics?(paperId: string): PaperMetrics | undefined;
+  /** Cached Topic MOC notes for MOC membership resolution. */
+  getParsedMocs?(): ParsedMoc[];
   /**
    * Explicit on-demand MinerU full-text search (design spec §9.4): reads
    * `minerUmd_<key>.md` for records not matched by default fields. The
@@ -276,6 +308,10 @@ export interface LibraryViewSource {
     query: string,
     signal?: AbortSignal,
   ): Promise<PaperRecord[]>;
+  /** Recent reading history entries (Task: R2). */
+  getRecentReads?(limit?: number): RecentReadEntry[];
+  /** Recent imported paper entries with verified created_at (Task: R2). */
+  getRecentImports?(limit?: number): RecentImportEntry[];
 }
 
 interface ModalClasses {
@@ -293,9 +329,11 @@ export class PaperNotesLibraryView extends ItemView {
   private isOpen = false;
   /** Focus requested while the view was still opening (applied in onOpen). */
   private pendingFocus: { citationKey: string; path?: string } | undefined;
+  private pendingDetail: { citationKey: string; path?: string } | undefined;
   private focusRetryTimer: ReturnType<typeof setTimeout> | undefined;
   private focusRetries = 0;
   private tableHost: HTMLElement | null = null;
+  private recentHost: HTMLElement | null = null;
   /** Local snapshots bridge rapid chip activation until vault events arrive. */
   private readonly readingStatusOverrides = new Map<
     string,
@@ -369,8 +407,9 @@ export class PaperNotesLibraryView extends ItemView {
   private page: LibraryPage = "library";
   private readonly mocDirectory: MocDirectory | undefined;
   private mocHost: HTMLElement | null = null;
+  private mocPathMap = new Map<string, string>();
 
-  constructor(leaf: WorkspaceLeaf, private readonly source: LibraryViewSource, mocSource?: MocDirectorySource) {
+  constructor(leaf: WorkspaceLeaf, private readonly source: LibraryViewSource, private readonly mocSource?: MocDirectorySource) {
     super(leaf);
     this.mocDirectory = mocSource ? new MocDirectory(mocSource) : undefined;
   }
@@ -391,13 +430,193 @@ export class PaperNotesLibraryView extends ItemView {
     }
   }
 
-  getState(): Record<string, unknown> {
-    return { page: this.page };
+  private parseSort(raw: unknown): LibrarySort | undefined {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+      return undefined;
+    }
+    const candidate = raw as Record<string, unknown>;
+    const columnId = candidate.columnId;
+    const direction = candidate.direction;
+    const validColumns: LibraryColumnId[] = [
+      "title",
+      "firstAuthor",
+      "year",
+      "journal",
+      "cas",
+      "jcr",
+      "if",
+      "jci",
+      "artifacts",
+      "readingStatus",
+    ];
+    if (
+      typeof columnId === "string" &&
+      validColumns.includes(columnId as LibraryColumnId) &&
+      (direction === "asc" || direction === "desc")
+    ) {
+      return {
+        columnId: columnId as LibraryColumnId,
+        direction,
+      };
+    }
+    return undefined;
   }
 
-  async setState(state: { page?: string }, result: import("obsidian").ViewStateResult): Promise<void> {
-    this.showPage(state.page === "moc" ? "moc" : "library");
-    await super.setState(state, result);
+  private parseFilters(raw: unknown): LibraryFilters | undefined {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+      return undefined;
+    }
+    const candidate = raw as Record<string, unknown>;
+    const filters: LibraryFilters = {
+      requiredArtifacts: [],
+    };
+
+    if (Array.isArray(candidate.requiredArtifacts)) {
+      const validParts: ArtifactPart[] = ["pdf", "minerU", "figure"];
+      filters.requiredArtifacts = candidate.requiredArtifacts.filter(
+        (part): part is ArtifactPart =>
+          typeof part === "string" && validParts.includes(part as ArtifactPart),
+      );
+    }
+
+    if (typeof candidate.yearFrom === "number" && Number.isFinite(candidate.yearFrom)) {
+      filters.yearFrom = candidate.yearFrom;
+    }
+    if (typeof candidate.yearTo === "number" && Number.isFinite(candidate.yearTo)) {
+      filters.yearTo = candidate.yearTo;
+    }
+    if (typeof candidate.journal === "string") {
+      filters.journal = candidate.journal;
+    }
+    if (typeof candidate.cas === "string") {
+      filters.cas = candidate.cas;
+    }
+    if (typeof candidate.jcr === "string") {
+      filters.jcr = candidate.jcr;
+    }
+    if (typeof candidate.ifMin === "number" && Number.isFinite(candidate.ifMin)) {
+      filters.ifMin = candidate.ifMin;
+    }
+    if (typeof candidate.ifMax === "number" && Number.isFinite(candidate.ifMax)) {
+      filters.ifMax = candidate.ifMax;
+    }
+    if (typeof candidate.jciMin === "number" && Number.isFinite(candidate.jciMin)) {
+      filters.jciMin = candidate.jciMin;
+    }
+    if (typeof candidate.jciMax === "number" && Number.isFinite(candidate.jciMax)) {
+      filters.jciMax = candidate.jciMax;
+    }
+    if (
+      candidate.readingStatus === "unread" ||
+      candidate.readingStatus === "reading" ||
+      candidate.readingStatus === "read"
+    ) {
+      filters.readingStatus = candidate.readingStatus;
+    }
+
+    return filters;
+  }
+
+  getState(): Record<string, unknown> {
+    const filters: Record<string, unknown> = {
+      requiredArtifacts: [...this.filters.requiredArtifacts],
+    };
+    if (this.filters.yearFrom !== undefined) filters.yearFrom = this.filters.yearFrom;
+    if (this.filters.yearTo !== undefined) filters.yearTo = this.filters.yearTo;
+    if (this.filters.journal !== undefined) filters.journal = this.filters.journal;
+    if (this.filters.cas !== undefined) filters.cas = this.filters.cas;
+    if (this.filters.jcr !== undefined) filters.jcr = this.filters.jcr;
+    if (this.filters.ifMin !== undefined) filters.ifMin = this.filters.ifMin;
+    if (this.filters.ifMax !== undefined) filters.ifMax = this.filters.ifMax;
+    if (this.filters.jciMin !== undefined) filters.jciMin = this.filters.jciMin;
+    if (this.filters.jciMax !== undefined) filters.jciMax = this.filters.jciMax;
+    if (this.filters.readingStatus !== undefined) filters.readingStatus = this.filters.readingStatus;
+
+    return {
+      page: this.page,
+      searchQuery: this.searchQuery,
+      filters,
+      sort: {
+        columnId: this.sort.columnId,
+        direction: this.sort.direction,
+      },
+      selectedPath: this.selectedPath ?? null,
+      drawerOpen:
+        this.page === "library" &&
+        this.drawerOpen &&
+        typeof this.selectedPath === "string" &&
+        this.selectedPath.length > 0,
+    };
+  }
+
+  async setState(state: unknown, result: ViewStateResult): Promise<void> {
+    if (state && typeof state === "object") {
+      const raw = state as Record<string, unknown>;
+      const targetPage: LibraryPage = raw.page === "moc" ? "moc" : "library";
+      this.showPage(targetPage);
+
+      if (typeof raw.searchQuery === "string") {
+        this.searchQuery = raw.searchQuery;
+      }
+
+      if (raw.filters && typeof raw.filters === "object" && !Array.isArray(raw.filters)) {
+        const parsedFilters = this.parseFilters(raw.filters);
+        if (parsedFilters) {
+          this.filters = parsedFilters;
+        }
+      }
+
+      if (raw.sort && typeof raw.sort === "object" && !Array.isArray(raw.sort)) {
+        const parsedSort = this.parseSort(raw.sort);
+        if (parsedSort) {
+          this.sort = parsedSort;
+        }
+      }
+
+      if (typeof raw.selectedPath === "string" && raw.selectedPath.trim().length > 0) {
+        this.selectedPath = raw.selectedPath.trim();
+      } else if (
+        raw.selectedPath === null ||
+        raw.selectedPath === "" ||
+        "selectedPath" in raw ||
+        raw.drawerOpen === true
+      ) {
+        this.selectedPath = undefined;
+      }
+
+      if (targetPage === "moc") {
+        this.drawerOpen = false;
+        this.detachDrawerKeyHandler();
+      } else if (raw.drawerOpen === true) {
+        if (typeof this.selectedPath === "string" && this.selectedPath.length > 0) {
+          this.drawerOpen = true;
+        } else {
+          this.drawerOpen = false;
+          this.detachDrawerKeyHandler();
+        }
+      } else if (raw.drawerOpen === false) {
+        this.drawerOpen = false;
+        this.detachDrawerKeyHandler();
+      } else if (this.selectedPath === undefined && this.drawerOpen) {
+        this.drawerOpen = false;
+        this.detachDrawerKeyHandler();
+      }
+
+      if (this.isOpen) {
+        this.render();
+      }
+    } else {
+      this.showPage("library");
+      if (this.isOpen) {
+        this.render();
+      }
+    }
+
+    try {
+      await super.setState(state, result);
+    } catch {
+      // Test mocks might not define ItemView.prototype.setState
+    }
   }
 
   getViewType(): string {
@@ -420,6 +639,11 @@ export class PaperNotesLibraryView extends ItemView {
     if (pending !== undefined) {
       this.focusPaper(pending.citationKey, pending.path);
     }
+    const pendingDetail = this.pendingDetail;
+    this.pendingDetail = undefined;
+    if (pendingDetail !== undefined) {
+      this.openPaperDetail(pendingDetail.citationKey, pendingDetail.path);
+    }
     // Background refresh of missing/expired journal metrics (deduplicated
     // inside the cache; the first render already showed cached values).
     void this.refreshAllExpired();
@@ -431,6 +655,7 @@ export class PaperNotesLibraryView extends ItemView {
     this.mocHost = null;
     this.clearFocusRetryTimer();
     this.pendingFocus = undefined;
+    this.pendingDetail = undefined;
     this.cancelFullTextSearch();
     this.clearRowClickTimer();
     this.detachDrawerKeyHandler();
@@ -448,6 +673,7 @@ export class PaperNotesLibraryView extends ItemView {
     this.fullTextItems = [];
     this.fullTextQuery = undefined;
     this.tableHost = null;
+    this.recentHost = null;
     this.drawerHost = null;
     this.drawerOpen = false;
     this.containerEl.empty();
@@ -475,6 +701,70 @@ export class PaperNotesLibraryView extends ItemView {
       return;
     }
     this.applyFocus(citationKey, path);
+  }
+
+  /**
+   * Open the read-only Detail Drawer for a paper without altering the current
+   * table search, filter, or sort state (Contract R2).
+   */
+  openPaperDetail(citationKey: string, path?: string): void {
+    this.showPage("library");
+    this.clearRowClickTimer();
+
+    if (!this.isOpen) {
+      this.pendingDetail = { citationKey, path };
+      return;
+    }
+
+    const allItems = this.getAllItems();
+    const item = allItems.find(
+      (candidate) =>
+        (path !== undefined && candidate.path === path) ||
+        candidate.key === citationKey ||
+        candidate.record?.citationKeyAliases?.includes(citationKey),
+    );
+
+    if (item === undefined) {
+      this.notify(`Paper not found: ${citationKey}`);
+      return;
+    }
+
+    if (
+      this.app?.vault !== undefined &&
+      typeof (this.app.vault as { getAbstractFileByPath?: unknown }).getAbstractFileByPath === "function"
+    ) {
+      const file = this.app.vault.getAbstractFileByPath(item.path);
+      if (file === null || typeof file !== "object" || !("path" in file)) {
+        this.notify(`Paper file no longer exists: ${citationKey}`);
+        return;
+      }
+    }
+
+    this.selectedPath = item.path;
+    this.renderTable();
+    if (this.drawerOpen) {
+      this.abstractExpanded = false;
+      this.renderDetailDrawer();
+    } else {
+      this.abstractExpanded = false;
+      this.openDetailDrawer();
+    }
+
+    if (typeof requestAnimationFrame === "function") {
+      requestAnimationFrame(() => {
+        if (typeof this.containerEl?.querySelectorAll === "function") {
+          const rows = this.containerEl.querySelectorAll<HTMLElement>(
+            "[data-paper-notes-library-path]",
+          );
+          for (const row of rows) {
+            if (row.dataset?.paperNotesLibraryPath === item.path) {
+              row.scrollIntoView?.({ block: "nearest" });
+              break;
+            }
+          }
+        }
+      });
+    }
   }
 
   private clearFocusRetryTimer(): void {
@@ -543,7 +833,7 @@ export class PaperNotesLibraryView extends ItemView {
 
   private render(): void {
     if (this.page === "moc") {
-      this.tableHost = this.drawerHost = null;
+      this.tableHost = this.drawerHost = this.recentHost = null;
       if (
         this.mocHost !== null &&
         (typeof this.containerEl.contains !== "function" || this.containerEl.contains(this.mocHost))
@@ -658,17 +948,14 @@ export class PaperNotesLibraryView extends ItemView {
       "Refresh metrics",
     );
     refreshMetrics.addEventListener("click", () => void this.refreshAllExpired(true));
-    const mocBtn = this.createIconButton(
-      toolbar,
-      "paper-notes-library-moc",
-      "list",
-      "Open topic MOC",
-    );
-    mocBtn.addEventListener("click", () => {
-      this.showPage("moc");
-    });
 
     this.renderFilterBar(container);
+
+    this.recentHost = container.createDiv({
+      cls: "paper-notes-recent-section",
+      attr: { "aria-label": "Recent literature" },
+    });
+    this.renderRecentSection();
 
     // Full-width table shell: no resident detail pane, no splitter. The
     // detail surface is the overlay drawer, opened by single-clicking a
@@ -967,11 +1254,152 @@ export class PaperNotesLibraryView extends ItemView {
     this.renderResults();
   }
 
-  private queryItems(): LibraryItem[] {
+  /**
+   * Render the compact Recent Literature area above the library table (Contract R2).
+   * Displays up to 3 "Recent Reads" and up to 3 "Recent Imports" independently
+   * of current table filters or search query.
+   */
+  private renderRecentSection(): void {
+    if (this.recentHost === null) {
+      return;
+    }
+    this.recentHost.empty();
+
+    const recentReads = (this.source.getRecentReads?.(3) ?? []).slice(0, 3);
+    const recentImports = (this.source.getRecentImports?.(3) ?? []).slice(0, 3);
+
+    const records = this.source.getRecords();
+    const recordsByKey = new Map<string, PaperRecord>();
+    for (const r of records) {
+      recordsByKey.set(r.key, r);
+    }
+
+    // 1. Group: 最近阅读
+    const readsGroup = this.recentHost.createDiv({
+      cls: "paper-notes-recent-group paper-notes-recent-group--reads",
+      attr: { "data-section": "reads" },
+    });
+    const readsHeader = readsGroup.createDiv({ cls: "paper-notes-recent-header" });
+    readsHeader.createEl("span", {
+      cls: "paper-notes-recent-title",
+      text: "最近阅读",
+    });
+    const readsList = readsGroup.createDiv({ cls: "paper-notes-recent-list" });
+    if (recentReads.length === 0) {
+      readsList.createDiv({
+        cls: "paper-notes-recent-empty",
+        text: "暂无最近阅读的文献",
+      });
+    } else {
+      for (const entry of recentReads) {
+        const record = recordsByKey.get(entry.key);
+        const title = record?.title || entry.key;
+        const kindLabel = entry.kind === "figure" ? "Figure解读" : "PDF";
+        const timeStr = formatRecentDate(entry.timestamp);
+
+        const card = readsList.createEl("button", {
+          cls: "paper-notes-recent-card",
+          attr: {
+            type: "button",
+            "data-citation-key": entry.key,
+            "data-paper-path": entry.path,
+            "aria-label": `${entry.key}: ${title}`,
+            title: record?.title ? `${record.title} (${entry.key})` : entry.key,
+          },
+        });
+        card.createEl("span", {
+          cls: "paper-notes-recent-card-title",
+          text: title,
+        });
+        const meta = card.createEl("span", { cls: "paper-notes-recent-card-meta" });
+        meta.createEl("span", {
+          cls: "paper-notes-recent-card-kind",
+          text: kindLabel,
+        });
+        if (timeStr.length > 0) {
+          meta.createEl("span", {
+            cls: "paper-notes-recent-card-time",
+            text: timeStr,
+          });
+        }
+        card.addEventListener("click", (event: MouseEvent) => {
+          event.preventDefault();
+          this.openPaperDetail(entry.key, entry.path);
+        });
+      }
+    }
+
+    // 2. Group: 最近导入
+    const importsGroup = this.recentHost.createDiv({
+      cls: "paper-notes-recent-group paper-notes-recent-group--imports",
+      attr: { "data-section": "imports" },
+    });
+    const importsHeader = importsGroup.createDiv({ cls: "paper-notes-recent-header" });
+    importsHeader.createEl("span", {
+      cls: "paper-notes-recent-title",
+      text: "最近导入",
+    });
+    const importsList = importsGroup.createDiv({ cls: "paper-notes-recent-list" });
+    if (recentImports.length === 0) {
+      importsList.createDiv({
+        cls: "paper-notes-recent-empty",
+        text: "暂无新导入的文献",
+      });
+    } else {
+      for (const entry of recentImports) {
+        const record = recordsByKey.get(entry.key);
+        const title = record?.title || entry.key;
+        const timeStr = formatRecentDate(entry.timestamp ?? entry.createdAt);
+
+        const card = importsList.createEl("button", {
+          cls: "paper-notes-recent-card",
+          attr: {
+            type: "button",
+            "data-citation-key": entry.key,
+            "data-paper-path": entry.path,
+            "aria-label": `${entry.key}: ${title}`,
+            title: record?.title ? `${record.title} (${entry.key})` : entry.key,
+          },
+        });
+        card.createEl("span", {
+          cls: "paper-notes-recent-card-title",
+          text: title,
+        });
+        const meta = card.createEl("span", { cls: "paper-notes-recent-card-meta" });
+        meta.createEl("span", {
+          cls: "paper-notes-recent-card-kind",
+          text: "新导入",
+        });
+        if (timeStr.length > 0) {
+          meta.createEl("span", {
+            cls: "paper-notes-recent-card-time",
+            text: timeStr,
+          });
+        }
+        card.addEventListener("click", (event: MouseEvent) => {
+          event.preventDefault();
+          this.openPaperDetail(entry.key, entry.path);
+        });
+      }
+    }
+  }
+
+  private getAllItems(): LibraryItem[] {
     const records = this.source.getRecords();
     this.recordsById = new Map(records.map((record) => [record.paperId, record]));
+    return this.buildItems(records, this.source.getInvalidRecords());
+  }
+
+  private findItemByPath(path: string | undefined): LibraryItem | undefined {
+    if (!path) {
+      return undefined;
+    }
+    return this.getAllItems().find((item) => item.path === path);
+  }
+
+  private queryItems(): LibraryItem[] {
     const searched = searchLibraryItems(
-      this.buildItems(records, this.source.getInvalidRecords()),
+      this.getAllItems(),
       this.searchQuery,
     );
     const filtered = applyLibraryFilters(searched, this.filters);
@@ -991,6 +1419,9 @@ export class PaperNotesLibraryView extends ItemView {
     invalidRecords: InvalidRecord[],
   ): LibraryItem[] {
     const cache = this.getMetricsCache();
+    const parsedMocs = this.source.getParsedMocs?.() ?? [];
+    const mocMembership = buildMocMembership(parsedMocs);
+    this.mocPathMap = buildMocTitleToPathMap(parsedMocs);
     return buildLibraryItems(records, invalidRecords, {
       frontmatter: (path) => {
         const frontmatter = this.source.getFrontmatter(path);
@@ -1029,6 +1460,7 @@ export class PaperNotesLibraryView extends ItemView {
           record !== undefined ? cache?.getEntryFor(record) : undefined;
         return cached?.metrics ?? this.source.getMetrics?.(paperId);
       },
+      mocs: mocMembership,
     });
   }
 
@@ -1244,6 +1676,7 @@ export class PaperNotesLibraryView extends ItemView {
         if (kind === undefined) {
           const cell = row.createEl("td", {
             cls: `paper-notes-col-${column.id}`,
+            ...(column.id === "title" ? { attr: { title: item.title } } : {}),
           });
           this.renderPlainCell(cell, item, column.id);
           continue;
@@ -1353,9 +1786,7 @@ export class PaperNotesLibraryView extends ItemView {
     const panel = this.drawerHost.createDiv({
       cls: "paper-notes-library-drawer-panel",
     });
-    const selectedItem = this.queryItems().find(
-      (candidate) => candidate.path === this.selectedPath,
-    );
+    const selectedItem = this.findItemByPath(this.selectedPath);
     const header = panel.createDiv({ cls: "paper-notes-library-drawer-header" });
     const titleWrap = header.createDiv({
       cls: "paper-notes-library-drawer-title",
@@ -1382,9 +1813,7 @@ export class PaperNotesLibraryView extends ItemView {
     setIcon(more, "more-horizontal");
     more.addEventListener("click", (event: MouseEvent) => {
       event.stopPropagation();
-      const item = this.queryItems().find(
-        (candidate) => candidate.path === this.selectedPath,
-      );
+      const item = this.findItemByPath(this.selectedPath);
       if (item !== undefined) {
         this.openItemMenu(item, event);
       }
@@ -1414,15 +1843,15 @@ export class PaperNotesLibraryView extends ItemView {
    */
   private renderDetailInto(host: HTMLElement): LibraryItem | undefined {
     host.empty();
-    const items = this.queryItems();
-    if (items.length === 0) {
+    const allItems = this.getAllItems();
+    if (allItems.length === 0) {
       host.createEl("p", {
         cls: "paper-notes-library-empty",
         text: "No papers in the library yet.",
       });
       return undefined;
     }
-    const selected = items.find((item) => item.path === this.selectedPath);
+    const selected = allItems.find((item) => item.path === this.selectedPath);
     if (selected === undefined) {
       host.createEl("p", {
         cls: "paper-notes-library-empty",
@@ -1527,6 +1956,25 @@ export class PaperNotesLibraryView extends ItemView {
     item: LibraryItem,
     columnId: LibraryColumnId,
   ): void {
+    if (columnId === "title") {
+      cell.title = item.title;
+      if (typeof cell.setAttribute === "function") {
+        cell.setAttribute("title", item.title);
+      }
+      // The inner block element is the reliable surface for the two-line
+      // clamp (see .paper-notes-col-title-text in styles.css); clamping the td
+      // itself fights table-cell line-boxes under table-layout:fixed. In a real
+      // DOM the td's textContent aggregates the span's text, so the cell's
+      // visible text is exactly the title. cell.title (hover) is set above.
+      const titleText = cell.createEl("span", {
+        cls: "paper-notes-col-title-text",
+        text: item.title,
+      });
+      if (typeof titleText?.setAttribute === "function") {
+        titleText.setAttribute("title", item.title);
+      }
+      return;
+    }
     if (columnId === "readingStatus") {
       this.renderReadingStatusChip(cell, item);
       return;
@@ -1535,9 +1983,117 @@ export class PaperNotesLibraryView extends ItemView {
       this.renderArtifactChips(cell, item.artifacts);
       return;
     }
+    if (columnId === "moc") {
+      this.renderMocCell(cell, item);
+      return;
+    }
     // Prefer textContent over Obsidian's setText so unit-test element
     // stubs (and plain HTMLElement) both work without extra mocks.
     cell.textContent = formatColumnValue(item, columnId);
+  }
+
+  private renderMocCell(host: HTMLElement, item: LibraryItem): void {
+    const mocs = item.mocs ?? [];
+    if (mocs.length === 0) {
+      host.createEl("span", {
+        cls: "paper-notes-moc-empty",
+        text: "—",
+        attr: { "aria-label": "No Topic MOC" },
+      });
+      return;
+    }
+
+    const container = host.createDiv({ cls: "paper-notes-moc-cell" });
+    let expanded = false;
+
+    const renderTags = (): void => {
+      container.empty();
+      const visibleMocs = expanded ? mocs : mocs.slice(0, 2);
+      for (const mocName of visibleMocs) {
+        const tag = container.createEl("button", {
+          cls: "paper-notes-moc-tag is-clickable",
+          text: mocName,
+          attr: {
+            type: "button",
+            "aria-label": `Open Topic MOC: ${mocName}`,
+            title: `Open Topic MOC: ${mocName}`,
+          },
+        });
+        const activate = (event: Event): void => {
+          event.preventDefault();
+          event.stopPropagation();
+          const path = this.mocPathMap.get(mocName);
+          const targetPath =
+            path ??
+            `${this.mocSource?.literatureRoot?.replace(/\/$/u, "") ?? "05 Literature"}/MOCs/${mocName}.md`;
+          const eventObj = event as {
+            ctrlKey?: boolean;
+            metaKey?: boolean;
+            button?: number;
+          };
+          const isNewTab = Boolean(
+            eventObj.ctrlKey || eventObj.metaKey || eventObj.button === 1,
+          );
+          void this.openMoc(targetPath, isNewTab);
+        };
+        tag.addEventListener("click", activate);
+        tag.addEventListener("dblclick", (event: Event) => {
+          event.preventDefault();
+          event.stopPropagation();
+        });
+        tag.addEventListener("keydown", (event: Event) => {
+          const keyboardEvent = event as KeyboardEvent;
+          if (keyboardEvent.key === "Enter" || keyboardEvent.key === " ") {
+            activate(keyboardEvent);
+          }
+        });
+      }
+
+      if (mocs.length > 2) {
+        const moreCount = mocs.length - 2;
+        const moreBtn = container.createEl("button", {
+          cls: "paper-notes-moc-more is-clickable",
+          text: expanded ? "−" : `+${moreCount}`,
+          attr: {
+            type: "button",
+            "aria-label": expanded
+              ? "Collapse Topic MOC list"
+              : `Show ${moreCount} more Topic MOCs`,
+            "aria-expanded": expanded ? "true" : "false",
+            title: expanded ? "Collapse" : `Show ${moreCount} more Topic MOCs`,
+          },
+        });
+        const toggle = (event: Event): void => {
+          event.preventDefault();
+          event.stopPropagation();
+          expanded = !expanded;
+          renderTags();
+        };
+        moreBtn.addEventListener("click", toggle);
+        moreBtn.addEventListener("dblclick", (event: Event) => {
+          event.preventDefault();
+          event.stopPropagation();
+        });
+        moreBtn.addEventListener("keydown", (event: Event) => {
+          const keyboardEvent = event as KeyboardEvent;
+          if (keyboardEvent.key === "Enter" || keyboardEvent.key === " ") {
+            toggle(keyboardEvent);
+          }
+        });
+      }
+    };
+
+    renderTags();
+  }
+
+  private async openMoc(path: string, newTab = false): Promise<void> {
+    if (this.mocSource?.openNote) {
+      await this.mocSource.openNote(path, newTab);
+      return;
+    }
+    if (this.app && (this.app as App).vault) {
+      await openMocNote(this.app as App, path, newTab);
+    }
   }
 
   /**
@@ -1668,7 +2224,7 @@ export class PaperNotesLibraryView extends ItemView {
     const path = row?.getAttribute("data-paper-notes-library-path");
     return path === null || path === undefined
       ? undefined
-      : this.queryItems().find((item) => item.path === path);
+      : this.findItemByPath(path);
   }
 
   /** Cancel a pending single-click → drawer open (used by dblclick / close). */
@@ -2021,9 +2577,7 @@ export class PaperNotesLibraryView extends ItemView {
       this.notify("paper-notes CLI unavailable; metrics cannot refresh.");
       return;
     }
-    const item = this.queryItems().find(
-      (candidate) => candidate.path === this.selectedPath,
-    );
+    const item = this.findItemByPath(this.selectedPath);
     if (item?.record === undefined) {
       this.notify("Select a paper to refresh its journal metrics.");
       return;
@@ -2148,10 +2702,36 @@ export class PaperNotesLibraryView extends ItemView {
     }
     const { CreateItemModal } = await this.loadModalClasses();
     const callbacks: CreateItemCallbacks = {
+      previewCreate: (input: CreateItemInput) => actions.previewCreate(input),
+      confirmCreate: (
+        input: CreateItemInput,
+        confirmed: Record<string, unknown>,
+        confirmToken?: string,
+      ) => actions.confirmCreate(input, confirmed, confirmToken),
       create: (input: CreateItemInput) => actions.create(input),
-      confirm: (input: CreateItemInput, confirmed: Record<string, unknown>) =>
-        actions.confirmCreate(input, confirmed),
+      confirm: (
+        input: CreateItemInput,
+        confirmed: Record<string, unknown>,
+        confirmToken?: string,
+      ) => actions.confirmCreate(input, confirmed, confirmToken),
       notify: (message: string) => this.notify(message),
+      openExisting: (pathOrKey: string) => {
+        let targetPath = pathOrKey;
+        if (!targetPath.endsWith(".md")) {
+          const item = this.getAllItems().find(
+            (it) => it.key === pathOrKey || it.path === pathOrKey,
+          );
+          if (item) {
+            targetPath = item.path;
+          }
+        }
+        const file = this.app.vault.getAbstractFileByPath(targetPath);
+        if (file && typeof file === "object" && "path" in file) {
+          void this.app.workspace.getLeaf(false)?.openFile(file as TFile);
+        } else {
+          void this.app.workspace.openLinkText?.(targetPath, "");
+        }
+      },
     };
     new CreateItemModal(this.app, callbacks).open();
   }

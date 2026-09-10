@@ -104,6 +104,20 @@ _Avoid_: click-anywhere-to-close, toggle on double-click, closing the Drawer whe
 The Detail Drawer's read-only content (title, bibliography, abstract) is selectable and copyable; interactive chrome (buttons, chips, menus) stays non-selectable.
 _Avoid_: whole-drawer user-select none, contenteditable, selection inside buttons
 
+## Recent Literature and Manual Import
+
+**Recent Reading (最近阅读)**:
+Papers most recently opened in Obsidian through their Primary PDF or Figure解读, regardless of entry point, with repeated accesses represented as one paper. This history survives restarts and excludes MinerU output and ordinary paper notes.
+_Avoid_: recently modified papers, reading status, recently imported papers
+
+**Recent Imports (最近导入)**:
+Papers most recently added to the Literature Library, distinct from papers recently opened for reading. Historical papers with an unknown import time are not treated as recent imports based on file modification times.
+_Avoid_: recently published papers, recently modified papers
+
+**Manual Import Preview (手动导入预览)**:
+The user's review of metadata resolved by the existing manual-import lookup process before approving or cancelling creation of a paper. It is not a field-by-field choice between metadata sources.
+_Avoid_: Import Review, post-creation confirmation, source selection
+
 ## Browser Capture
 
 **Browser Connector**:
