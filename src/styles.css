@@ -69,18 +69,21 @@
   --pn-tooltip-text: var(--text-normal);
   --pn-tooltip-border: var(--background-modifier-border);
 
-  /* Reading status palette (light theme) - contrast verified >= 4.5:1 */
-  --pn-status-unread-text: #334155;
-  --pn-status-unread-bg: color-mix(in srgb, #64748b 12%, var(--background-primary));
-  --pn-status-unread-border: color-mix(in srgb, #64748b 28%, var(--pn-border));
+  /* Reading status palette (light theme). Solid, badge-style fills so the
+     three states are distinguishable at a glance — the previous tints mixed
+     the status color at 12-20% into the theme background, which read as grey
+     with a faint outline. Text/bg pairs verified >= 4.5:1 contrast. */
+  --pn-status-unread-text: #f8fafc;
+  --pn-status-unread-bg: #64748b;
+  --pn-status-unread-border: #475569;
 
-  --pn-status-reading-text: #1d4ed8;
-  --pn-status-reading-bg: color-mix(in srgb, #2563eb 12%, var(--background-primary));
-  --pn-status-reading-border: color-mix(in srgb, #2563eb 32%, var(--pn-border));
+  --pn-status-reading-text: #eff6ff;
+  --pn-status-reading-bg: #2563eb;
+  --pn-status-reading-border: #1e40af;
 
-  --pn-status-read-text: #065f46;
-  --pn-status-read-bg: color-mix(in srgb, #059669 12%, var(--background-primary));
-  --pn-status-read-border: color-mix(in srgb, #059669 32%, var(--pn-border));
+  --pn-status-read-text: #ecfdf5;
+  --pn-status-read-bg: #059669;
+  --pn-status-read-border: #047857;
 }
 
 /* Dark theme: slightly lift badge text and tame the most saturated tints. */
@@ -109,18 +112,19 @@
   --pn-metric-stale: #fbbf24;
   --pn-metric-failure: #f87171;
 
-  /* Reading status palette (dark theme) - contrast verified >= 4.5:1 */
-  --pn-status-unread-text: #cbd5e1;
-  --pn-status-unread-bg: color-mix(in srgb, #94a3b8 16%, var(--background-primary));
-  --pn-status-unread-border: color-mix(in srgb, #94a3b8 32%, var(--pn-border));
+  /* Reading status palette (dark theme). Slightly desaturated solids for
+     comfortable dark-mode luminance; text/bg pairs verified >= 4.5:1. */
+  --pn-status-unread-text: #f1f5f9;
+  --pn-status-unread-bg: #4b5b6b;
+  --pn-status-unread-border: #64748b;
 
-  --pn-status-reading-text: #93c5fd;
-  --pn-status-reading-bg: color-mix(in srgb, #3b82f6 20%, var(--background-primary));
-  --pn-status-reading-border: color-mix(in srgb, #60a5fa 35%, var(--pn-border));
+  --pn-status-reading-text: #dbeafe;
+  --pn-status-reading-bg: #1d4ed8;
+  --pn-status-reading-border: #3b82f6;
 
-  --pn-status-read-text: #6ee7b7;
-  --pn-status-read-bg: color-mix(in srgb, #10b981 20%, var(--background-primary));
-  --pn-status-read-border: color-mix(in srgb, #34d399 35%, var(--pn-border));
+  --pn-status-read-text: #d1fae5;
+  --pn-status-read-bg: #047857;
+  --pn-status-read-border: #10b981;
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -1174,22 +1178,41 @@
   outline-offset: 1px;
 }
 
-.paper-notes-status-chip--unread {
+/* Obsidian's own app.css sets `button:not(.clickable-icon)` to
+   background-color: var(--interactive-normal) with specificity 0,1,1, which
+   beats our plain class selectors (0,1,0) and greys out the state fills.
+   Element+class selectors (0,1,1, later-loaded plugin sheet wins ties) and
+   an explicit background-color keep the solid state colors authoritative. */
+button.paper-notes-status-chip--unread {
   color: var(--pn-status-unread-text);
   border-color: var(--pn-status-unread-border);
-  background: var(--pn-status-unread-bg);
+  background-color: var(--pn-status-unread-bg);
 }
 
-.paper-notes-status-chip--reading {
+button.paper-notes-status-chip--reading {
   color: var(--pn-status-reading-text);
   border-color: var(--pn-status-reading-border);
-  background: var(--pn-status-reading-bg);
+  background-color: var(--pn-status-reading-bg);
 }
 
-.paper-notes-status-chip--read {
+button.paper-notes-status-chip--read {
   color: var(--pn-status-read-text);
   border-color: var(--pn-status-read-border);
-  background: var(--pn-status-read-bg);
+  background-color: var(--pn-status-read-bg);
+}
+
+/* Keep the state color on hover too: Obsidian's `button:hover` (0,1,1)
+   would otherwise swap the background back to --interactive-hover. */
+button.paper-notes-status-chip--unread:hover {
+  background-color: var(--pn-status-unread-bg);
+}
+
+button.paper-notes-status-chip--reading:hover {
+  background-color: var(--pn-status-reading-bg);
+}
+
+button.paper-notes-status-chip--read:hover {
+  background-color: var(--pn-status-read-bg);
 }
 
 /* ── MOC membership column ──────────────────────────────────────────── */

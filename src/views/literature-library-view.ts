@@ -378,6 +378,8 @@ export class PaperNotesLibraryView extends ItemView {
   private advancedFiltersExpanded: boolean | undefined = undefined;
   private drawerHost: HTMLElement | null = null;
   private drawerOpen = false;
+  /** Path of the paper currently rendered inside the drawer panel shell. */
+  private drawerSelectedPath: string | undefined;
   private drawerPreviousFocus: HTMLElement | null = null;
   private boundDrawerKey: ((event: KeyboardEvent) => void) | null = null;
   /** Pending single-click → drawer timer (cleared on dblclick / close). */
@@ -685,6 +687,24 @@ export class PaperNotesLibraryView extends ItemView {
       if (this.page === "moc") void this.mocDirectory?.refresh();
       else this.render();
     }
+  }
+
+  /**
+   * Lightweight data refresh for file-content changes (e.g. a reading-status
+   * CLI write to the paper YAML). Unlike refresh(), this never rebuilds the
+   * page shell — the container, nav, table host and drawer host all keep
+   * their identity, so an open Detail Drawer does not flash on every vault
+   * modify event. Safe no-op while closed or on the MOC page.
+   */
+  refreshData(): void {
+    if (!this.isOpen) {
+      return;
+    }
+    if (this.page !== "library") {
+      return;
+    }
+    this.renderTable();
+    this.renderDetail();
   }
 
   /**
@@ -1742,6 +1762,25 @@ export class PaperNotesLibraryView extends ItemView {
     if (this.drawerHost === null) {
       return;
     }
+    // Flicker fix: rebuild the panel shell ONLY when it isn't already
+    // showing the same paper. The panel/backdrop have a 200ms slide-in
+    // animation that replays on every rebuild; re-rendering the body in
+    // place avoids the flash while data refreshes.
+    if (
+      this.drawerOpen &&
+      this.drawerHost.querySelector !== undefined &&
+      this.drawerHost.querySelector(".paper-notes-library-drawer-panel") !== null &&
+      this.drawerSelectedPath === this.selectedPath
+    ) {
+      const body = this.drawerHost.querySelector(
+        ".paper-notes-library-drawer-body",
+      ) as HTMLElement | null;
+      if (body !== null) {
+        this.renderDetailInto(body);
+      }
+      return;
+    }
+    this.drawerSelectedPath = this.selectedPath;
     this.drawerHost.empty();
     this.drawerHost.removeClass("is-hidden");
     const backdrop = this.drawerHost.createDiv({
@@ -2182,6 +2221,7 @@ export class PaperNotesLibraryView extends ItemView {
 
   private closeDetailDrawer(): void {
     this.drawerOpen = false;
+    this.drawerSelectedPath = undefined;
     this.abstractExpanded = false;
     this.clearRowClickTimer();
     this.detachDrawerKeyHandler();
@@ -3293,7 +3333,13 @@ export class PaperNotesLibraryView extends ItemView {
         acknowledgements.push({ status: next, generation });
         this.readingStatusAcknowledgements.set(item.path, acknowledgements);
         this.notify(`Reading status → ${next}`);
-        this.refresh();
+        // Flicker fix: do NOT call refresh() here. refresh() empties the
+        // whole container (nav + table host + drawer) and rebuilds the page,
+        // so the drawer visibly flashes on every status write. The optimistic
+        // override already rendered the new status; after the write succeeds
+        // we only need the table (in case sorting/filtering reacts to the
+        // persisted value) and the drawer (to consume the acknowledgement).
+        this.renderResults();
       } else if (this.readingStatusOverrides.get(item.path)?.generation === generation) {
         this.readingStatusOverrides.delete(item.path);
         this.renderResults();

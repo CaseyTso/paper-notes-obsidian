@@ -281,7 +281,7 @@ export default class PaperNotesPlugin extends Plugin {
             createdAt: new Date().toISOString(),
           })
           .then(() => {
-            this.libraryView?.refresh();
+            this.libraryView?.refreshData();
           });
         break;
       }
@@ -699,7 +699,7 @@ export default class PaperNotesPlugin extends Plugin {
   /** End-of-drain summary: refresh artifacts and surface one Notice. */
   private onMineruSummary(summary: MineruQueueSummary): void {
     this.libraryIndex?.scanAll();
-    this.libraryView?.refresh();
+    this.libraryView?.refreshData();
     if (summary.succeeded.length === 0 && summary.failed.length === 0) {
       return;
     }
@@ -787,7 +787,7 @@ export default class PaperNotesPlugin extends Plugin {
       this.metadataRescanTimer = undefined;
       this.libraryIndex?.scanAll();
       void this.scanMocs();
-      this.libraryView?.refresh();
+      this.libraryView?.refreshData();
     }, METADATA_RESCAN_DEBOUNCE_MS);
   }
 
@@ -892,7 +892,9 @@ export default class PaperNotesPlugin extends Plugin {
   ): void {
     this.libraryIndex?.handleVaultEvent(event, path, oldPath);
     this.handleMocVaultEvent(event, path, oldPath);
-    this.libraryView?.refresh();
+    // Data-only refresh: a vault event (e.g. the reading-status CLI write)
+    // must not rebuild the page shell, or an open Detail Drawer flashes.
+    this.libraryView?.refreshData();
   }
 
   /**
@@ -976,7 +978,7 @@ export default class PaperNotesPlugin extends Plugin {
         kind: classified.kind,
       })
       .then(() => {
-        this.libraryView?.refresh();
+        this.libraryView?.refreshData();
       });
   }
 
@@ -1028,7 +1030,7 @@ export default class PaperNotesPlugin extends Plugin {
       }),
     );
     this.mocCache = nextMap;
-    this.libraryView?.refresh();
+    this.libraryView?.refreshData();
   }
 
   private handleMocVaultEvent(
@@ -1044,7 +1046,7 @@ export default class PaperNotesPlugin extends Plugin {
 
     if (event === "delete") {
       this.mocCache.delete(path);
-      this.libraryView?.refresh();
+      this.libraryView?.refreshData();
       return;
     }
 
@@ -1053,7 +1055,7 @@ export default class PaperNotesPlugin extends Plugin {
         this.mocCache.delete(oldPath);
       }
       if (!isMoc) {
-        this.libraryView?.refresh();
+        this.libraryView?.refreshData();
         return;
       }
     }
@@ -1069,7 +1071,7 @@ export default class PaperNotesPlugin extends Plugin {
         } else {
           this.mocCache.delete(path);
         }
-        this.libraryView?.refresh();
+        this.libraryView?.refreshData();
       }).catch(() => {
         // Ignore read error
       });

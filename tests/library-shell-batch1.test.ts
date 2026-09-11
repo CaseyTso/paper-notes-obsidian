@@ -1693,7 +1693,10 @@ describe("Batch 1 library shell", () => {
       view.containerEl as unknown as ElLike,
       "paper-notes-library-table-host",
     )[0];
-    expect(liveTableHost).not.toBe(tableHost);
+    // The host element is reused (no full-shell rebuild on status write —
+    // flicker fix), so the container identity is preserved and the scroll
+    // position survives without a save/restore pass.
+    expect(liveTableHost).toBe(tableHost);
     expect(liveTableHost.scrollLeft).toBe(280);
     expect(liveTableHost.scrollTop).toBe(96);
     expect(cliCalls.length).toBeGreaterThan(0);

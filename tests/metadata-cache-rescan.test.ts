@@ -274,7 +274,7 @@ describe("metadata cache readiness rescan (Gate D R2)", () => {
     expect(state.viewCreators[VIEW_TYPE_PAPER_NOTES]).not.toBeNull();
 
     const view = state.viewCreators[VIEW_TYPE_PAPER_NOTES]!({}) as PaperNotesLibraryView;
-    const refreshSpy = vi.spyOn(view, "refresh");
+    const refreshSpy = vi.spyOn(view, "refreshData");
 
     setFrontmatter(app, validFrontmatter());
     vi.useFakeTimers();
