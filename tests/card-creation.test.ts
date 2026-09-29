@@ -831,7 +831,7 @@ describe("10. Plugin Command and Editor Menu Integration", () => {
       (c) => c.id === CREATE_LITERATURE_CARD_COMMAND,
     );
     expect(cmd).toBeDefined();
-    expect(cmd.hotkeys).toEqual([{ modifiers: ["Mod", "Shift"], key: "L" }]);
+    expect(cmd.hotkeys).toEqual([{ modifiers: ["Mod", "Shift"], key: "C" }]);
   });
 
   it("checks editorCheckCallback: validates Figure source, source mode, and selection", async () => {

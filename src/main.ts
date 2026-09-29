@@ -260,7 +260,7 @@ export default class PaperNotesPlugin extends Plugin {
       hotkeys: [
         {
           modifiers: ["Mod", "Shift"],
-          key: "L",
+          key: "C",
         },
       ],
       editorCheckCallback: (
