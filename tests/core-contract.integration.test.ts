@@ -1181,3 +1181,405 @@ describe.skipIf(!hasCore)("core/plugin contract against the fixture vault", () =
     120_000,
   );
 });
+
+// ---------------------------------------------------------------------------
+// Task 30C — Exact card creation contract against the managed core worktree
+// ---------------------------------------------------------------------------
+
+/**
+ * Task-level managed core worktree path resolution fallback:
+ * In this repository setup, the active core worktree resides at `../../core`
+ * (sibling worktree of `plugin`), whereas the global test default `CORE_REPO`
+ * defaults to `../../paper-notes` (which may point to a legacy layout or not exist).
+ * To ensure this cross-repo exact card contract runs against the real current
+ * core worktree implementation without altering global constants or global
+ * test path semantics, we resolve candidate locations in order:
+ *   1. PAPER_NOTES_CORE_REPO environment variable override
+ *   2. Managed sibling core worktree `../../core`
+ *   3. Sibling core repo default `CORE_REPO` (`../../paper-notes`)
+ */
+function resolveManagedCoreRepo(): string {
+  if (
+    process.env.PAPER_NOTES_CORE_REPO &&
+    existsSync(process.env.PAPER_NOTES_CORE_REPO)
+  ) {
+    return process.env.PAPER_NOTES_CORE_REPO;
+  }
+  const candidateSiblingCore = resolve(__dirname, "..", "..", "core");
+  if (
+    existsSync(candidateSiblingCore) &&
+    existsSync(join(candidateSiblingCore, "paper_notes"))
+  ) {
+    return candidateSiblingCore;
+  }
+  return CORE_REPO;
+}
+
+const MANAGED_CORE_REPO = resolveManagedCoreRepo();
+const MANAGED_FIXTURE = existsSync(
+  join(MANAGED_CORE_REPO, "tests", "fixtures", "v01_vault"),
+)
+  ? join(MANAGED_CORE_REPO, "tests", "fixtures", "v01_vault")
+  : FIXTURE;
+
+/**
+ * Resolves a Python interpreter that has the core dependencies installed
+ * (`paper_notes`, `ruamel.yaml`, `pydantic`). Probes candidates without
+ * relying on an ambient virtualenv or default PATH ordering.
+ */
+function resolveManagedPython(coreDir: string): string {
+  const candidates = [
+    process.env.PAPER_NOTES_PYTHON,
+    process.env.PYTHON_BIN,
+    "/opt/anaconda3/bin/python3",
+    "/opt/homebrew/bin/python3",
+    "/Library/Frameworks/Python.framework/Versions/3.12/bin/python3",
+    "/usr/local/bin/python3",
+    "python3",
+  ].filter(Boolean) as string[];
+
+  for (const cand of candidates) {
+    try {
+      const probe = spawnSync(
+        cand,
+        ["-c", "import paper_notes, ruamel.yaml, pydantic"],
+        { cwd: coreDir, encoding: "utf8" },
+      );
+      if (probe.status === 0) {
+        return cand;
+      }
+    } catch {
+      // Continue to next candidate
+    }
+  }
+  return "python3";
+}
+
+/**
+ * Creates an independent executable CLI wrapper pointing specifically to
+ * the resolved managed core worktree using the detected Python interpreter.
+ */
+function createManagedCliWrapper(root: string, coreRepo: string): string {
+  const pythonBin = resolveManagedPython(coreRepo);
+  const wrapper = join(root, "paper-notes-managed-card-cli");
+  writeFileSync(
+    wrapper,
+    [
+      "#!/usr/bin/env bash",
+      `cd ${JSON.stringify(coreRepo)} || exit 127`,
+      `exec env -u PYTHONPATH ${JSON.stringify(pythonBin)} -m paper_notes.cli "$@"`,
+      "",
+    ].join("\n"),
+    { mode: 0o755 },
+  );
+  return wrapper;
+}
+
+const managedProbeRoot = mkdtempSync(
+  join(tmpdir(), "paper-notes-managed-probe-"),
+);
+tempRoots.push(managedProbeRoot);
+const managedCliPath = createManagedCliWrapper(
+  managedProbeRoot,
+  MANAGED_CORE_REPO,
+);
+const managedProbe = spawnSync(managedCliPath, ["--json", "version"], {
+  encoding: "utf8",
+});
+let managedProbeOk = false;
+if (managedProbe.status === 0) {
+  try {
+    const parsed = JSON.parse(managedProbe.stdout.trim()) as {
+      protocol_version?: number;
+    };
+    managedProbeOk = parsed.protocol_version === 1;
+  } catch {
+    managedProbeOk = false;
+  }
+}
+
+const hasManagedCore =
+  existsSync(join(MANAGED_FIXTURE, LIT)) && managedProbeOk;
+
+function makeManagedVault(): { vault: string; state: string } {
+  const root = mkdtempSync(join(tmpdir(), "paper-notes-managed-contract-"));
+  tempRoots.push(root);
+  const vault = join(root, "vault");
+  const state = join(root, "state");
+  cpSync(MANAGED_FIXTURE, vault, { recursive: true });
+  return { vault, state };
+}
+
+describe.skipIf(!hasManagedCore)(
+  "Figure exact card creation contract against managed core worktree",
+  () => {
+    const managedClient = new CliClient(managedCliPath);
+
+    it(
+      "creates a Figure exact card over CJK, emoji, and CRLF byte range with idempotency, conflict, and mismatch safety",
+      async () => {
+        const { vault, state } = makeManagedVault();
+
+        // 1. Run migration against the fixture vault using the managed CLI
+        const dry = await managedClient.run([
+          "migrate",
+          "legacy-obsidian",
+          "--vault",
+          vault,
+          "--state-root",
+          state,
+          "--dry-run",
+        ]);
+        expect(dry.envelope.status).toBe("needs_confirmation");
+        const dryData = dataOf(dry.envelope);
+        const applied = await managedClient.run([
+          "migrate",
+          "legacy-obsidian",
+          "--apply",
+          str(dryData, "run_id"),
+          "--confirm-token",
+          str(dryData, "confirmation_token"),
+          "--vault",
+          vault,
+          "--state-root",
+          state,
+        ]);
+        expect(applied.envelope.status).toBe("success");
+
+        // 2. Select a migrated key with a canonical main note
+        const key = "smithStandardOnePdf2024";
+        const paperDir = join(vault, LIT, key);
+        expect(existsSync(join(paperDir, `${key}.md`))).toBe(true);
+
+        // 3. Write Figure解读_<key>.md containing CJK, emoji, and CRLF line endings
+        const figNoteName = `Figure解读_${key}`;
+        const figPath = join(paperDir, `${figNoteName}.md`);
+        const figLines = [
+          "# Figure 实验结果解读 🧬",
+          "",
+          "前置背景说明 🔬：实验组与对照组在初始基线状态下保持严格对齐。",
+          "",
+          "Figure 2 核心结论：模型在多模态理解基准测试中超越基线 42.5% 🚀，表现出色！",
+          "",
+          "## 讨论与展望 💡",
+          "",
+          "后续研究将在更大规模的未标注语料库中验证迁移能力。",
+          "",
+        ];
+        const figContent = figLines.join("\r\n");
+        const figBytes = Buffer.from(figContent, "utf8");
+        writeFileSync(figPath, figBytes);
+
+        // 4. Compute selection byte range using actual Buffer / UTF-8 byte offsets
+        const targetSelectionText =
+          "Figure 2 核心结论：模型在多模态理解基准测试中超越基线 42.5% 🚀，表现出色！";
+        const targetSelectionBytes = Buffer.from(targetSelectionText, "utf8");
+        const startByte = figBytes.indexOf(targetSelectionBytes);
+        expect(startByte).toBeGreaterThan(-1);
+        const endByte = startByte + targetSelectionBytes.length;
+
+        // Write selection file
+        const selectionFile = join(vault, "exact-card-selection.md");
+        writeFileSync(selectionFile, targetSelectionBytes);
+
+        // 5. Invoke `card create` with exact byte range arguments matching plugin parameters
+        const cardTitle = "多模态基准突破";
+        const createResult = await managedClient.run([
+          "card",
+          "create",
+          "--vault",
+          vault,
+          "--key",
+          key,
+          "--title",
+          cardTitle,
+          "--selection-file",
+          selectionFile,
+          "--source-note",
+          figNoteName,
+          "--source-start-byte",
+          String(startByte),
+          "--source-end-byte",
+          String(endByte),
+        ]);
+
+        // 6. Assert envelope success, vault-relative POSIX path, stem, inserted anchor status, and anchor link
+        expect(createResult.envelope.status).toBe("success");
+        expect(createResult.exitCode).toBe(0);
+        const data = dataOf(createResult.envelope);
+        const cardRelPath = str(data, "path");
+
+        // POSIX relative path assertions (forward slashes, no absolute root)
+        expect(cardRelPath.startsWith("/")).toBe(false);
+        expect(cardRelPath.includes("\\")).toBe(false);
+        expect(cardRelPath).toBe(
+          `05 Literature/${key}/cards/card_${cardTitle}.md`,
+        );
+        expect(existsSync(join(vault, cardRelPath))).toBe(true);
+
+        expect(str(data, "stem")).toBe(`card_${cardTitle}`);
+        expect(str(data, "anchor_status")).toBe("inserted");
+        expect(data["anchor_inserted"]).toBe(true);
+
+        const anchorName = str(data, "anchor_name");
+        expect(anchorName).toMatch(/^card-[0-9a-f]{16}$/);
+
+        const expectedAnchorLink = `[[${figNoteName}#^${anchorName}|${figNoteName}]]`;
+        expect(str(data, "anchor_link")).toBe(expectedAnchorLink);
+
+        // 7. Assert card note contains verbatim selection, 参见 link, and `## 扩展`
+        const cardContent = readFileSync(join(vault, cardRelPath), "utf8");
+        expect(cardContent).toContain(targetSelectionText);
+        expect(cardContent).toContain(`> 参见 ${expectedAnchorLink}`);
+        expect(cardContent).toContain("## 扩展");
+
+        // 8. Assert source file contains the anchor and changed only at the expected location (preserving CRLF)
+        const updatedFigBytes = readFileSync(figPath);
+        const updatedFigText = updatedFigBytes.toString("utf8");
+        expect(updatedFigBytes.includes(Buffer.from("\r\n"))).toBe(true);
+        expect(updatedFigText).toContain(`^${anchorName}`);
+        const expectedTargetLineWithAnchor = `${targetSelectionText} ^${anchorName}`;
+        expect(updatedFigText).toContain(expectedTargetLineWithAnchor);
+
+        // Reverting the inserted anchor restores the exact original byte stream
+        const revertedFigText = updatedFigText.replace(` ^${anchorName}`, "");
+        expect(revertedFigText).toBe(figContent);
+
+        // 9. Idempotency & conflict semantics verification:
+        // 9a. Same title + same selection: card already exists -> conflict envelope (exit code 3)
+        const dupResult = await managedClient.run([
+          "card",
+          "create",
+          "--vault",
+          vault,
+          "--key",
+          key,
+          "--title",
+          cardTitle,
+          "--selection-file",
+          selectionFile,
+          "--source-note",
+          figNoteName,
+          "--source-start-byte",
+          String(startByte),
+          "--source-end-byte",
+          String(endByte),
+        ]);
+        expect(dupResult.exitCode).toBe(3);
+        expect(dupResult.envelope.status).toBe("conflict");
+
+        // 9b. Different title targeting the same block: different anchor fails closed without source mutation
+        const figBytesBeforeDiffTitle = readFileSync(figPath);
+        const diffTitle = "不同卡片针对相同锚点区块";
+        const diffResult = await managedClient.run([
+          "card",
+          "create",
+          "--vault",
+          vault,
+          "--key",
+          key,
+          "--title",
+          diffTitle,
+          "--selection-file",
+          selectionFile,
+          "--source-note",
+          figNoteName,
+          "--source-start-byte",
+          String(startByte),
+          "--source-end-byte",
+          String(endByte),
+        ]);
+        expect(diffResult.envelope.status).toBe("success");
+        const diffData = dataOf(diffResult.envelope);
+        expect(str(diffData, "anchor_status")).toBe("failed");
+        expect(diffData["anchor_inserted"]).toBe(false);
+        expect(diffData["anchor_link"]).toBeNull();
+        expect(
+          diffResult.envelope.warnings.some(
+            (w) =>
+              w.code === "card_anchor_failed" &&
+              typeof w.message === "string" &&
+              w.message.includes("already has a different anchor"),
+          ),
+        ).toBe(true);
+        expect(readFileSync(figPath).equals(figBytesBeforeDiffTitle)).toBe(true);
+
+        // 9c. Remove first card and re-run original title + selection: detects existing anchor idempotently
+        rmSync(join(vault, cardRelPath));
+        const figBytesBeforeRerun = readFileSync(figPath);
+        const rerunResult = await managedClient.run([
+          "card",
+          "create",
+          "--vault",
+          vault,
+          "--key",
+          key,
+          "--title",
+          cardTitle,
+          "--selection-file",
+          selectionFile,
+          "--source-note",
+          figNoteName,
+          "--source-start-byte",
+          String(startByte),
+          "--source-end-byte",
+          String(endByte),
+        ]);
+        expect(rerunResult.envelope.status).toBe("success");
+        const rerunData = dataOf(rerunResult.envelope);
+        expect(str(rerunData, "anchor_status")).toBe("existing");
+        expect(rerunData["anchor_inserted"]).toBe(false);
+        expect(str(rerunData, "anchor_link")).toBe(expectedAnchorLink);
+        expect(readFileSync(figPath).equals(figBytesBeforeRerun)).toBe(true);
+
+        // 10. Wrong offset: success envelope with warning card_anchor_failed, anchor_status failed,
+        // anchor_link null, zero source writes, and no dead link in created card
+        const wrongOffsetTitle = "错位偏移容错测试";
+        const figBytesBeforeWrong = readFileSync(figPath);
+        const wrongResult = await managedClient.run([
+          "card",
+          "create",
+          "--vault",
+          vault,
+          "--key",
+          key,
+          "--title",
+          wrongOffsetTitle,
+          "--selection-file",
+          selectionFile,
+          "--source-note",
+          figNoteName,
+          "--source-start-byte",
+          "0",
+          "--source-end-byte",
+          "50",
+        ]);
+        expect(wrongResult.envelope.status).toBe("success");
+        const wrongData = dataOf(wrongResult.envelope);
+        expect(str(wrongData, "anchor_status")).toBe("failed");
+        expect(wrongData["anchor_inserted"]).toBe(false);
+        expect(wrongData["anchor_link"]).toBeNull();
+        expect(
+          wrongResult.envelope.warnings.some(
+            (w) => w.code === "card_anchor_failed",
+          ),
+        ).toBe(true);
+
+        // Source byte snapshot remains completely unchanged
+        expect(readFileSync(figPath).equals(figBytesBeforeWrong)).toBe(true);
+
+        // Created card note exists with verbatim selection but without dead anchor link
+        const wrongCardRelPath = str(wrongData, "path");
+        expect(existsSync(join(vault, wrongCardRelPath))).toBe(true);
+        const wrongCardContent = readFileSync(
+          join(vault, wrongCardRelPath),
+          "utf8",
+        );
+        expect(wrongCardContent).toContain(targetSelectionText);
+        expect(wrongCardContent).not.toContain("参见");
+        expect(wrongCardContent).not.toContain(`[[${figNoteName}`);
+      },
+      180_000,
+    );
+  },
+);

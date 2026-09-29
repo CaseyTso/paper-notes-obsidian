@@ -148,6 +148,32 @@ _Avoid_: import inbox, mandatory preview, silent conflict resolution, automatic 
 A webpage describing one journal article or preprint and exposing enough structured metadata or a strong identifier for a Web Capture.
 _Avoid_: search-results page, multi-item page, book page
 
+## Literature Cards
+
+**Figure Interpretation Note (Figure解读)**:
+A paper-derived note that explains the figures and panels of one Paper. It may serve as the source of a Literature Card.
+_Avoid_: paper summary, Figure attachment, MinerU output
+
+**Literature Card**:
+A paper-derived note that preserves a verbatim selection from a Figure Interpretation Note, identifies its Paper, and provides space for the reader's own elaboration.
+_Avoid_: Attached Card, Topic Entry, annotation, second card type
+
+**Figure Interpretation Source Link**:
+The navigable provenance relationship from a Literature Card to the selected passage in its Figure Interpretation Note, via a block anchor inserted into the source note. It does not make the Literature Card visible from the source note.
+_Avoid_: backlink, paper-level link, copied text without provenance
+
+**Card Anchor**:
+The deterministic ASCII-safe Obsidian block ID inserted after the Card Source Selection's last line in the Figure Interpretation Note. It is derived from the Literature Card's identity, uses only letters, numbers, and `-`, and remains distinct from the human-readable filename; one anchor belongs to each card.
+_Avoid_: filename-stem anchor, random anchor ID, position-numbered anchor, character-range markers, multiple anchors per card
+
+**Card Source Selection**:
+One contiguous, non-empty selection anywhere within a single Figure Interpretation Note. It is preserved verbatim as the source content of a Literature Card.
+_Avoid_: multiple disjoint selections, cross-note selection, selected rendered text without Markdown provenance
+
+**Literature Card Title**:
+The user-authored name of a Literature Card, entered as part of creating it from a Card Source Selection.
+_Avoid_: AI-generated title, automatic selection excerpt, temporary identifier
+
 ## Topic MOC
 
 **Topic MOC (MOC 主题笔记)**:

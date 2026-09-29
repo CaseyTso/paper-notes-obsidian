@@ -7,7 +7,18 @@ import {
   type TFile,
   type Vault,
   type WorkspaceLeaf,
+  type Editor,
+  type MarkdownFileInfo,
 } from "obsidian";
+
+import {
+  CardCreationService,
+  defaultFreezeEditor,
+  isSourceOrLivePreview,
+  parseFigureSource,
+  type FigureSourceInfo,
+} from "./services/card-creation";
+import { LiteratureCardModal } from "./modals/literature-card-modal";
 
 import { CliClient } from "./services/cli-client";
 import { FetchClient } from "./services/fetch-client";
@@ -87,6 +98,9 @@ export const INSERT_CITATION_COMMAND = "paper-notes-insert-citation";
 /** Command id for the focused Pandoc exporter (Task 29). */
 export const EXPORT_DOCX_COMMAND = "paper-notes-export-docx";
 
+/** Command id for Literature Card creation from selection. */
+export const CREATE_LITERATURE_CARD_COMMAND = "paper-notes-create-literature-card";
+
 /**
  * Debounce window for the metadata-cache readiness rescan (Gate D R2).
  * Obsidian fires a burst of `resolved` events while it builds the cache at
@@ -163,6 +177,10 @@ export default class PaperNotesPlugin extends Plugin {
   /** Abort controllers of in-flight Pandoc exports, cancelled on unload. */
   private runningExports = new Set<AbortController>();
 
+  /** Abort controllers of in-flight Literature Card creations, cancelled on unload. */
+  private runningCardCreations = new Set<AbortController>();
+  private cardCreationService: CardCreationService | undefined;
+
   /** Pending metadata-cache readiness rescan (Gate D R2), cancelled on unload. */
   private metadataRescanTimer: ReturnType<typeof setTimeout> | undefined;
 
@@ -235,6 +253,88 @@ export default class PaperNotesPlugin extends Plugin {
         void this.exportActiveNote();
       },
     });
+    // Literature Card from selection command + hotkey
+    this.addCommand({
+      id: CREATE_LITERATURE_CARD_COMMAND,
+      name: "Create Literature Card from selection",
+      hotkeys: [
+        {
+          modifiers: ["Mod", "Shift"],
+          key: "L",
+        },
+      ],
+      editorCheckCallback: (
+        checking: boolean,
+        editor: Editor,
+        ctx: MarkdownView | MarkdownFileInfo,
+      ) => {
+        if (!(ctx instanceof MarkdownView)) {
+          return false;
+        }
+        const file = ctx.file;
+        if (!file) {
+          return false;
+        }
+        const figureInfo = parseFigureSource(
+          file.path,
+          this.settings.literatureRoot,
+        );
+        if (!figureInfo) {
+          return false;
+        }
+        if (!isSourceOrLivePreview(ctx)) {
+          return false;
+        }
+        const selection = editor.getSelection();
+        if (!selection || selection.trim().length === 0) {
+          return false;
+        }
+        if (!checking) {
+          void this.createLiteratureCardFromEditor(ctx, editor, figureInfo);
+        }
+        return true;
+      },
+    });
+    if (
+      typeof this.registerEvent === "function" &&
+      typeof this.app?.workspace?.on === "function"
+    ) {
+      this.registerEvent(
+        this.app.workspace.on(
+          "editor-menu",
+          (menu: Menu, editor: Editor, view: MarkdownView | MarkdownFileInfo) => {
+            if (!(view instanceof MarkdownView)) {
+              return;
+            }
+            const file = view.file;
+            if (!file) {
+              return;
+            }
+            const figureInfo = parseFigureSource(
+              file.path,
+              this.settings.literatureRoot,
+            );
+            if (!figureInfo) {
+              return;
+            }
+            if (!isSourceOrLivePreview(view)) {
+              return;
+            }
+            const selection = editor.getSelection();
+            if (!selection || selection.trim().length === 0) {
+              return;
+            }
+            menu.addItem((item) => {
+              item.setTitle("从选区创建 Literature Card");
+              item.setIcon("create-new");
+              item.onClick(() => {
+                void this.createLiteratureCardFromEditor(view, editor, figureInfo);
+              });
+            });
+          },
+        ),
+      );
+    }
     await this.initializeCliBridge();
     await this.initializeFetchBridge();
     this.initializeLibraryIndex();
@@ -340,6 +440,10 @@ export default class PaperNotesPlugin extends Plugin {
       controller.abort();
     }
     this.runningExports.clear();
+    for (const controller of this.runningCardCreations) {
+      controller.abort();
+    }
+    this.runningCardCreations.clear();
     // Fetch PDF: cancel in-flight downloads; temp dirs are removed by the
     // PdfFetcher's own finally block.
     for (const controller of this.runningFetches) {
@@ -359,6 +463,7 @@ export default class PaperNotesPlugin extends Plugin {
       typeof this.loadData === "function" ? await this.loadData() : {};
     this.settings = normalizeSettings(loaded);
     this.cliClient = new CliClient(this.settings.cliPath);
+    this.cardCreationService = undefined;
     const probe = await this.cliClient.probe();
     this.cliReadOnlyMode = probe.readOnlyMode;
     this.initializeCaptureBridge();
@@ -1459,5 +1564,192 @@ export default class PaperNotesPlugin extends Plugin {
         throw new Error("CSL writes are not available from export flows.");
       },
     };
+  }
+
+  /** Get or initialize the literature card creation service. */
+  getCardCreationService(): CardCreationService {
+    if (this.cardCreationService) {
+      return this.cardCreationService;
+    }
+    const client = this.getCliClient();
+    const adapter = this.app.vault?.adapter as unknown as {
+      getBasePath?(): string;
+      readBinary?(path: string): Promise<ArrayBuffer>;
+    };
+    const vaultRoot = adapter?.getBasePath?.() ?? "";
+
+    this.cardCreationService = new CardCreationService({
+      client: client ?? new CliClient(this.settings.cliPath),
+      vaultRoot,
+      readBinary: async (path: string) => {
+        if (typeof adapter?.readBinary === "function") {
+          return adapter.readBinary(path);
+        }
+        const file = this.app.vault.getAbstractFileByPath(path);
+        if (
+          file &&
+          typeof (
+            this.app.vault as unknown as {
+              readBinary?: (f: unknown) => Promise<ArrayBuffer>;
+            }
+          ).readBinary === "function"
+        ) {
+          return (
+            this.app.vault as unknown as {
+              readBinary: (f: unknown) => Promise<ArrayBuffer>;
+            }
+          ).readBinary(file);
+        }
+        throw new Error("无法读取文件二进制内容。");
+      },
+      saveView: async (v) => {
+        if (typeof v.save === "function") {
+          await v.save();
+        }
+      },
+      reloadSourceNote: async (v, path) => {
+        if (
+          typeof (v as unknown as { reload?: () => Promise<void> | void })
+            .reload === "function"
+        ) {
+          await (
+            v as unknown as { reload: () => Promise<void> | void }
+          ).reload();
+        } else if (
+          v.leaf &&
+          typeof (
+            v.leaf as unknown as {
+              openFile?: (f: unknown, opts?: unknown) => Promise<void>;
+            }
+          ).openFile === "function"
+        ) {
+          const f = this.app.vault.getAbstractFileByPath(path);
+          if (f) {
+            await (
+              v.leaf as unknown as {
+                openFile: (f: unknown, opts?: unknown) => Promise<void>;
+              }
+            ).openFile(f, { active: false });
+          }
+        }
+      },
+      freezeEditor: (v) => defaultFreezeEditor(v),
+      openCard: async (path: string) => {
+        let cardFile = this.app.vault.getAbstractFileByPath(path) as TFile | null;
+        if (!cardFile) {
+          for (let attempt = 0; attempt < 20; attempt++) {
+            await new Promise((done) => setTimeout(done, 100));
+            cardFile = this.app.vault.getAbstractFileByPath(path) as TFile | null;
+            if (cardFile) break;
+          }
+        }
+        const workspace = this.app.workspace as unknown as {
+          getLeaf?: (type?: string | boolean) => WorkspaceLeaf;
+        };
+        const leaf = workspace.getLeaf?.("tab") ?? this.app.workspace.getLeaf(true);
+        if (cardFile && typeof (leaf as unknown as { openFile?: (f: unknown) => Promise<void> }).openFile === "function") {
+          await (leaf as unknown as { openFile: (f: unknown) => Promise<void> }).openFile(cardFile);
+        }
+        const cardView = (leaf as unknown as { view?: MarkdownView }).view;
+        return {
+          editor: cardView?.editor
+            ? {
+                getValue: () => cardView.editor.getValue(),
+                setCursor: (pos) => cardView.editor.setCursor(pos),
+                focus: () => cardView.editor.focus(),
+              }
+            : undefined,
+        };
+      },
+      showNotice: (msg, dur) => {
+        new Notice(msg, dur);
+      },
+    });
+    return this.cardCreationService;
+  }
+
+  setCardCreationService(service: CardCreationService): void {
+    this.cardCreationService = service;
+  }
+
+  /** Launch the Literature Card creation modal for the active selection. */
+  async createLiteratureCardFromEditor(
+    view: MarkdownView,
+    editor: Editor,
+    figureInfo?: FigureSourceInfo,
+  ): Promise<void> {
+    const client = this.getCliClient();
+    if (this.isReadOnly() || client === undefined) {
+      new Notice("paper-notes CLI 不可用或处于只读模式，无法创建卡片。");
+      return;
+    }
+
+    const adapter = this.app.vault?.adapter as unknown as {
+      getBasePath?(): string;
+    };
+    const vaultRoot = adapter?.getBasePath?.();
+    if (!vaultRoot) {
+      new Notice("无法获取 Vault 绝对路径。");
+      return;
+    }
+
+    const file = view.file;
+    if (!file) {
+      new Notice("未找到当前笔记文件。");
+      return;
+    }
+
+    const parsedInfo =
+      figureInfo ??
+      parseFigureSource(file.path, this.settings.literatureRoot);
+    if (!parsedInfo) {
+      new Notice("当前笔记不是 Figure 解读笔记（路径不匹配）。");
+      return;
+    }
+
+    if (!isSourceOrLivePreview(view)) {
+      new Notice("仅在源码模式或实时预览模式下可用，阅读视图不支持创建卡片。");
+      return;
+    }
+
+    const selection = editor.getSelection();
+    if (!selection || selection.trim().length === 0) {
+      new Notice("请先选择需要创建卡片的文本。");
+      return;
+    }
+
+    const service = this.getCardCreationService();
+    if (service.isBusy()) {
+      new Notice("卡片创建正在进行中，请稍候。");
+      return;
+    }
+
+    const modal = new LiteratureCardModal(this.app, {
+      sourceSelection: selection,
+      onSubmit: async (title: string) => {
+        const controller = new AbortController();
+        this.runningCardCreations.add(controller);
+        try {
+          const res = await service.createCard({
+            view: {
+              file: view.file,
+              editor,
+              getMode: () => view.getMode(),
+              getState: () => view.getState(),
+              save: () => view.save(),
+              containerEl: view.containerEl,
+              leaf: view.leaf,
+            },
+            literatureRoot: this.settings.literatureRoot,
+            title,
+            signal: controller.signal,
+          });
+          return res.ok;
+        } finally {
+          this.runningCardCreations.delete(controller);
+        }
+      },
+    });
+    modal.open();
   }
 }

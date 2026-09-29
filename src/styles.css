@@ -2862,3 +2862,49 @@ button.paper-notes-status-chip--read:hover {
     transition: none;
   }
 }
+
+/* ---------------------------------------------------------------------------
+ * Literature Card creation modal (Task: Card Selection)
+ * ---------------------------------------------------------------------------
+ */
+.paper-notes-card-modal {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.paper-notes-card-selection-preview {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.paper-notes-card-selection-preview label,
+.paper-notes-card-input-group label {
+  font-size: var(--font-ui-smaller, 11px);
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.paper-notes-card-preview-quote {
+  margin: 0;
+  padding: 8px 12px;
+  background: var(--background-secondary);
+  border-left: 3px solid var(--interactive-accent);
+  border-radius: var(--radius-s, 4px);
+  font-size: var(--font-ui-small, 13px);
+  line-height: 1.45;
+  color: var(--text-normal);
+  max-height: 120px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.paper-notes-card-input-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
