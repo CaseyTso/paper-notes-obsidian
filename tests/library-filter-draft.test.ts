@@ -440,10 +440,31 @@ describe("canonical CAS partition matching", () => {
 
   it("maps every known spelling of rank 1..4 onto the same partition", () => {
     const spellings: Record<number, string[]> = {
-      1: ["1", "1区", "中科院1区", "综合性期刊1区", "中科院一区", "中国科学院1区", "中科院分区1区", "CAS 1区"],
-      2: ["2", "2区", "中科院2区", "综合性期刊2区", "中科院二区", "CAS2区"],
-      3: ["3", "3区", "中科院3区", "综合性期刊3区", "中科院三区"],
-      4: ["4", "4区", "中科院4区", "综合性期刊4区", "中科院四区"],
+      1: [
+        "1",
+        "1区",
+        "中科院1区",
+        "综合性期刊1区",
+        "中科院一区",
+        "中国科学院1区",
+        "中科院分区1区",
+        "CAS 1区",
+        "医学1区",
+        "生物1区",
+        "医学一区",
+      ],
+      2: [
+        "2",
+        "2区",
+        "中科院2区",
+        "综合性期刊2区",
+        "中科院二区",
+        "CAS2区",
+        "医学2区",
+        "生物2区",
+      ],
+      3: ["3", "3区", "中科院3区", "综合性期刊3区", "中科院三区", "医学3区"],
+      4: ["4", "4区", "中科院4区", "综合性期刊4区", "中科院四区", "生物4区"],
     };
     for (const [rank, values] of Object.entries(spellings)) {
       for (const value of values) {
@@ -500,6 +521,27 @@ describe("canonical CAS partition matching", () => {
     expect(keysOf(applyLibraryFilters(items, applied({ cas: "1区/2区" })))).toEqual([]);
     // Missing metrics stay excluded.
     expect(keysOf(applyLibraryFilters(items, applied({ cas: "3区" })))).toEqual([]);
+  });
+
+  it("selects every subject-prefixed rank of the chosen partition in real dataset format", () => {
+    // Regression: real EasyScholar CAS values are subject-prefixed
+    // (`医学1区`, `生物2区`). Selecting 1区 must match ALL subjects' 1区.
+    const items: LibraryItem[] = [
+      { path: "a", key: "med1", paperId: UUID_A, title: "Med1", firstAuthor: "", journal: "Lancet", artifacts: { pdf: false, minerU: false, figure: false }, metrics: { cas: "医学1区", jcr: "Q1" } },
+      { path: "b", key: "bio1", paperId: UUID_A, title: "Bio1", firstAuthor: "", journal: "Cell", artifacts: { pdf: false, minerU: false, figure: false }, metrics: { cas: "生物1区", jcr: "Q1" } },
+      { path: "c", key: "multi1", paperId: UUID_A, title: "Multi1", firstAuthor: "", journal: "Nature", artifacts: { pdf: false, minerU: false, figure: false }, metrics: { cas: "综合性期刊1区", jcr: "Q1" } },
+      { path: "d", key: "med2", paperId: UUID_A, title: "Med2", firstAuthor: "", journal: "BMJ", artifacts: { pdf: false, minerU: false, figure: false }, metrics: { cas: "医学2区", jcr: "Q2" } },
+      { path: "e", key: "bio2", paperId: UUID_A, title: "Bio2", firstAuthor: "", journal: "eLife", artifacts: { pdf: false, minerU: false, figure: false }, metrics: { cas: "生物2区", jcr: "Q2" } },
+    ];
+    expect(keysOf(applyLibraryFilters(items, applied({ cas: "1区" }))).sort()).toEqual([
+      "bio1",
+      "med1",
+      "multi1",
+    ]);
+    expect(keysOf(applyLibraryFilters(items, applied({ cas: "2区" }))).sort()).toEqual([
+      "bio2",
+      "med2",
+    ]);
   });
 
   it("does not let a misleading raw rank match a different partition", () => {

@@ -85,16 +85,21 @@ const DECIMAL_PATTERN = /^(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$/;
 
 
 /**
- * EasyScholar CAS spellings seen in the wild: an optional vendor prefix
- * (中科院 / 中科院分区 / 中国科学院 / 综合性期刊 / CAS) followed by an
- * Arabic or Chinese-numeral rank and an optional 区 suffix.
+ * EasyScholar CAS spellings seen in the wild. The dataset formats the value
+ * as an OPTIONAL subject/vendor prefix followed by the partition rank:
+ * `综合性期刊1区`, `医学1区`, `生物2区`, `中科院一区`, `CAS 1区`, or a bare
+ * `1区` / `一区`.
  *
- * Deliberately strict: the whole trimmed string must match, so
- * `13区` (13 does not exist) and `1区/2区` (ambiguous) can never be
- * mistaken for a known partition.
+ * The rank is located as the trailing token and the preceding head must be
+ * either empty or a pure-CJK subject/vendor label (`医学`, `生物`, `中科院`,
+ * `综合性期刊`, …) or the ASCII vendor token `CAS`. That keeps the strict
+ * rejections: `13区` (head digit), `1区2区` / `1区/2区` (mixed head),
+ * `top1区` (ASCII head), `-1区`, `1.5区`, `5区`, `中科院五区`, and
+ * suffixed forms like `中科院1区top` never resolve to a partition.
  */
-const CAS_PREFIX_PATTERN = /^(?:中国科学院|中科院分区|中科院|综合性期刊|CAS)\s*/i;
-const CAS_RANK_PATTERN = /^([1-4]|[一二三四])\s*区?$/;
+const CAS_CJK_HEAD_PATTERN = /^[\u4e00-\u9fff]+$/;
+const CAS_ASCII_VENDOR_PATTERN = /^CAS$/i;
+const CAS_RANK_TAIL_PATTERN = /([1-4]|[一二三四])\s*区?$/;
 const CAS_RANK_DIGITS = "1234";
 const CAS_RANK_CHINESE = "一二三四";
 
@@ -114,8 +119,19 @@ export function casPartitionRank(value: string | undefined): number | undefined 
   if (value === undefined) {
     return undefined;
   }
-  const match = CAS_RANK_PATTERN.exec(value.trim().replace(CAS_PREFIX_PATTERN, ""));
+  const trimmed = value.trim();
+  const match = CAS_RANK_TAIL_PATTERN.exec(trimmed);
   if (match === null) {
+    return undefined;
+  }
+  // Everything before the trailing rank must be empty or a pure subject
+  // label; digits, ASCII words other than CAS, or stray 区 make it invalid.
+  const head = trimmed.slice(0, match.index).trim();
+  if (
+    head.length > 0 &&
+    !CAS_CJK_HEAD_PATTERN.test(head) &&
+    !CAS_ASCII_VENDOR_PATTERN.test(head)
+  ) {
     return undefined;
   }
   const token = match[1];
