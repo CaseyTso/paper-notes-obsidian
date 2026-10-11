@@ -545,8 +545,11 @@ describe("Batch 1 library shell", () => {
     const drawerHost = findByClass(root, "paper-notes-library-drawer-host")[0];
     expect(drawerHost.cls).toContain("is-hidden");
     expect(drawerHost.children).toHaveLength(0);
+    expect(
+      findByClass(root, "paper-notes-library-filter-trigger"),
+    ).toHaveLength(1);
     expect(findByClass(root, "paper-notes-library-advanced-toggle")).toHaveLength(
-      1,
+      0,
     );
     expect(
       findByClass(root, "paper-notes-library-filters-advanced"),
@@ -560,21 +563,47 @@ describe("Batch 1 library shell", () => {
     expect(
       findByClass(root, "paper-notes-library-filters-advanced"),
     ).toHaveLength(0);
-    const toggle = findByClass(root, "paper-notes-library-advanced-toggle")[0];
-    expect(toggle?.attrs?.["data-icon"]).toBe("chevron-right");
-    expect(toggle?.attrs?.["data-tooltip"]).toBe("Advanced filters");
+    // The removed Advanced toggle is gone: the accepted popup trigger is the
+    // single filter entry, starts collapsed and shows no applied group.
+    expect(findByClass(root, "paper-notes-library-advanced-toggle")).toHaveLength(
+      0,
+    );
+    const trigger = findByClass(root, "paper-notes-library-filter-trigger")[0];
+    expect(trigger?.attrs?.["aria-haspopup"]).toBe("dialog");
+    expect(trigger?.attrs?.["aria-expanded"]).toBe("false");
+    expect(trigger?.attrs?.["data-icon"]).toBe("filter");
+    expect(trigger?.attrs?.["data-tooltip"]).toBe("Library filters");
+    expect(trigger?.attrs?.["aria-label"]).toBe("Library filters");
+    expect(
+      findByClass(root, "paper-notes-library-filter-count")[0]?.textContent,
+    ).toBe("");
+    expect(
+      findByClass(root, "paper-notes-library-filter-summary")[0]?.textContent,
+    ).toBe("");
   });
 
   it("expands Advanced on toggle", async () => {
     const view = new PaperNotesLibraryView({} as WorkspaceLeaf, makeSource());
     await view.onOpen();
     const root = view.containerEl as unknown as ElLike;
-    const toggle = findByClass(root, "paper-notes-library-advanced-toggle")[0];
-    toggle.listeners["click"]?.(undefined);
+    // The legacy in-shell Advanced region never comes back: the accepted
+    // popup trigger owns the toggle wiring. Its owner-document overlay is
+    // covered by the accepted S3a suite and cannot be constructed by this
+    // legacy shell mock.
+    const entry = findByClass(root, "paper-notes-library-filter-entry")[0];
+    const trigger = findByClass(root, "paper-notes-library-filter-trigger")[0];
+    expect(entry?.children[0]).toBe(trigger);
+    expect(typeof trigger?.listeners["click"]).toBe("function");
+    expect(findByClass(root, "paper-notes-library-advanced-toggle")).toHaveLength(
+      0,
+    );
+    expect(findByClass(root, "paper-notes-library-clear")[0]?.disabled).toBe(
+      true,
+    );
     const root2 = view.containerEl as unknown as ElLike;
     expect(
       findByClass(root2, "paper-notes-library-filters-advanced"),
-    ).toHaveLength(1);
+    ).toHaveLength(0);
   });
 
   it("renders icon-only toolbar actions with accessible names", async () => {
@@ -594,39 +623,46 @@ describe("Batch 1 library shell", () => {
     }
   });
 
-  it("reading status button opens a menu and artifact chips update filters", async () => {
+  it("exposes the accepted popup filter trigger instead of the removed inline filter controls", async () => {
     const view = new PaperNotesLibraryView({} as WorkspaceLeaf, makeSource());
     await view.onOpen();
-    let root = view.containerEl as unknown as ElLike;
-    const readingButton = findByClass(root, "paper-notes-library-reading-select")[0];
-    expect(readingButton?.children[0]?.textContent).toContain("Reading Status:");
-    expect(readingButton?.attrs?.["aria-haspopup"]).toBe("menu");
-    readingButton?.listeners["click"]?.(undefined);
-    const menu = mockMenus[mockMenus.length - 1];
-    const unread = menu?.items.find(
-      (item) => typeof item !== "string" && item.title === "Unread",
-    );
-    expect(unread).toBeDefined();
-    if (unread !== undefined && typeof unread !== "string") {
-      unread.onClick?.();
-    }
-    root = view.containerEl as unknown as ElLike;
+    const root = view.containerEl as unknown as ElLike;
+    // One labelled toolbar entry owns every Library Filter: the old inline
+    // reading select, artifact chips and advanced region are gone, and the
+    // entry advertises the accepted popup (aria-haspopup="dialog").
+    const entries = findByClass(root, "paper-notes-library-filter-trigger");
+    expect(entries).toHaveLength(1);
+    const entry = entries[0];
+    expect(entry.tag).toBe("button");
+    expect(entry.attrs?.["aria-haspopup"]).toBe("dialog");
+    expect(entry.attrs?.["aria-expanded"]).toBe("false");
+    expect(entry.attrs?.["aria-label"]).toBe("Library filters");
+    expect(entry.attrs?.["data-tooltip"]).toBe("Library filters");
     expect(
-      findByClass(root, "paper-notes-library-reading-select")[0]?.children[0]
+      findByClass(root, "paper-notes-library-filter-trigger-label")[0]
         ?.textContent,
-    ).toContain("Unread");
-
-    const pdf = findByClass(root, "paper-notes-library-filter-chip").find(
-      (chip) => chip.textContent === "PDF",
-    );
-    expect(pdf).toBeDefined();
-    pdf?.listeners["click"]?.(undefined);
-    root = view.containerEl as unknown as ElLike;
+    ).toBe("Filters");
+    // No applied group: the count badge and readable summary stay empty.
     expect(
-      findByClass(root, "paper-notes-library-filter-chip").find(
-        (chip) => chip.textContent === "PDF",
-      )?.attrs?.["aria-pressed"],
-    ).toBe("true");
+      findByClass(root, "paper-notes-library-filter-count")[0]?.textContent,
+    ).toBe("");
+    expect(
+      findByClass(root, "paper-notes-library-filter-summary")[0]?.textContent,
+    ).toBe("");
+    expect(findByClass(root, "paper-notes-library-reading-select")).toHaveLength(
+      0,
+    );
+    expect(findByClass(root, "paper-notes-library-filter-chip")).toHaveLength(0);
+    expect(findByClass(root, "paper-notes-library-filters")).toHaveLength(0);
+    expect(
+      findByClass(root, "paper-notes-library-filters-advanced"),
+    ).toHaveLength(0);
+    expect(findByClass(root, "paper-notes-library-advanced-toggle")).toHaveLength(
+      0,
+    );
+    // The popup itself is never opened by the shell render: the filter entry
+    // produces no Item Context Menu.
+    expect(mockMenus).toHaveLength(0);
   });
 
   it("empty state always offers Create item and conditionally Clear search and filters", async () => {
@@ -1080,9 +1116,43 @@ describe("Batch 1 library shell", () => {
     await view.onOpen();
     await openDrawerViaClick(view);
     const root0 = view.containerEl as unknown as ElLike;
-    const toggle = findByClass(root0, "paper-notes-library-advanced-toggle")[0];
-    toggle.listeners["click"]?.(undefined); // render() rebuilds the shell
+    // The accepted filter-clear surface is the in-shell filter action that
+    // runs the full render(); the removed Advanced toggle is gone. This
+    // legacy mock dispatches recorded listeners directly (it does not gate on
+    // native disabled activation), so the clear handler is the seam used to
+    // rebuild the shell while the Drawer stays open.
+    // Rerender witness: capture the live trigger and drawer host BEFORE the
+    // callback, then require DIFFERENT node identities afterwards. Container
+    // identity is reused while children are replaced, so root0/root are not
+    // compared. The panel/title assertions alone would also pass if render()
+    // never ran (the already-open drawer would simply still be there).
+    const triggerBefore = findByClass(
+      root0,
+      "paper-notes-library-filter-trigger",
+    )[0];
+    const drawerHostBefore = findByClass(
+      root0,
+      "paper-notes-library-drawer-host",
+    )[0];
+    expect(triggerBefore).toBeDefined();
+    expect(drawerHostBefore).toBeDefined();
+    const clear = findByClass(root0, "paper-notes-library-clear")[0];
+    expect(clear).toBeDefined();
+    expect(typeof clear.listeners["click"]).toBe("function");
+    clear.listeners["click"]?.(undefined); // render() rebuilds the shell
     const root = view.containerEl as unknown as ElLike;
+    const triggerAfter = findByClass(
+      root,
+      "paper-notes-library-filter-trigger",
+    )[0];
+    const drawerHostAfter = findByClass(
+      root,
+      "paper-notes-library-drawer-host",
+    )[0];
+    expect(triggerAfter).toBeDefined();
+    expect(drawerHostAfter).toBeDefined();
+    expect(triggerAfter).not.toBe(triggerBefore);
+    expect(drawerHostAfter).not.toBe(drawerHostBefore);
     expect(findByClass(root, "paper-notes-library-drawer-panel")).toHaveLength(1);
     expect(
       findByClass(root, "paper-notes-library-detail-title")[0]?.textContent,
@@ -2023,7 +2093,6 @@ describe("Library internal MOC navigation", () => {
     expect(view.getState()).toEqual({
       page: "moc",
       searchQuery: "alpha",
-      filters: { requiredArtifacts: [] },
       sort: { columnId: "year", direction: "desc" },
       selectedPath: null,
       drawerOpen: false,
@@ -2039,7 +2108,6 @@ describe("Library internal MOC navigation", () => {
     expect(view.getState()).toEqual({
       page: "library",
       searchQuery: "alpha",
-      filters: { requiredArtifacts: [] },
       sort: { columnId: "year", direction: "desc" },
       selectedPath: null,
       drawerOpen: false,

@@ -2908,3 +2908,671 @@ button.paper-notes-status-chip--read:hover {
   flex-direction: column;
   gap: 6px;
 }
+
+/* ---------------------------------------------------------------------------
+ * Pending Library Filter form (S2a) — `.paper-notes-library-filter-form`
+ *
+ * Compact, nonmodal, theme-native styling for the standalone pending filter
+ * form. Everything resolves through Obsidian semantic variables so the same
+ * rules stay correct when S2b mounts the form in an overlay outside the
+ * library view (no inherited-only `--pn-*` tokens are relied upon).
+ * Existing rules above are untouched; this namespace is new and additive.
+ * --------------------------------------------------------------------------- */
+
+.paper-notes-library-filter-form {
+  /* Local fallbacks only: the Obsidian theme provides these variables. */
+  --pn-ff-radius: var(--radius-s, 4px);
+  --pn-ff-gap: 6px;
+  --pn-ff-font: var(--font-ui-smaller, 12px);
+  --pn-ff-surface: var(--background-primary);
+  --pn-ff-border: var(--background-modifier-border);
+  --pn-ff-border-hover: var(--background-modifier-border-hover, var(--background-modifier-border));
+  --pn-ff-text: var(--text-normal);
+  --pn-ff-muted: var(--text-muted);
+  --pn-ff-faint: var(--text-faint);
+  --pn-ff-accent: var(--interactive-accent);
+  --pn-ff-accent-soft: color-mix(in srgb, var(--interactive-accent) 16%, transparent);
+  --pn-ff-error: var(--text-error, #dc2626);
+  --pn-ff-selected: color-mix(in srgb, var(--interactive-accent) 12%, transparent);
+
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
+  min-width: 0;
+  max-width: 100%;
+  padding: var(--pn-ff-gap);
+  border: 1px solid var(--pn-ff-border);
+  border-radius: var(--radius-m, 8px);
+  background: var(--background-secondary);
+  color: var(--pn-ff-text);
+  font-size: var(--pn-ff-font);
+}
+
+.paper-notes-library-filter-form *,
+.paper-notes-library-filter-form *::before,
+.paper-notes-library-filter-form *::after {
+  box-sizing: border-box;
+}
+
+/* Title */
+.paper-notes-library-filter-form-title {
+  margin: 0 0 var(--pn-ff-gap);
+  font-size: var(--font-ui-small, 13px);
+  font-weight: var(--font-semibold, 600);
+  color: var(--pn-ff-text);
+  letter-spacing: 0.02em;
+}
+
+/* Field scroller: scrolls on its own so S2b can bound the height and the
+   footer below never shrinks and stays reachable. */
+.paper-notes-library-filter-form-scroll {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
+
+.paper-notes-library-filter-form-section {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.paper-notes-library-filter-form-section-title {
+  font-size: var(--font-ui-smallest, 11px);
+  font-weight: var(--font-medium, 500);
+  color: var(--pn-ff-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.paper-notes-library-filter-form-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
+  gap: var(--pn-ff-gap);
+  min-width: 0;
+}
+
+.paper-notes-library-filter-form-field {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.paper-notes-library-filter-form-label {
+  color: var(--pn-ff-muted);
+  font-size: var(--font-ui-smallest, 11px);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.paper-notes-library-filter-form-input,
+.paper-notes-library-filter-form-select {
+  width: 100%;
+  min-width: 0;
+  min-height: 26px;
+  padding: 2px 6px;
+  border: 1px solid var(--pn-ff-border);
+  border-radius: var(--pn-ff-radius);
+  background: var(--pn-ff-surface);
+  color: var(--pn-ff-text);
+  font-family: inherit;
+  font-size: var(--pn-ff-font);
+  transition: border-color var(--pn-transition, 160ms ease),
+    box-shadow var(--pn-transition, 160ms ease);
+}
+
+.paper-notes-library-filter-form-select {
+  max-width: 100%;
+  text-overflow: ellipsis;
+}
+
+/* Visible focus for keyboard users (and a ring for pointer focus). */
+.paper-notes-library-filter-form-input:focus,
+.paper-notes-library-filter-form-select:focus {
+  outline: none;
+  border-color: var(--pn-ff-accent);
+  box-shadow: 0 0 0 2px var(--pn-ff-accent-soft);
+}
+
+.paper-notes-library-filter-form-input:focus-visible,
+.paper-notes-library-filter-form-select:focus-visible,
+.paper-notes-library-filter-form-button:focus-visible,
+.paper-notes-library-filter-form-journal-option:focus-visible,
+.paper-notes-library-filter-form-journal-clear:focus-visible,
+.paper-notes-library-filter-form-checkbox:focus-visible {
+  outline: 2px solid var(--pn-ff-accent);
+  outline-offset: 1px;
+}
+
+/* Invalid state is conveyed by colour AND text, never colour alone. */
+.paper-notes-library-filter-form-input[aria-invalid="true"],
+.paper-notes-library-filter-form-select[aria-invalid="true"] {
+  border-color: var(--pn-ff-error);
+}
+
+/* Nonselectable "unsupported current value" placeholder inside a select. */
+.paper-notes-library-filter-form-select option[disabled] {
+  color: var(--pn-ff-faint);
+  font-style: italic;
+}
+
+.paper-notes-library-filter-form-error {
+  color: var(--pn-ff-error);
+  font-size: var(--font-ui-smallest, 11px);
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.paper-notes-library-filter-form-error[hidden] {
+  display: none;
+}
+
+/* Reading + artifacts */
+.paper-notes-library-filter-form-check {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 26px;
+  min-width: 0;
+}
+
+.paper-notes-library-filter-form-check-label {
+  color: var(--pn-ff-text);
+  font-size: var(--pn-ff-font);
+  white-space: nowrap;
+}
+
+.paper-notes-library-filter-form-checkbox {
+  width: 14px;
+  height: 14px;
+  flex: 0 0 auto;
+  accent-color: var(--pn-ff-accent);
+  margin: 0;
+}
+
+/* Journal chooser */
+.paper-notes-library-filter-form-journal {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.paper-notes-library-filter-form-journal-selected {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 5px;
+  min-width: 0;
+  padding: 3px 6px;
+  border: 1px solid var(--pn-ff-border);
+  border-radius: var(--pn-ff-radius);
+  background: var(--pn-ff-surface);
+}
+
+.paper-notes-library-filter-form-journal-selected-label {
+  color: var(--pn-ff-muted);
+  font-size: var(--font-ui-smallest, 11px);
+}
+
+.paper-notes-library-filter-form-journal-selected-name {
+  min-width: 0;
+  flex: 1 1 auto;
+  color: var(--pn-ff-text);
+  font-weight: var(--font-medium, 500);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.paper-notes-library-filter-form-journal-selected-empty {
+  color: var(--pn-ff-faint);
+  font-style: italic;
+}
+
+.paper-notes-library-filter-form-journal-clear {
+  flex: 0 0 auto;
+  min-height: 22px;
+  padding: 1px 8px;
+  border: 1px solid var(--pn-ff-border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--pn-ff-muted);
+  font-family: inherit;
+  font-size: var(--font-ui-smallest, 11px);
+  cursor: pointer;
+  transition: background-color var(--pn-transition, 160ms ease),
+    color var(--pn-transition, 160ms ease), border-color var(--pn-transition, 160ms ease);
+}
+
+.paper-notes-library-filter-form-journal-clear:hover {
+  color: var(--pn-ff-text);
+  border-color: var(--pn-ff-border-hover);
+  background: var(--background-modifier-hover);
+}
+
+.paper-notes-library-filter-form-journal-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  max-height: 132px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  padding: 2px;
+  border: 1px solid var(--pn-ff-border);
+  border-radius: var(--pn-ff-radius);
+  background: var(--pn-ff-surface);
+}
+
+.paper-notes-library-filter-form-journal-option {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  min-height: 24px;
+  padding: 2px 6px;
+  border: 1px solid transparent;
+  border-radius: var(--pn-ff-radius);
+  background: transparent;
+  color: var(--pn-ff-text);
+  font-family: inherit;
+  font-size: var(--pn-ff-font);
+  text-align: left;
+  cursor: pointer;
+  transition: background-color var(--pn-transition, 160ms ease),
+    border-color var(--pn-transition, 160ms ease);
+}
+
+.paper-notes-library-filter-form-journal-option:hover {
+  background: var(--background-modifier-hover);
+}
+
+/* Long journal names truncate instead of widening the popup. */
+.paper-notes-library-filter-form-journal-option-name {
+  min-width: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.paper-notes-library-filter-form-journal-option.is-selected {
+  border-color: color-mix(in srgb, var(--pn-ff-accent) 45%, var(--pn-ff-border));
+  background: var(--pn-ff-selected);
+  color: var(--pn-ff-text);
+  font-weight: var(--font-medium, 500);
+}
+
+.paper-notes-library-filter-form-journal-option.is-selected .paper-notes-library-filter-form-journal-option-name::before {
+  content: "✓ ";
+  color: var(--pn-ff-accent);
+}
+
+.paper-notes-library-filter-form-journal-status {
+  color: var(--pn-ff-muted);
+  font-size: var(--font-ui-smallest, 11px);
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.paper-notes-library-filter-form-journal-status[hidden] {
+  display: none;
+}
+
+/* Footer: never shrinks, so the actions stay reachable. */
+.paper-notes-library-filter-form-footer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--pn-ff-gap);
+  flex-shrink: 0;
+  margin-top: var(--pn-ff-gap);
+  padding-top: var(--pn-ff-gap);
+  border-top: 1px solid var(--pn-ff-border);
+}
+
+.paper-notes-library-filter-form-button {
+  min-height: 26px;
+  padding: 2px 12px;
+  border: 1px solid var(--pn-ff-border);
+  border-radius: var(--pn-ff-radius);
+  background: var(--background-primary);
+  color: var(--pn-ff-text);
+  font-family: inherit;
+  font-size: var(--pn-ff-font);
+  cursor: pointer;
+  transition: background-color var(--pn-transition, 160ms ease),
+    border-color var(--pn-transition, 160ms ease), color var(--pn-transition, 160ms ease);
+}
+
+.paper-notes-library-filter-form-button:hover:not(:disabled) {
+  background: var(--background-modifier-hover);
+  border-color: var(--pn-ff-border-hover);
+}
+
+.paper-notes-library-filter-form-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.paper-notes-library-filter-form-button-primary {
+  border-color: var(--pn-ff-accent);
+  background: var(--pn-ff-accent);
+  color: var(--text-on-accent, #ffffff);
+  font-weight: var(--font-medium, 500);
+}
+
+.paper-notes-library-filter-form-button-primary:hover:not(:disabled) {
+  background: var(--interactive-accent-hover, var(--interactive-accent));
+  border-color: var(--interactive-accent-hover, var(--interactive-accent));
+}
+
+/* Narrow hosts: single-column fields, wider option list, stacked footer. */
+@container (max-width: 320px) {
+  .paper-notes-library-filter-form-row {
+    grid-template-columns: 1fr;
+  }
+
+  .paper-notes-library-filter-form-footer {
+    justify-content: stretch;
+  }
+
+  .paper-notes-library-filter-form-footer .paper-notes-library-filter-form-button {
+    flex: 1 1 auto;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .paper-notes-library-filter-form-input,
+  .paper-notes-library-filter-form-select,
+  .paper-notes-library-filter-form-button,
+  .paper-notes-library-filter-form-journal-option,
+  .paper-notes-library-filter-form-journal-clear {
+    transition: none;
+  }
+}
+
+/* ---------------------------------------------------------------------------
+ * Anchored Library Filter overlay (S2b) — `.paper-notes-library-filter-panel`
+ *
+ * Append-only shell around the accepted S2b form. The shell owns the fixed
+ * body mount, the explicit flex height chain and the bounded inline-size
+ * container context; every descendant rule is scoped under the panel class
+ * and only CONSTRAINS the accepted form rules above — none of them are
+ * edited or removed.
+ *
+ * Geometry (width/height/left/top) is written inline by the wrapper in
+ * viewport pixels, so these rules deliberately avoid re-measuring or
+ * re-expanding the form while the user edits.
+ * --------------------------------------------------------------------------- */
+
+.paper-notes-library-filter-panel {
+  /* Local fallbacks only; Obsidian themes provide these variables. */
+  --pn-lfp-radius: var(--radius-m, 8px);
+  --pn-lfp-gap: 8px;
+  --pn-lfp-surface: var(--background-secondary);
+  --pn-lfp-border: var(--background-modifier-border);
+  --pn-lfp-text: var(--text-normal);
+  --pn-lfp-muted: var(--text-muted);
+  --pn-lfp-accent: var(--interactive-accent);
+  /* Reuse the existing plugin shadow token rather than introducing a
+     new hard-coded colour fallback. */
+  --pn-lfp-shadow: var(--pn-shadow-soft, 0 1px 2px color-mix(in srgb, var(--background-modifier-box-shadow) 24%, transparent));
+  --pn-lfp-z: 30;
+
+  position: fixed;
+  z-index: var(--pn-lfp-z);
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  /* Bounded by the wrapper's inline geometry; never a hard minimum. */
+  min-width: 0;
+  min-height: 0;
+  padding: var(--pn-lfp-gap);
+  border: 1px solid var(--pn-lfp-border);
+  border-radius: var(--pn-lfp-radius);
+  background: var(--pn-lfp-surface);
+  color: var(--pn-lfp-text);
+  box-shadow: var(--pn-lfp-shadow);
+  /* Narrow container context: REQUIRED by the accepted @container 320px
+     rules, which would otherwise never match a body-level overlay. */
+  container-type: inline-size;
+}
+
+.paper-notes-library-filter-panel *,
+.paper-notes-library-filter-panel *::before,
+.paper-notes-library-filter-panel *::after {
+  box-sizing: border-box;
+}
+
+/* Header: the Close button sits in its own row and never covers the
+   form title below it. */
+.paper-notes-library-filter-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-shrink: 0;
+  gap: var(--pn-lfp-gap);
+  margin-bottom: var(--pn-lfp-gap);
+}
+
+.paper-notes-library-filter-panel-close {
+  min-height: 24px;
+  padding: 2px 10px;
+  border: 1px solid var(--pn-lfp-border);
+  border-radius: var(--radius-s, 4px);
+  background: var(--background-primary);
+  color: var(--pn-lfp-text);
+  font-family: inherit;
+  font-size: var(--font-ui-smallest, 11px);
+  cursor: pointer;
+  transition: background-color var(--pn-transition, 160ms ease),
+    border-color var(--pn-transition, 160ms ease), color var(--pn-transition, 160ms ease);
+}
+
+.paper-notes-library-filter-panel-close:hover {
+  background: var(--background-modifier-hover);
+}
+
+.paper-notes-library-filter-panel-close:focus-visible {
+  outline: 2px solid var(--pn-lfp-accent);
+  outline-offset: 1px;
+}
+
+/* ── Explicit bounded flex height chain ─────────────────────────────────
+   The shell bounds the height; the form is the flexible child; the accepted
+   field scroller scrolls; the accepted footer never shrinks. `max-height`
+   alone is insufficient, hence the explicit min-height:0 / max-height:100%
+   chain below. No rule here unbinds or re-expands the form, so an internal
+   scroll never resets the caret or the scroller position. */
+.paper-notes-library-filter-panel > .paper-notes-library-filter-form {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  max-height: 100%;
+  /* The shell already draws the surface chrome. */
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.paper-notes-library-filter-panel
+  > .paper-notes-library-filter-form
+  > .paper-notes-library-filter-form-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+/* The accepted footer is already `flex-shrink: 0`; restate it so the
+   constraint survives any future form-side refactor and stays readable
+   as part of the panel chain. */
+.paper-notes-library-filter-panel
+  > .paper-notes-library-filter-form
+  > .paper-notes-library-filter-form-footer {
+  flex-shrink: 0;
+}
+
+/* ── Short-height recovery (`.is-short-height`) ─────────────────────────
+   When the available cap cannot safely fit the fixed shell chrome
+   (padding, border, header, form padding and the nonshrinking footer),
+   the bounded SHELL itself scrolls and the inner form flows at its
+   natural content height. No field collapses to an inaccessible zero
+   height and the footer stays reachable by scrolling or by keyboard.
+
+   The shell bounds stay the pane/viewport inline geometry, so nothing
+   overflows the pane and no action is hidden. This is a stable
+   capacity-class fallback toggled by the wrapper, NOT a per-scroll
+   measurement/re-expansion, so an internal scroll never resets a caret
+   or a scroll position. */
+.paper-notes-library-filter-panel.is-short-height {
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+/* Inner form and its scroller flow naturally: no forced flex share and
+   no independent inner scroller competing with the shell's own. */
+.paper-notes-library-filter-panel.is-short-height
+  > .paper-notes-library-filter-form {
+  flex: 0 0 auto;
+  min-height: 0;
+  max-height: none;
+}
+
+.paper-notes-library-filter-panel.is-short-height
+  > .paper-notes-library-filter-form
+  > .paper-notes-library-filter-form-scroll {
+  flex: 0 0 auto;
+  min-height: 0;
+  /* The shell scrolls; the field scroller must not double-scroll. */
+  overflow-y: visible;
+}
+
+/* The accepted footer stays nonshrinking and is reached by scrolling
+   the bounded shell. */
+.paper-notes-library-filter-panel.is-short-height
+  > .paper-notes-library-filter-form
+  > .paper-notes-library-filter-form-footer {
+  flex-shrink: 0;
+}
+
+/* Compact panel chrome for narrow hosts. */
+@container (max-width: 360px) {
+  .paper-notes-library-filter-panel {
+    padding: 6px;
+  }
+
+  .paper-notes-library-filter-panel-header {
+    margin-bottom: 6px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .paper-notes-library-filter-panel-close {
+    transition: none;
+  }
+}
+
+/* ── Library Filter toolbar entry (S3a, appended) ─────────────────────
+   View-toolbar-only rules for the single labelled Library Filter entry
+   and its APPLIED count/summary. Every editing surface stays in the
+   accepted popup (`library-filter-panel` / `library-filter-form`). */
+
+.paper-notes-library-filter-entry {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  flex: 0 1 auto;
+}
+
+.paper-notes-library-filter-trigger {
+  gap: 6px;
+  width: auto;
+  min-width: 0;
+  padding: 0 10px;
+  color: var(--text-normal);
+  background: transparent;
+  border: 1px solid transparent;
+}
+
+.paper-notes-library-filter-trigger:hover:not(:disabled) {
+  color: var(--text-normal);
+  background: var(--background-modifier-hover);
+  border-color: var(--pn-border);
+}
+
+.paper-notes-library-filter-trigger[aria-expanded="true"] {
+  color: var(--text-normal);
+  background: var(--pn-accent-softer);
+  border-color: var(--pn-accent);
+}
+
+.paper-notes-library-filter-trigger-label {
+  font-size: var(--font-ui-smaller);
+  font-weight: var(--font-medium);
+  white-space: nowrap;
+}
+
+.paper-notes-library-filter-count {
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: var(--pn-accent);
+  color: var(--text-on-accent, var(--background-primary));
+  font-size: 10px;
+  font-weight: var(--font-semibold);
+  line-height: 16px;
+  text-align: center;
+}
+
+.paper-notes-library-filter-count[hidden] {
+  display: none;
+}
+
+.paper-notes-library-filter-summary {
+  min-width: 0;
+  max-width: 32ch;
+  overflow: hidden;
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.paper-notes-library-filter-summary[hidden] {
+  display: none;
+}
+
+/* Narrow panes: the summary yields before the trigger, and the trigger
+   collapses to its icon so the toolbar still wraps without clipping. */
+@container (max-width: 480px) {
+  .paper-notes-library-filter-entry {
+    flex: 1 1 100%;
+  }
+
+  .paper-notes-library-filter-summary {
+    max-width: none;
+    flex: 1 1 auto;
+  }
+}
+
+@container (max-width: 320px) {
+  .paper-notes-library-filter-trigger-label,
+  .paper-notes-library-filter-summary {
+    display: none;
+  }
+}

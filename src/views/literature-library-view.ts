@@ -97,11 +97,14 @@ import {
 import {
   EMPTY_LIBRARY_FILTERS,
   applyLibraryFilters,
-  countActiveAdvancedFilters,
-  hasActiveAdvancedFilters,
-  type ArtifactPart,
   type LibraryFilters,
 } from "../components/library-filters";
+import { LibraryFilterPanel } from "../components/library-filter-panel";
+import {
+  collectJournalOptions,
+  countActiveLibraryFilterGroups,
+  describeLibraryFilters,
+} from "../components/library-filter-draft";
 import { buildPaperDetail } from "../components/paper-detail";
 import { MocDirectory, type MocDirectorySource } from "../components/moc-directory";
 import {
@@ -132,6 +135,13 @@ const REFRESH_ALL_COMMAND = "paper-notes-refresh-all-metrics";
 
 /** Long abstracts in the drawer truncate at this many characters. */
 const ABSTRACT_TRUNCATE_CHARS = 600;
+
+/** Toolbar class of the single labelled Library Filter panel entry. */
+const FILTER_TRIGGER_CLASS = "paper-notes-library-filter-trigger";
+/** Class of the applied-group count badge inside the toolbar entry. */
+const FILTER_COUNT_CLASS = "paper-notes-library-filter-count";
+/** Class of the readable applied-filter summary line in the toolbar. */
+const FILTER_SUMMARY_CLASS = "paper-notes-library-filter-summary";
 
 /**
  * Delay before a row single-click opens the Detail Drawer. Browsers fire
@@ -372,10 +382,39 @@ export class PaperNotesLibraryView extends ItemView {
   /** Lightweight "Searching MinerU full text…" indicator state. */
   private fullTextSearching = false;
   /**
-   * Advanced filter disclosure. `undefined` = follow auto policy
-   * (open when any advanced condition is active); boolean = user override.
+   * Live anchored Library Filter overlay (plan v1, S3a). `null` whenever
+   * the popup is not open. The owner NEVER reimplements its controls; it
+   * only mounts, reanchors and disposes it.
    */
-  private advancedFiltersExpanded: boolean | undefined = undefined;
+  private filterPanel: LibraryFilterPanel | null = null;
+  /** Latest live toolbar trigger, so reanchors always target a live node. */
+  private filterTrigger: HTMLButtonElement | null = null;
+  /** Owner-document capture listeners that maintain the gesture state. */
+  private boundFilterPress: ((event: Event) => void) | null = null;
+  private boundFilterCancel: ((event: Event) => void) | null = null;
+  /** Workspace active-leaf ownership EventRef (dropped on view close). */
+  private boundActiveLeaf: unknown = null;
+  /**
+   * Owner document the popup's listeners were registered in. Recorded at
+   * open time and NEVER derived from the latest trigger, so listeners are
+   * always removed from the document they were added to even after the pane
+   * is adopted by another document.
+   */
+  private filterPressDocument: EventTarget | null = null;
+  /**
+   * True while the trigger's pointer press is still a genuine, live
+   * same-pointer gesture that has not yet produced its click. Only a real
+   * `pointerdown` on the trigger arms this; `pointercancel`, a drag that
+   * never clicks, and any press elsewhere clear it. A keyboard or
+   * programmatic activation never sets it, so it can never swallow a
+   * legitimate `detail === 0` click.
+   */
+  private filterPointerPressArmed = false;
+  /**
+   * True once the armed press's `click` has been consumed. Keeps the
+   * suppression strictly one-shot for that single gesture.
+   */
+  private filterPointerPressConsumed = false;
   private drawerHost: HTMLElement | null = null;
   private drawerOpen = false;
   /** Path of the paper currently rendered inside the drawer panel shell. */
@@ -418,6 +457,9 @@ export class PaperNotesLibraryView extends ItemView {
 
   showPage(page: LibraryPage): void {
     if (this.page === page) return;
+    // Leaving the Library page discards a pending draft and the popup; the
+    // APPLIED filters themselves survive the page switch.
+    this.disposeFilterPanel();
     this.mocDirectory?.dispose();
     this.mocHost = null;
     this.cancelFullTextSearch();
@@ -464,80 +506,10 @@ export class PaperNotesLibraryView extends ItemView {
     return undefined;
   }
 
-  private parseFilters(raw: unknown): LibraryFilters | undefined {
-    if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
-      return undefined;
-    }
-    const candidate = raw as Record<string, unknown>;
-    const filters: LibraryFilters = {
-      requiredArtifacts: [],
-    };
-
-    if (Array.isArray(candidate.requiredArtifacts)) {
-      const validParts: ArtifactPart[] = ["pdf", "minerU", "figure"];
-      filters.requiredArtifacts = candidate.requiredArtifacts.filter(
-        (part): part is ArtifactPart =>
-          typeof part === "string" && validParts.includes(part as ArtifactPart),
-      );
-    }
-
-    if (typeof candidate.yearFrom === "number" && Number.isFinite(candidate.yearFrom)) {
-      filters.yearFrom = candidate.yearFrom;
-    }
-    if (typeof candidate.yearTo === "number" && Number.isFinite(candidate.yearTo)) {
-      filters.yearTo = candidate.yearTo;
-    }
-    if (typeof candidate.journal === "string") {
-      filters.journal = candidate.journal;
-    }
-    if (typeof candidate.cas === "string") {
-      filters.cas = candidate.cas;
-    }
-    if (typeof candidate.jcr === "string") {
-      filters.jcr = candidate.jcr;
-    }
-    if (typeof candidate.ifMin === "number" && Number.isFinite(candidate.ifMin)) {
-      filters.ifMin = candidate.ifMin;
-    }
-    if (typeof candidate.ifMax === "number" && Number.isFinite(candidate.ifMax)) {
-      filters.ifMax = candidate.ifMax;
-    }
-    if (typeof candidate.jciMin === "number" && Number.isFinite(candidate.jciMin)) {
-      filters.jciMin = candidate.jciMin;
-    }
-    if (typeof candidate.jciMax === "number" && Number.isFinite(candidate.jciMax)) {
-      filters.jciMax = candidate.jciMax;
-    }
-    if (
-      candidate.readingStatus === "unread" ||
-      candidate.readingStatus === "reading" ||
-      candidate.readingStatus === "read"
-    ) {
-      filters.readingStatus = candidate.readingStatus;
-    }
-
-    return filters;
-  }
-
   getState(): Record<string, unknown> {
-    const filters: Record<string, unknown> = {
-      requiredArtifacts: [...this.filters.requiredArtifacts],
-    };
-    if (this.filters.yearFrom !== undefined) filters.yearFrom = this.filters.yearFrom;
-    if (this.filters.yearTo !== undefined) filters.yearTo = this.filters.yearTo;
-    if (this.filters.journal !== undefined) filters.journal = this.filters.journal;
-    if (this.filters.cas !== undefined) filters.cas = this.filters.cas;
-    if (this.filters.jcr !== undefined) filters.jcr = this.filters.jcr;
-    if (this.filters.ifMin !== undefined) filters.ifMin = this.filters.ifMin;
-    if (this.filters.ifMax !== undefined) filters.ifMax = this.filters.ifMax;
-    if (this.filters.jciMin !== undefined) filters.jciMin = this.filters.jciMin;
-    if (this.filters.jciMax !== undefined) filters.jciMax = this.filters.jciMax;
-    if (this.filters.readingStatus !== undefined) filters.readingStatus = this.filters.readingStatus;
-
     return {
       page: this.page,
       searchQuery: this.searchQuery,
-      filters,
       sort: {
         columnId: this.sort.columnId,
         direction: this.sort.direction,
@@ -559,13 +531,6 @@ export class PaperNotesLibraryView extends ItemView {
 
       if (typeof raw.searchQuery === "string") {
         this.searchQuery = raw.searchQuery;
-      }
-
-      if (raw.filters && typeof raw.filters === "object" && !Array.isArray(raw.filters)) {
-        const parsedFilters = this.parseFilters(raw.filters);
-        if (parsedFilters) {
-          this.filters = parsedFilters;
-        }
       }
 
       if (raw.sort && typeof raw.sort === "object" && !Array.isArray(raw.sort)) {
@@ -635,6 +600,7 @@ export class PaperNotesLibraryView extends ItemView {
 
   async onOpen(): Promise<void> {
     this.isOpen = true;
+    this.attachFilterOwnership();
     this.render();
     const pending = this.pendingFocus;
     this.pendingFocus = undefined;
@@ -653,6 +619,12 @@ export class PaperNotesLibraryView extends ItemView {
 
   async onClose(): Promise<void> {
     this.isOpen = false;
+    // A real view close discards any pending draft and the popup without
+    // focusing a trigger that is about to disappear, and resets the applied
+    // filters: they are per-open-view state, never persisted.
+    this.disposeFilterPanel();
+    this.detachFilterOwnership();
+    this.filters = { ...EMPTY_LIBRARY_FILTERS };
     this.mocDirectory?.dispose();
     this.mocHost = null;
     this.clearFocusRetryTimer();
@@ -705,6 +677,9 @@ export class PaperNotesLibraryView extends ItemView {
     }
     this.renderTable();
     this.renderDetail();
+    // Lightweight refresh: the popup, its raw draft and focus all survive;
+    // only the all-source journal roster and the live trigger change.
+    this.syncFilterPanelAfterRender();
   }
 
   /**
@@ -827,7 +802,6 @@ export class PaperNotesLibraryView extends ItemView {
     this.focusRetries = 0;
     this.searchQuery = "";
     this.filters = { ...EMPTY_LIBRARY_FILTERS };
-    this.advancedFiltersExpanded = undefined;
     this.cancelFullTextSearch();
 
     this.selectedPath = targetPath;
@@ -938,6 +912,101 @@ export class PaperNotesLibraryView extends ItemView {
       this.renderResults();
       search.focus?.();
     });
+    // Single labelled toolbar entry for every Library Filter: it opens
+    // the anchored popup and shows the APPLIED group count + readable
+    // summary. All editing lives in the accepted popup.
+    const filterWrap = toolbar.createDiv({
+      cls: "paper-notes-library-filter-entry",
+    });
+    const filterTrigger = filterWrap.createEl("button", {
+      cls: `paper-notes-icon-button ${FILTER_TRIGGER_CLASS}`,
+      attr: {
+        type: "button",
+        "aria-haspopup": "dialog",
+        "aria-expanded": "false",
+        "aria-label": "Library filters",
+        "data-tooltip": "Library filters",
+      },
+    });
+    setIcon(filterTrigger, "filter");
+    // The owner always tracks the LATEST live trigger, so an open popup is
+    // reanchored to a connected node after any re-render.
+    this.filterTrigger = filterTrigger;
+    if (this.filterPanel !== null) {
+      filterTrigger.setAttribute("aria-expanded", "true");
+    }
+    filterTrigger.createEl("span", {
+      cls: "paper-notes-library-filter-trigger-label",
+      text: "Filters",
+    });
+    const filterCount = filterTrigger.createEl("span", {
+      cls: FILTER_COUNT_CLASS,
+      attr: { "aria-hidden": "true" },
+    });
+    const filterSummary = filterWrap.createEl("span", {
+      cls: FILTER_SUMMARY_CLASS,
+    });
+    const renderFilterEntry = (): void => {
+      const groups = countActiveLibraryFilterGroups(this.filters);
+      const active = groups > 0;
+      filterCount.textContent = active ? String(groups) : "";
+      // HTML boolean-attribute semantics: an ACTIVE badge/summary must have
+      // the attribute REMOVED, and an inactive one must have it SET. Writing
+      // `hidden=""` keeps the attribute present, which native semantics (and
+      // this view's own CSS) treat as hidden, so the applied information
+      // would never be visible.
+      setBooleanAttribute(filterCount, "hidden", !active);
+      filterWrap.toggleClass?.("is-active", active);
+      const lines = describeLibraryFilters(this.filters);
+      filterSummary.textContent = active ? lines.join(" · ") : "";
+      setBooleanAttribute(filterSummary, "hidden", !(active && lines.length > 0));
+      filterTrigger.setAttribute(
+        "aria-label",
+        active
+          ? `Library filters, ${groups} active: ${lines.join(", ")}`
+          : "Library filters",
+      );
+    };
+    renderFilterEntry();
+    filterTrigger.addEventListener("click", (event: MouseEvent) => {
+      // A genuine same-pointer gesture whose captured outside press already
+      // dismissed the popup must not reopen it. The suppression is strictly
+      // limited to a REAL pointer click (`detail === 1`, or at least a
+      // non-zero detail for multi-click): a keyboard or programmatic
+      // activation always reports `detail === 0` and must never be
+      // swallowed, even when a captured press/release produced no click.
+      if (this.filterPointerPressArmed) {
+        const consumed = this.filterPointerPressConsumed;
+        const detail = (event as MouseEvent & { detail?: unknown })?.detail;
+        const genuinePointerClick =
+          typeof detail === "number" ? detail > 0 : false;
+        if (!genuinePointerClick) {
+          // A `detail === 0` activation is keyboard/programmatic (or a
+          // gesture that never produced its own click). Drop the stale
+          // gesture state and fall through so the activation behaves as a
+          // normal toggle.
+          this.resetFilterGesture();
+        } else {
+          this.resetFilterGesture();
+          if (consumed) {
+            if (typeof event?.preventDefault === "function") {
+              event.preventDefault();
+            }
+            return;
+          }
+        }
+        // Armed but the popup did not dismiss on that press: fall through so
+        // a plain toggle still behaves.
+      }
+      if (this.filterPanel !== null) {
+        this.closeFilterPanel();
+        return;
+      }
+      this.openFilterPanel(filterTrigger);
+    });
+    // Immediate clear of the APPLIED filters: it cancels a pending draft
+    // first, then clears and re-renders. The main search query is never
+    // touched and focus stays on the live trigger.
     const clear = this.createIconButton(
       toolbar,
       "paper-notes-library-clear",
@@ -948,11 +1017,20 @@ export class PaperNotesLibraryView extends ItemView {
       clear.disabled = true;
     }
     clear.addEventListener("click", () => {
+      // Discard any pending popup draft SILENTLY (no callback, no focus
+      // move): the popup is being dismissed because the owner is about to
+      // rebuild the toolbar, and its current trigger node is about to be
+      // detached, so the accepted close path's focus handoff would target a
+      // dead node.
+      this.disposeFilterPanel();
       this.filters = { ...EMPTY_LIBRARY_FILTERS };
-      // Clearing advanced conditions drops any manual expand override so
-      // the Advanced block returns to the default collapsed state.
-      this.advancedFiltersExpanded = undefined;
       this.render();
+      // Hand focus to the freshly created, still-connected replacement
+      // trigger AFTER the real render. The main search query is untouched.
+      const trigger = this.filterTrigger;
+      if (trigger !== null && isConnectedNode(trigger)) {
+        trigger.focus?.();
+      }
     });
     const create = this.createIconButton(
       toolbar,
@@ -968,8 +1046,6 @@ export class PaperNotesLibraryView extends ItemView {
       "Refresh metrics",
     );
     refreshMetrics.addEventListener("click", () => void this.refreshAllExpired(true));
-
-    this.renderFilterBar(container);
 
     this.recentHost = container.createDiv({
       cls: "paper-notes-recent-section",
@@ -995,6 +1071,10 @@ export class PaperNotesLibraryView extends ItemView {
     }
 
     this.renderResults();
+    // An open popup survives the re-render (it lives in the owner document
+    // body): reanchor it to the freshly created live trigger and refresh
+    // the whole-library journal roster, without disturbing its draft.
+    this.syncFilterPanelAfterRender();
     this.restoreTableScrollPosition(scrollPosition);
   }
 
@@ -1021,11 +1101,7 @@ export class PaperNotesLibraryView extends ItemView {
 
   /** True when any non-search library filter is active. */
   private hasActiveLibraryFilters(): boolean {
-    return (
-      this.filters.readingStatus !== undefined ||
-      this.filters.requiredArtifacts.length > 0 ||
-      countActiveAdvancedFilters(this.filters) > 0
-    );
+    return countActiveLibraryFilterGroups(this.filters) > 0;
   }
 
   /** True when search or any non-search filter is active. */
@@ -1033,234 +1109,269 @@ export class PaperNotesLibraryView extends ItemView {
     return this.searchQuery.trim().length > 0 || this.hasActiveLibraryFilters();
   }
 
-  private renderFilterBar(container: HTMLElement): void {
-    const bar = container.createDiv({ cls: "paper-notes-library-filters" });
-    bar.createEl("span", {
-      cls: "paper-notes-library-filter-heading",
-      text: "Filters",
-    });
+  // ── Library Filter panel ownership (S3a) ───────────────────────────
 
-    // Primary row: Reading Status dropdown button + artifact presence chips.
-    const statusWrap = bar.createDiv({
-      cls: "paper-notes-library-filter paper-notes-library-reading-filter",
-    });
-    const currentReading =
-      this.filters.readingStatus === undefined
-        ? "Any"
-        : this.filters.readingStatus.charAt(0).toUpperCase() +
-          this.filters.readingStatus.slice(1);
-    const readingButton = statusWrap.createEl("button", {
-      cls: "paper-notes-library-reading-select",
-      attr: {
-        type: "button",
-        "aria-haspopup": "menu",
-        "aria-label": `Reading status filter, currently ${currentReading}`,
-      },
-    });
-    readingButton.createEl("span", {
-      text: `Reading Status: ${currentReading}`,
-    });
-    const readingChevron = readingButton.createEl("span", {
-      cls: "paper-notes-library-reading-chevron",
-      attr: { "aria-hidden": "true" },
-    });
-    setIcon(readingChevron, "chevron-down");
-    readingButton.addEventListener("click", (event: MouseEvent) => {
-      this.openReadingStatusMenu(readingButton, event);
-    });
-
-    this.artifactChip(bar, "PDF", "pdf");
-    this.artifactChip(bar, "MinerU", "minerU");
-    this.artifactChip(bar, "Figure", "figure");
-
-    const advancedCount = countActiveAdvancedFilters(this.filters);
-    const expanded = this.isAdvancedFiltersExpanded();
-    const toggle = this.createIconButton(
-      bar,
-      "paper-notes-library-advanced-toggle",
-      expanded ? "chevron-down" : "chevron-right",
-      advancedCount > 0
-        ? `Advanced filters · ${advancedCount} active`
-        : "Advanced filters",
-      { "aria-expanded": expanded ? "true" : "false" },
-    );
-    if (advancedCount > 0) {
-      toggle.createEl("span", {
-        cls: "paper-notes-library-advanced-count",
-        text: String(advancedCount),
-        attr: { "aria-hidden": "true" },
-      });
-    }
-    toggle.addEventListener("click", () => {
-      // Manual override: flip relative to the current effective state.
-      this.advancedFiltersExpanded = !this.isAdvancedFiltersExpanded();
-      this.render();
-    });
-
-    if (!expanded) {
+  /**
+   * Open the anchored popup for the live trigger. The overlay is created
+   * once and mounted in the owner document body by the accepted panel
+   * itself, so a later view re-render never disturbs it.
+   */
+  private openFilterPanel(trigger: HTMLButtonElement): void {
+    if (this.filterPanel !== null) {
       return;
     }
-
-    const advanced = bar.createDiv({
-      cls: "paper-notes-library-filters-advanced",
+    this.filterTrigger = trigger;
+    // Gesture bookkeeping must exist BEFORE the panel registers its own
+    // capture `pointerdown`, so the owner sees the same press first. The
+    // registration document is recorded so cleanup never depends on the
+    // latest trigger's document.
+    this.attachFilterPressListener();
+    const panel = new LibraryFilterPanel({
+      anchor: trigger,
+      container: this.containerEl,
+      filters: this.filters,
+      journals: this.libraryJournalOptions(),
+      onApply: (filters) => this.applyLibraryFilters(filters),
+      onClose: () => this.handleFilterPanelClose(),
     });
-    this.filterNumberInput(
-      advanced,
-      "Year from",
-      this.filters.yearFrom,
-      (value) => this.updateFilters({ yearFrom: value }),
-    );
-    this.filterNumberInput(
-      advanced,
-      "Year to",
-      this.filters.yearTo,
-      (value) => this.updateFilters({ yearTo: value }),
-    );
-    this.filterTextInput(
-      advanced,
-      "Journal",
-      this.filters.journal,
-      (value) => this.updateFilters({ journal: value }),
-    );
-    this.filterTextInput(
-      advanced,
-      "CAS",
-      this.filters.cas,
-      (value) => this.updateFilters({ cas: value }),
-    );
-    this.filterTextInput(
-      advanced,
-      "JCR",
-      this.filters.jcr,
-      (value) => this.updateFilters({ jcr: value }),
-    );
-    this.filterNumberInput(
-      advanced,
-      "IF min",
-      this.filters.ifMin,
-      (value) => this.updateFilters({ ifMin: value }),
-    );
-    this.filterNumberInput(
-      advanced,
-      "IF max",
-      this.filters.ifMax,
-      (value) => this.updateFilters({ ifMax: value }),
-    );
-    this.filterNumberInput(
-      advanced,
-      "JCI min",
-      this.filters.jciMin,
-      (value) => this.updateFilters({ jciMin: value }),
-    );
-    this.filterNumberInput(
-      advanced,
-      "JCI max",
-      this.filters.jciMax,
-      (value) => this.updateFilters({ jciMax: value }),
-    );
+    this.filterPanel = panel;
+    trigger.setAttribute("aria-expanded", "true");
   }
 
-  private filterTextInput(
-    bar: HTMLElement,
-    label: string,
-    initial: string | undefined,
-    apply: (value: string | undefined) => void,
-  ): void {
-    const wrap = bar.createDiv({ cls: "paper-notes-library-filter" });
-    const inputId = `paper-notes-filter-${label.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`;
-    const labelEl = wrap.createEl("label", { text: label });
-    labelEl.setAttribute("for", inputId);
-    const input = wrap.createEl("input", {
-      attr: { type: "text", id: inputId },
-    });
-    if (initial !== undefined && initial.length > 0) {
-      input.value = initial;
-    }
-    input.addEventListener("input", () => {
-      const value = input.value.trim();
-      apply(value.length === 0 ? undefined : value);
-    });
-  }
-
-  private filterNumberInput(
-    bar: HTMLElement,
-    label: string,
-    initial: number | undefined,
-    apply: (value: number | undefined) => void,
-  ): void {
-    const wrap = bar.createDiv({ cls: "paper-notes-library-filter" });
-    const inputId = `paper-notes-filter-${label.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`;
-    const labelEl = wrap.createEl("label", { text: label });
-    labelEl.setAttribute("for", inputId);
-    const input = wrap.createEl("input", {
-      attr: { type: "number", id: inputId },
-    });
-    if (initial !== undefined) {
-      input.value = String(initial);
-    }
-    input.addEventListener("input", () => apply(this.parseNumber(input.value)));
-  }
-
-  private artifactChip(
-    bar: HTMLElement,
-    label: string,
-    part: ArtifactPart,
-  ): void {
-    const wrap = bar.createDiv({
-      cls: "paper-notes-library-filter paper-notes-library-filter-chip-wrap",
-    });
-    const chip = wrap.createEl("button", {
-      cls: "paper-notes-library-filter-chip",
-      text: label,
-      attr: {
-        type: "button",
-        "aria-pressed": this.filters.requiredArtifacts.includes(part)
-          ? "true"
-          : "false",
-      },
-    });
-    if (this.filters.requiredArtifacts.includes(part)) {
-      chip.addClass("is-active");
-      setIcon(chip, "check");
-    }
-    chip.addEventListener("click", () => {
-      const current = this.filters.requiredArtifacts;
-      const next = current.includes(part)
-        ? current.filter((existing) => existing !== part)
-        : [...current, part];
-      this.updateFilters({ requiredArtifacts: next });
-    });
-  }
-
-  private parseNumber(raw: string): number | undefined {
-    const trimmed = raw.trim();
-    if (trimmed.length === 0) {
-      return undefined;
-    }
-    const value = Number(trimmed);
-    return Number.isFinite(value) ? value : undefined;
-  }
-
-  private updateFilters(patch: Partial<LibraryFilters>): void {
-    const beforeAdvanced = hasActiveAdvancedFilters(this.filters);
-    this.filters = { ...this.filters, ...patch };
-    const afterAdvanced = hasActiveAdvancedFilters(this.filters);
-    // Newly-activated advanced conditions force a re-open unless the user
-    // has an explicit collapse override *and* the count was already > 0.
-    // First activation always expands (policy D).
-    if (afterAdvanced && !beforeAdvanced) {
-      this.advancedFiltersExpanded = true;
-      this.render();
-      return;
-    }
-    // If the Advanced block is currently showing, keep inputs in sync by
-    // re-rendering the bar; primary-only changes only need the table.
-    if (this.isAdvancedFiltersExpanded()) {
-      this.render();
-      return;
-    }
+  /**
+   * Explicit, atomic Apply. The owner keeps its panel reference alive
+   * across the re-render and reanchors the still-open panel to the newly
+   * created live trigger, so teardown focuses a connected node.
+   */
+  private applyLibraryFilters(filters: LibraryFilters): void {
+    this.filters = { ...filters, requiredArtifacts: [...filters.requiredArtifacts] };
     this.render();
+    const panel = this.filterPanel;
+    const trigger = this.filterTrigger;
+    if (panel !== null && trigger !== null && this.filterTrigger === trigger) {
+      panel.setAnchor(trigger);
+    }
   }
+
+  /**
+   * Normal user dismissal (Cancel / Close / outside / Escape): clear the
+   * owner reference and the trigger's expanded state. The panel already
+   * restored focus to the live trigger.
+   *
+   * When an armed same-pointer gesture caused this dismissal, the gesture
+   * is marked CONSUMED so the trigger's own click (which arrives after the
+   * captured press) is swallowed instead of reopening the popup. The armed
+   * flag itself survives here and is cleared by that click.
+   */
+  private handleFilterPanelClose(): void {
+    this.filterPanel = null;
+    if (this.filterPointerPressArmed) {
+      this.filterPointerPressConsumed = true;
+    }
+    const trigger = this.filterTrigger;
+    if (trigger !== null && typeof trigger.setAttribute === "function") {
+      trigger.setAttribute("aria-expanded", "false");
+    }
+  }
+
+  /**
+   * Silent discard: no callback, no focus move. Used when the owner is
+   * going away (page switch, view close, inactive leaf, owner-document
+   * change) so no hidden or dead trigger is ever focused.
+   */
+  private disposeFilterPanel(): void {
+    const panel = this.filterPanel;
+    this.filterPanel = null;
+    this.resetFilterGesture();
+    const trigger = this.filterTrigger;
+    if (trigger !== null && typeof trigger.setAttribute === "function") {
+      trigger.setAttribute("aria-expanded", "false");
+    }
+    panel?.dispose();
+    this.detachFilterPressListener();
+  }
+
+  /**
+   * Dismiss the popup through its normal close path (pending draft is
+   * discarded and focus returns to the live trigger).
+   */
+  private closeFilterPanel(): void {
+    this.filterPanel?.close();
+  }
+
+  /** Whole-library journal roster, independent of search and filters. */
+  private libraryJournalOptions(): string[] {
+    return collectJournalOptions(this.source.getRecords());
+  }
+
+  /** Clear every piece of in-flight gesture bookkeeping. */
+  private resetFilterGesture(): void {
+    this.filterPointerPressArmed = false;
+    this.filterPointerPressConsumed = false;
+  }
+
+  /**
+   * Owner-document capture bookkeeping for the trigger gesture.
+   *
+   * A `pointerdown` on the live trigger while the popup is open ARMS the
+   * gesture, because the panel's own captured `pointerdown` dismisses the
+   * popup first; the following trigger `click` must then be consumed
+   * instead of reopening. Only that one gesture is consumed.
+   *
+   * Correctness rules:
+   *  - a press anywhere else, or a `pointercancel`, or a press that never
+   *    produces a click, DISARMS it, so a later keyboard/programmatic
+   *    activation (`detail === 0`) always opens on its first attempt;
+   *  - the registration document is remembered, so removal never depends
+   *    on the latest trigger's (possibly adopted) document.
+   */
+  private attachFilterPressListener(): void {
+    this.detachFilterPressListener();
+    const doc = this.filterTrigger?.ownerDocument;
+    if (doc === undefined || typeof doc.addEventListener !== "function") {
+      return;
+    }
+    const press = (event: Event): void => {
+      if (this.filterPanel === null) {
+        this.resetFilterGesture();
+        return;
+      }
+      const target = event.target as Node | null;
+      const trigger = this.filterTrigger;
+      const onTrigger =
+        target !== null &&
+        trigger !== null &&
+        typeof trigger.contains === "function" &&
+        (trigger === target || trigger.contains(target));
+      if (onTrigger) {
+        // A fresh press on the trigger arms exactly one gesture.
+        this.filterPointerPressArmed = true;
+        this.filterPointerPressConsumed = false;
+      } else {
+        // Anything else (including the panel's own dismissal) disarms.
+        this.resetFilterGesture();
+      }
+    };
+    const cancel = (): void => {
+      // A cancelled or aborted press never produces a click, so nothing
+      // may be suppressed for a later activation.
+      this.resetFilterGesture();
+    };
+    this.boundFilterPress = press;
+    this.boundFilterCancel = cancel;
+    this.filterPressDocument = doc;
+    doc.addEventListener("pointerdown", press, true);
+    if (typeof doc.addEventListener === "function") {
+      doc.addEventListener("pointercancel", cancel, true);
+    }
+  }
+
+  private detachFilterPressListener(): void {
+    const press = this.boundFilterPress;
+    const cancel = this.boundFilterCancel;
+    const doc = this.filterPressDocument;
+    this.boundFilterPress = null;
+    this.boundFilterCancel = null;
+    this.filterPressDocument = null;
+    this.resetFilterGesture();
+    if (doc === null) {
+      return;
+    }
+    if (press !== null) {
+      doc.removeEventListener("pointerdown", press, true);
+    }
+    if (cancel !== null) {
+      doc.removeEventListener("pointercancel", cancel, true);
+    }
+  }
+
+  /**
+   * Reanchor an open popup to the live trigger and refresh the journal
+   * roster from ALL source records. The panel keeps its form, raw draft
+   * text, lookup and focus.
+   *
+   * The owner-document comparison runs BEFORE the panel-null return, so a
+   * registered capture document that is no longer the trigger's owner
+   * document is detected even while the popup is CLOSED: a closed popup
+   * still leaves `pointerdown`/`pointercancel` listeners (and possibly an
+   * armed gesture) behind on the document it was opened in.
+   *
+   * If the pane/trigger was adopted by a DIFFERENT owner document (the
+   * accepted panel cannot migrate itself), the popup is silently discarded
+   * together with its original-document resources, and the owner reference
+   * and gesture state are cleared. No focus is moved and the applied
+   * filters / search query stay, so the view may reopen cleanly in the new
+   * document.
+   */
+  private syncFilterPanelAfterRender(): void {
+    const panel = this.filterPanel;
+    const trigger = this.filterTrigger;
+    const registered = this.filterPressDocument;
+    const currentDoc = trigger?.ownerDocument;
+    if (
+      registered !== null &&
+      registered !== undefined &&
+      currentDoc !== undefined &&
+      currentDoc !== registered
+    ) {
+      // Same-pane adoption by another document (open OR closed popup):
+      // silent discard of the stale owner-document resources, no focus.
+      this.disposeFilterPanel();
+      return;
+    }
+    if (panel === null) {
+      return;
+    }
+    if (trigger !== null) {
+      trigger.setAttribute("aria-expanded", "true");
+      panel.setAnchor(trigger);
+    }
+    panel.setJournalOptions(this.libraryJournalOptions());
+  }
+
+  /**
+   * Native workspace ownership: when this view's leaf stops being the
+   * active leaf, its pending popup is discarded silently.
+   */
+  private attachFilterOwnership(): void {
+    this.detachFilterOwnership();
+    const workspace = this.app?.workspace as
+      | {
+          on?: (
+            name: string,
+            cb: (leaf: unknown) => unknown,
+          ) => unknown;
+        }
+      | undefined;
+    if (workspace === undefined || typeof workspace.on !== "function") {
+      return;
+    }
+    const handler = (leaf: unknown): void => {
+      const current = (this as unknown as { leaf?: unknown }).leaf;
+      if (leaf === current) {
+        return;
+      }
+      // A different leaf became active: the popup belongs to a hidden
+      // owner, so discard it without moving focus anywhere.
+      this.disposeFilterPanel();
+    };
+    this.boundActiveLeaf = workspace.on("active-leaf-change", handler);
+  }
+
+  private detachFilterOwnership(): void {
+    const ref = this.boundActiveLeaf;
+    this.boundActiveLeaf = null;
+    if (ref === null) {
+      return;
+    }
+    const workspace = this.app?.workspace as
+      | { offref?: (ref: unknown) => void }
+      | undefined;
+    if (workspace !== undefined && typeof workspace.offref === "function") {
+      workspace.offref(ref);
+    }
+  }
+
 
   private toggleSort(columnId: LibraryColumnId): void {
     if (this.sort.columnId === columnId) {
@@ -1672,8 +1783,8 @@ export class PaperNotesLibraryView extends ItemView {
         });
         clearEmpty.addEventListener("click", () => {
           this.searchQuery = "";
+          this.closeFilterPanel();
           this.filters = { ...EMPTY_LIBRARY_FILTERS };
-          this.advancedFiltersExpanded = undefined;
           this.render();
         });
       }
@@ -1865,8 +1976,14 @@ export class PaperNotesLibraryView extends ItemView {
     );
     close.addEventListener("click", () => this.closeDetailDrawer());
     // Move focus into the drawer for keyboard users (no-op in headless mocks).
-    (close as HTMLElement & { focus?: (options?: FocusOptions) => void })
-      .focus?.({ preventScroll: true });
+    // An OPEN filter popup owns focus: a rebuild that happens while a pending
+    // draft is being edited must never steal activeElement from the popup's
+    // input, so this automatic focus is deferred until no popup is open.
+    // Ordinary open-detail behaviour (popup absent) is unchanged.
+    if (this.filterPanel === null) {
+      (close as HTMLElement & { focus?: (options?: FocusOptions) => void })
+        .focus?.({ preventScroll: true });
+    }
     const body = panel.createDiv({ cls: "paper-notes-library-drawer-body" });
     this.renderDetailInto(body);
     this.attachDrawerKeyHandler();
@@ -2199,14 +2316,6 @@ export class PaperNotesLibraryView extends ItemView {
           : { "aria-label": `${label} missing`, "aria-hidden": "true" },
       });
     }
-  }
-
-  /** Effective Advanced disclosure (auto when no manual override). */
-  private isAdvancedFiltersExpanded(): boolean {
-    if (this.advancedFiltersExpanded !== undefined) {
-      return this.advancedFiltersExpanded;
-    }
-    return hasActiveAdvancedFilters(this.filters);
   }
 
   private openDetailDrawer(): void {
@@ -2929,33 +3038,6 @@ export class PaperNotesLibraryView extends ItemView {
       });
       row.addEventListener("click", () => this.openCardNote(item.path, card));
     }
-  }
-
-  /** Open the Reading Status filter menu from the filter-bar button. */
-  private openReadingStatusMenu(_anchor: HTMLElement, event: MouseEvent): void {
-    const menu = new Menu();
-    const current = this.filters.readingStatus ?? "";
-    for (const [value, label] of [
-      ["", "Any"],
-      ["unread", "Unread"],
-      ["reading", "Reading"],
-      ["read", "Read"],
-    ] as const) {
-      const selected = current === value;
-      menu.addItem((item) => {
-        item.setTitle(label);
-        if (selected) {
-          item.setIcon("check");
-        }
-        item.onClick(() => {
-          this.updateFilters({
-            readingStatus:
-              value === "" ? undefined : (value as LibraryFilters["readingStatus"]),
-          });
-        });
-      });
-    }
-    menu.showAtMouseEvent(event);
   }
 
   /**
@@ -3716,4 +3798,33 @@ export class PaperNotesLibraryView extends ItemView {
       this.notify(this.outcomeMessage(outcome));
     }
   }
+}
+
+/**
+ * Set or REMOVE an HTML boolean attribute with native semantics.
+ *
+ * `setAttribute("hidden", "")` keeps the attribute PRESENT, which browsers
+ * (and this view's own CSS) treat as hidden. An active badge/summary must
+ * therefore have the attribute removed entirely, and an inactive one must
+ * have it present. Writing a value is never enough.
+ */
+function setBooleanAttribute(el: HTMLElement, name: string, on: boolean): void {
+  if (on) {
+    if (typeof el.setAttribute === "function") {
+      el.setAttribute(name, "");
+    }
+  } else if (typeof el.removeAttribute === "function") {
+    el.removeAttribute(name);
+  }
+}
+
+/** Whether a node is still attached to its owner document. */
+function isConnectedNode(node: HTMLElement | null): boolean {
+  if (node === null) {
+    return false;
+  }
+  if (typeof node.isConnected === "boolean") {
+    return node.isConnected;
+  }
+  return node.parentNode !== null && node.parentNode !== undefined;
 }

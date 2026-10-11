@@ -8,6 +8,54 @@ Obsidian desktop plugin that presents the vault-native literature library and ro
 The full-width table view of canonical paper items under the literature root.
 _Avoid_: Zotero pane, item list, browser
 
+**Library Filters (文献筛选)**:
+Conditions that restrict which papers appear in the Literature Library by publication facts, Reading Status, Journal Metrics, or available paper artifacts. They are not edits to a paper’s metadata.
+_Avoid_: Library Search, metadata editing, paper update
+
+**Filter Panel (筛选面板)**:
+The compact popup anchored to the Library’s filter control that contains all Library Filters. It is separate from a paper’s Detail Drawer and Plugin Settings.
+_Avoid_: filter sidebar, Detail Drawer, Plugin Settings
+
+**Pending Library Filters (待应用条件)**:
+The candidate Library Filters being edited, distinct from the conditions currently limiting the visible Literature Library.
+_Avoid_: active filters, saved preset, metadata draft
+
+**Applied Library Filters (已生效条件)**:
+The Library Filters currently limiting which papers appear in the Literature Library, distinct from Pending Library Filters.
+_Avoid_: pending filters, input values, saved preset
+
+**Library Filter Group (筛选条件组)**:
+One paper-selection constraint, such as a year range, a Reading Status, a Journal Filter, a journal metric condition, or one required paper artifact. Both endpoints of a Year Filter Range belong to the same group.
+_Avoid_: individual range endpoint, matching paper, advanced field
+
+**Applied Filter Count (已生效条件数)**:
+The number of Library Filter Groups in Applied Library Filters, distinct from the number of matching papers.
+_Avoid_: result count, advanced field count, pending filter count
+
+**Library Filter Summary (筛选摘要)**:
+The readable representation of Applied Library Filters outside the Filter Panel. It does not describe Pending Library Filters.
+_Avoid_: input preview, draft summary, search query
+
+**Journal Filter (期刊筛选)**:
+The Library Filter identifying one publication journal represented in the Literature Library. It is distinct from a free-text Library Search.
+_Avoid_: journal keyword search, research topic, publisher filter
+
+**Year Filter Range (年份区间筛选)**:
+A Library Filter bounding a four-digit publication year inclusively at either or both ends. An unspecified end is unbounded.
+_Avoid_: publication date range, metric range, exact-year filter
+
+**Minimum Metric Filter (指标下限筛选)**:
+A Library Filter requiring a paper’s actual IF or JCI to be at least a selected non-negative numeric threshold, with no upper bound. Thresholds may be fractional and are distinct from the paper’s metric values.
+_Avoid_: metric range, rounded metric, IF max, JCI max
+
+**Reset Pending Filters (重置待应用条件)**:
+Removal of all Pending Library Filters without changing Applied Library Filters or the Library Search.
+_Avoid_: Clear Applied Filters, clear search
+
+**Clear Applied Filters (清空已生效条件)**:
+Removal of all Applied Library Filters without changing the Library Search.
+_Avoid_: Reset Pending Filters, clear search
+
 **Detail Drawer**:
 The right-side overlay panel that shows one selected paper’s read-only detail and actions.
 _Avoid_: detail pane, inspector, sidebar detail, split detail
@@ -51,6 +99,14 @@ _Avoid_: parallel conversion, persistent worker queue, restart-resumable job
 **Journal Metrics**:
 Volatile UI-only CAS / JCR / IF / JCI values from EasyScholar, never written into Markdown.
 _Avoid_: impact factor fields in YAML, zotero-style tags, rank tags on notes
+
+**CAS Partition (中科院分区)**:
+The journal’s Chinese Academy of Sciences partition, represented by ranks 1区 through 4区 within Journal Metrics. It is distinct from a JCR Quartile.
+_Avoid_: CAS quartile, JCR partition, Q1–Q4 for CAS
+
+**JCR Quartile (JCR 分位)**:
+The journal’s Q1 through Q4 classification within Journal Metrics. It is distinct from a CAS Partition.
+_Avoid_: CAS partition, 1区–4区 for JCR
 
 **EasyScholar**:
 The external journal-rank API used as the sole source for Journal Metrics (same data family as Zotero’s Ethereal Style / zotero-style plugin).

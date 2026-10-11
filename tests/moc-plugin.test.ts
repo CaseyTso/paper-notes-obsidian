@@ -278,20 +278,26 @@ describe("Library activation and ribbon wiring", () => {
         state: expect.objectContaining({
           page: "library",
           searchQuery: "einstein",
-          filters: { journal: "Physical Review", requiredArtifacts: ["pdf"] },
           sort: { columnId: "journal", direction: "asc" },
           selectedPath: "papers/einstein.md",
           drawerOpen: true,
         }),
       }),
     );
+    // Filter persistence intentionally removed (S3): filters must NOT appear
+    // in the transferred state.
+    expect(newLeaf.setViewState).toHaveBeenCalledWith(
+      expect.objectContaining({
+        state: expect.not.objectContaining({ filters: expect.anything() }),
+      }),
+    );
     expect(newShowPage).toHaveBeenCalledWith("library");
 
-    // All state preserved on new view via public getState
+    // All non-filter state preserved on new view via public getState;
+    // legacy filters are discarded by design.
     expect(newView.getState()).toEqual({
       page: "library",
       searchQuery: "einstein",
-      filters: { journal: "Physical Review", requiredArtifacts: ["pdf"] },
       sort: { columnId: "journal", direction: "asc" },
       selectedPath: "papers/einstein.md",
       drawerOpen: true,

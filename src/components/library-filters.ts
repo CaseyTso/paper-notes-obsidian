@@ -8,6 +8,7 @@
  */
 
 import type { LibraryItem, ReadingStatus } from "./library-table";
+import { casPartitionRank, jcrQuartile } from "./library-filter-draft";
 
 export type ArtifactPart = "pdf" | "minerU" | "figure";
 
@@ -58,6 +59,33 @@ function inRange(
 }
 
 /**
+ * CAS partition equality by canonical rank (Task 24 redesign): known raw
+ * spellings of the same partition (`1`, `1区`, `中科院1区`, `综合性期刊1区`,
+ * `中科院一区`) all match the selected partition, while a missing, unknown
+ * or ambiguous value never matches a known partition.
+ */
+function matchesCasPartition(value: string | undefined, wanted: string): boolean {
+  const wantedRank = casPartitionRank(wanted);
+  if (wantedRank === undefined) {
+    return false;
+  }
+  return casPartitionRank(value) === wantedRank;
+}
+
+/**
+ * JCR quartile equality by canonical quartile: `Q1`…`Q4` in any case
+ * (and no other text) match the selected quartile; anything else never
+ * matches a known quartile.
+ */
+function matchesJcrQuartile(value: string | undefined, wanted: string): boolean {
+  const wantedQuartile = jcrQuartile(wanted);
+  if (wantedQuartile === undefined) {
+    return false;
+  }
+  return jcrQuartile(value) === wantedQuartile;
+}
+
+/**
  * Apply all set filters with AND semantics. Items missing the filtered
  * metadata (e.g. invalid rows without a year) are excluded, never passed
  * through accidentally.
@@ -88,10 +116,10 @@ export function applyLibraryFilters(
     if (journal !== undefined && !equalsIgnoreCase(item.journal, journal)) {
       return false;
     }
-    if (cas !== undefined && !equalsIgnoreCase(item.metrics?.cas, cas)) {
+    if (cas !== undefined && !matchesCasPartition(item.metrics?.cas, cas)) {
       return false;
     }
-    if (jcr !== undefined && !equalsIgnoreCase(item.metrics?.jcr, jcr)) {
+    if (jcr !== undefined && !matchesJcrQuartile(item.metrics?.jcr, jcr)) {
       return false;
     }
     if (ifMin !== undefined || ifMax !== undefined) {

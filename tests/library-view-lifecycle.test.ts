@@ -163,8 +163,12 @@ describe("PaperNotesLibraryView public state contract (getState/setState)", () =
     const serialized = JSON.stringify(state);
     const parsed = JSON.parse(serialized);
     expect(parsed).toEqual(state);
+    // Applied filters are per-open-view state: never part of the public state.
+    expect(state).not.toHaveProperty("filters");
 
-    // Also with populated state
+    // Also with populated state. Only the non-filter UI state is persisted;
+    // the legacy `filters` payload (including the IF/JCI maxima) is discarded
+    // instead of being restored into the live applied filters.
     await view.setState(
       {
         page: "library",
@@ -173,6 +177,8 @@ describe("PaperNotesLibraryView public state contract (getState/setState)", () =
           yearFrom: 2020,
           yearTo: 2024,
           journal: "Nature",
+          ifMax: 10,
+          jciMax: 1.5,
           readingStatus: "reading",
           requiredArtifacts: ["pdf"],
         },
@@ -187,20 +193,18 @@ describe("PaperNotesLibraryView public state contract (getState/setState)", () =
     expect(activeState).toEqual({
       page: "library",
       searchQuery: "quantum computing",
-      filters: {
-        yearFrom: 2020,
-        yearTo: 2024,
-        journal: "Nature",
-        readingStatus: "reading",
-        requiredArtifacts: ["pdf"],
-      },
       sort: { columnId: "journal", direction: "asc" },
       selectedPath: "papers/quantum.md",
       drawerOpen: true,
     });
+    // The REAL internal applied filters stay canonical empty after the legacy
+    // setState (not merely hidden from serialization), and `filters` is not an
+    // actual public property of the state object.
+    expect((view as any).filters).toEqual({ requiredArtifacts: [] });
+    expect(activeState).not.toHaveProperty("filters");
   });
 
-  it("restores complete UI state via setState and reflects it across onOpen", async () => {
+  it("restores non-filter UI state via setState and discards legacy filters across onOpen", async () => {
     const view = makeView();
     await view.setState(
       {
@@ -218,22 +222,27 @@ describe("PaperNotesLibraryView public state contract (getState/setState)", () =
       { history: false },
     );
 
+    // Only the non-filter UI state round-trips; the legacy `filters` payload is
+    // discarded rather than restored into the live applied filters.
     expect(view.getState()).toEqual({
       page: "library",
       searchQuery: "einstein relativity",
-      filters: {
-        journal: "Annalen der Physik",
-        yearFrom: 1905,
-        requiredArtifacts: ["pdf", "minerU"],
-      },
       sort: { columnId: "year", direction: "asc" },
       selectedPath: "papers/einstein1905.md",
       drawerOpen: true,
     });
+    expect((view as any).filters).toEqual({ requiredArtifacts: [] });
+    expect(view.getState()).not.toHaveProperty("filters");
 
-    // Opening the view does not crash and renders with drawer open
+    // Opening the view does not crash, keeps the non-filter state (query,
+    // sort, selection, drawer) and leaves the applied filters canonical empty.
     await view.onOpen();
     expect(view.getState().drawerOpen).toBe(true);
+    expect(view.getState().searchQuery).toBe("einstein relativity");
+    expect(view.getState().sort).toEqual({ columnId: "year", direction: "asc" });
+    expect(view.getState().selectedPath).toBe("papers/einstein1905.md");
+    expect((view as any).filters).toEqual({ requiredArtifacts: [] });
+    expect(view.getState()).not.toHaveProperty("filters");
     await view.onClose();
   });
 
