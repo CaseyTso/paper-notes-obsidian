@@ -149,8 +149,16 @@ The read-only Plugin Settings status showing whether the paper-fetch CLI can use
 _Avoid_: 科研通登录获取, ableSci session grabber, 科研通账号配置
 
 **Plugin Settings**:
-The Obsidian settings tab exposing plugin configuration persisted in `data.json` (paper-notes CLI path, paper-fetch CLI path, export directory, Pandoc path, reference DOCX, selected CSL, metric TTL, metrics toggle). The literature root is display-only and cannot be edited from the tab.
+The Obsidian settings tab exposing plugin configuration persisted in `data.json` (paper-notes CLI path, paper-fetch CLI path, export directory, Pandoc path, reference DOCX, selected CSL, metric TTL, metrics toggle). The literature root is display-only and cannot be edited from the tab. The Export section reaches the CSL Style Manager and the Reference DOCX file picker.
 _Avoid_: settings in Markdown, hidden config file editing, editable literature root
+
+**CSL Style Manager**:
+The modal opened from Plugin Settings that manages the vault's `.paper-notes/csl/` styles: importing one local `.csl` file, listing imported styles, setting the single global default used by export, and deleting styles. The style currently selected as default cannot be deleted.
+_Avoid_: settings dropdown, CSL library view, per-note style override
+
+**Reference DOCX Library (模板库)**:
+The vault-managed directory `.paper-notes/reference-docx/` holding multiple Word templates for DOCX export styling. Templates are imported via file picker and copied into the vault; they survive vault sync and computer changes. One template is selected as the global default in Plugin Settings; export always uses that default. Empty selection means Pandoc's built-in default template.
+_Avoid_: single path setting, in-place disk reference, per-note template override
 
 **Drawer Toggle**:
 Single-clicking the Literature Library row whose Detail Drawer is already open closes the Drawer; single-click on another row still switches the Drawer, and double-click still opens only the Primary PDF (drawer-open included).
@@ -287,3 +295,29 @@ _Avoid_: all cards of the paper, inline card body, new card authored in the MOC
 **Figure解读 Link**:
 The wikilink in the Figure解读 column. In the first version, its target filename is how a Topic Entry is bound to a paper.
 _Avoid_: citation_key column, title-as-identity
+
+## Mobile Companion Plugin
+
+**Mobile Companion Plugin (移动端伴侣插件)**:
+The second, separate Obsidian plugin (`paper-notes-mobile`) that runs on Obsidian Mobile, distinct from the desktop plugin. It ships the Mobile Reading Workflow and nothing else. Both plugins live in this monorepo and share the Shared Read Layer. See ADR `0006`.
+_Avoid_: mobile mode of one plugin, degraded desktop plugin, platform-branched single plugin
+
+**Mobile Reading Workflow (移动端阅读流程)**:
+The mobile plugin's whole scope: open a Figure Interpretation Note, select a passage, create a Literature Card from it, and cycle the paper's Reading Status to `read`. It reads and lightly writes plain-text notes only; it never reads PDFs, exports, runs MinerU, or uses the Browser Connector.
+_Avoid_: full desktop feature parity, mobile PDF reading, mobile export
+
+**Shared Read Layer (共享只读层)**:
+The platform-neutral, Node-free code under `src/shared/` used by both the desktop and mobile plugins: library parsing, frontmatter reading, and CAS/JCR matching. It is read-only and contains no write logic and no `node:*` imports, so it loads on Obsidian Mobile unchanged.
+_Avoid_: duplicated parsing per plugin, write logic in the shared layer, platform checks in shared code
+
+**CLI Sole-Writer Exemption (CLI 唯一写者豁免)**:
+The mobile plugin's explicit permission to write the vault directly via Obsidian's vault API, bypassing the paper-notes CLI that remains the sole writer on desktop. This creates a Two-Writer System. See ADR `0007`.
+_Avoid_: mobile writes through CLI, queued intent applied on desktop, routing writes to a running desktop
+
+**Two-Writer System (双写者系统)**:
+The resulting state in which managed vault writes have two engines: the paper-notes CLI (desktop) and the mobile plugin's own TypeScript re-implementation of the same writes. Card frontmatter format, Card Anchor rules, and `reading_status` values must stay byte-identical across both.
+_Avoid_: single writer, three or more writers, mobile-only format variant
+
+**Mobile Card Anchor Insertion (移动端卡片锚点插入)**:
+Creating a Card Anchor on mobile by computing the UTF-8 byte offset with pure vault APIs, because the desktop mechanism (`view.save()` + temp file + `adapter.getBasePath()`) is unavailable on Obsidian Mobile (`getBasePath()` returns `undefined`).
+_Avoid_: `getBasePath()` on mobile, temp-file offset on mobile
