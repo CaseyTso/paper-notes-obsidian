@@ -103,6 +103,9 @@ export function createMockEl(tag: string = "div"): any {
     setAttribute(name: string, val: string) {
       this.attrs[name] = val;
     },
+    setAttr(name: string, val: string) {
+      this.attrs[name] = val;
+    },
     getAttribute(name: string) {
       return this.attrs[name] ?? null;
     },
@@ -123,6 +126,13 @@ export function createMockEl(tag: string = "div"): any {
     },
     empty() {
       this.children = [];
+    },
+    appendChild(child: any) {
+      this.children.push(child);
+      if (typeof child?.textContent === "string") {
+        this.textContent = (this.textContent || "") + child.textContent;
+      }
+      return child;
     },
     createEl(t: string, opts: any = {}) {
       const child = createMockEl(t);
@@ -156,8 +166,12 @@ export class Modal {
     this.app = app;
   }
 
-  open(): void {}
-  close(): void {}
+  open(): void {
+    (this as any).onOpen?.();
+  }
+  close(): void {
+    (this as any).onClose?.();
+  }
 }
 
 export class Notice {
@@ -310,6 +324,17 @@ export class MarkdownView {
 
 export function setIcon(_el: unknown, _icon: string): void {}
 
+export function sanitizeHTMLToDom(html: string): DocumentFragment {
+  if (typeof document !== "undefined" && typeof document.createRange === "function") {
+    return document.createRange().createContextualFragment(html);
+  }
+  const frag: any = createMockEl("fragment");
+  frag.nodeType = 11;
+  frag.textContent = html;
+  frag.rawHtml = html;
+  return frag as DocumentFragment;
+}
+
 /**
  * Headless stubs for the settings tab surface (src/settings-tab.ts). The
  * tab is GUI-only and never instantiated by the mock suites; these exist so
@@ -350,3 +375,12 @@ export class Setting {
     return this;
   }
 }
+
+export function normalizePath(path: string): string {
+  return path
+    .replace(/\\/g, "/")
+    .replace(/\/+/g, "/")
+    .replace(/^\.\//, "")
+    .replace(/\/$/, "");
+}
+

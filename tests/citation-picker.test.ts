@@ -231,7 +231,18 @@ vi.mock("obsidian", () => {
     }
   }
 
-  return { Plugin, ItemView, WorkspaceLeaf, Modal, Notice, MarkdownView, PluginSettingTab, Setting };
+  return {
+    Plugin,
+    ItemView,
+    WorkspaceLeaf,
+    Modal,
+    Notice,
+    MarkdownView,
+    PluginSettingTab,
+    Setting,
+    normalizePath: (p: string) =>
+      p.replace(/\\/g, "/").replace(/\/+/g, "/").replace(/\/$/, ""),
+  };
 });
 
 interface FakeEl {

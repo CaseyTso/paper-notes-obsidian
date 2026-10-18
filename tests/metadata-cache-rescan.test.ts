@@ -139,7 +139,17 @@ vi.mock("obsidian", () => {
     }
   }
 
-  return { Plugin, ItemView, WorkspaceLeaf, Modal, Notice, PluginSettingTab, Setting };
+  return {
+    Plugin,
+    ItemView,
+    WorkspaceLeaf,
+    Modal,
+    Notice,
+    PluginSettingTab,
+    Setting,
+    normalizePath: (p: string) =>
+      p.replace(/\\/g, "/").replace(/\/+/g, "/").replace(/\/$/, ""),
+  };
 });
 
 function validFrontmatter(): Record<string, unknown> {

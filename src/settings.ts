@@ -40,7 +40,7 @@ export interface PaperNotesSettings {
   exportDirectory: string;
   /** Pandoc binary used for DOCX export. */
   pandocPath: string;
-  /** Reference DOCX used for export styling (empty when unset). */
+  /** File name of the selected Reference DOCX template inside `.paper-notes/reference-docx/` (empty when unset). Legacy absolute paths are auto-migrated on load. */
   referenceDocx: string;
   /**
    * Globally selected CSL style (Task 28): the style's file name inside
@@ -94,6 +94,12 @@ export const DEFAULT_SETTINGS: PaperNotesSettings = {
  * generated bibliographic data.
  */
 export const CSL_STYLE_DIR = ".paper-notes/csl";
+
+/**
+ * Vault-relative directory holding user-imported Reference DOCX templates
+ * (ADR 0005). Reference DOCX templates are vault configuration assets.
+ */
+export const REFERENCE_DOCX_DIR = ".paper-notes/reference-docx";
 
 const STRING_FIELDS = [
   "cliPath",

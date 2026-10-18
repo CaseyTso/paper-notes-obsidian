@@ -3576,3 +3576,136 @@ button.paper-notes-status-chip--read:hover {
     display: none;
   }
 }
+
+/* ---------------------------------------------------------------------------
+ * CSL Style Manager modal (Stage S3)
+ * ---------------------------------------------------------------------------
+ */
+.paper-notes-csl-modal {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  max-width: 600px;
+}
+
+.paper-notes-csl-message {
+  font-size: var(--font-ui-small, 13px);
+  color: var(--text-muted);
+  min-height: 18px;
+}
+
+.paper-notes-csl-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 240px;
+  overflow-y: auto;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-s, 4px);
+  padding: 6px;
+}
+
+.paper-notes-csl-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 10px;
+  border-radius: var(--radius-s, 4px);
+  cursor: pointer;
+  background: var(--background-secondary);
+  transition: background-color 0.15s ease;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.paper-notes-csl-row:hover {
+  background: var(--background-modifier-hover);
+}
+
+.paper-notes-csl-row.is-selected {
+  background: var(--background-modifier-active-hover, var(--background-modifier-hover));
+  box-shadow: inset 3px 0 0 var(--interactive-accent);
+}
+
+.paper-notes-csl-id {
+  font-size: var(--font-ui-smaller, 11px);
+  color: var(--text-faint);
+  flex-basis: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.paper-notes-csl-preview {
+  margin-top: 8px;
+  padding: 10px 12px;
+  background: var(--background-secondary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-s, 4px);
+  min-height: 80px;
+  max-height: 200px;
+  overflow-y: auto;
+  font-size: var(--font-ui-small, 13px);
+  line-height: 1.45;
+}
+
+.paper-notes-csl-preview-empty {
+  color: var(--text-muted);
+  font-style: italic;
+}
+
+.paper-notes-csl-preview-content .csl-bib-body {
+  line-height: 1.4;
+}
+
+.paper-notes-csl-preview-content .csl-entry {
+  margin-bottom: 6px;
+}
+
+/* ---------------------------------------------------------------------------
+ * Reference DOCX Template Library modal (Stage R3)
+ * ---------------------------------------------------------------------------
+ */
+.paper-notes-refdocx-modal {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  max-width: 600px;
+}
+
+.paper-notes-refdocx-message {
+  font-size: var(--font-ui-small, 13px);
+  color: var(--text-muted);
+  min-height: 18px;
+}
+
+.paper-notes-refdocx-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 240px;
+  overflow-y: auto;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-s, 4px);
+  padding: 6px;
+}
+
+.paper-notes-refdocx-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 10px;
+  border-radius: var(--radius-s, 4px);
+  background: var(--background-secondary);
+  transition: background-color 0.15s ease;
+  gap: 8px;
+}
+
+.paper-notes-refdocx-row:hover {
+  background: var(--background-modifier-hover);
+}
+
+.paper-notes-refdocx-row button:first-of-type {
+  margin-left: auto;
+}
+

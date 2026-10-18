@@ -5,6 +5,7 @@ vi.mock("obsidian", () => import("./obsidian.mock"));
 import type { App, PluginManifest } from "obsidian";
 import PaperNotesPlugin, {
   EXPORT_DOCX_COMMAND,
+  MANAGE_CSL_COMMAND,
   OPEN_LIBRARY_COMMAND,
   VIEW_TYPE_PAPER_NOTES,
 } from "../src/main";
@@ -67,5 +68,35 @@ describe("paper-notes plugin scaffold", () => {
     expect(registeredCommands).toContain("paper-notes-export-docx");
     expect(registeredCommands).not.toContain("paper-notes-export-pdf");
     expect("EXPORT_PDF_COMMAND" in (await import("../src/main"))).toBe(false);
+  });
+
+  it("registers CSL style management command and provides getSelectedCslTitle", async () => {
+    expect(MANAGE_CSL_COMMAND).toBe("paper-notes-manage-csl");
+    const plugin = makePlugin();
+    await plugin.onload();
+
+    expect(registeredCommands).toContain(MANAGE_CSL_COMMAND);
+    expect(registeredCommands).toContain("paper-notes-manage-csl");
+
+    expect(await plugin.getSelectedCslTitle()).toBe("Default (none)");
+
+    plugin.settings.selectedCsl = "custom.csl";
+    expect(await plugin.getSelectedCslTitle()).toBe("custom.csl");
+  });
+
+  it("provides getSelectedReferenceDocxTitle", async () => {
+    const plugin = makePlugin();
+    await plugin.onload();
+
+    expect(await plugin.getSelectedReferenceDocxTitle()).toBe("Default (none)");
+
+    plugin.settings.referenceDocx = "custom.docx";
+    expect(await plugin.getSelectedReferenceDocxTitle()).toBe("custom.docx");
+
+    plugin.settings.referenceDocx = "   ";
+    expect(await plugin.getSelectedReferenceDocxTitle()).toBe("Default (none)");
+
+    plugin.settings.referenceDocx = "  template.docx  ";
+    expect(await plugin.getSelectedReferenceDocxTitle()).toBe("template.docx");
   });
 });

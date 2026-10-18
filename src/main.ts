@@ -1,8 +1,12 @@
+import { access, readFile } from "node:fs/promises";
+import { basename } from "node:path";
+
 import {
   Plugin,
   Notice,
   MarkdownView,
   Menu,
+  normalizePath,
   type MetadataCache,
   type TFile,
   type Vault,
@@ -35,6 +39,7 @@ import { WebCaptureActions } from "./services/web-capture-actions";
 import {
   CSL_STYLE_DIR,
   DEFAULT_SETTINGS,
+  REFERENCE_DOCX_DIR,
   browserConnectorEnabledOf,
   exportConfigOf,
   normalizeSettings,
@@ -76,7 +81,26 @@ import {
 import type { MocDirectorySource } from "./components/moc-directory";
 import { openMocNote } from "./services/moc-navigation";
 import { parseMocNote, type ParsedMoc } from "./services/moc-parse";
-import { requireExportStyle, type CslVaultPort } from "./services/csl-style-manager";
+import {
+  createCslStyleModal,
+  type CslStyleModalCallbacks,
+} from "./modals/csl-style-modal";
+import {
+  createReferenceDocxModal,
+  type ReferenceDocxModalCallbacks,
+} from "./modals/reference-docx-modal";
+import {
+  importCslStyle,
+  listCslStyles,
+  parseCslStyle,
+  requireExportStyle,
+  type CslVaultPort,
+} from "./services/csl-style-manager";
+import {
+  cslPreviewCachePath,
+  defaultCslPreviewPorts,
+  generateCslPreview,
+} from "./services/csl-preview";
 import { checkExportHealth, defaultHealthPort } from "./services/export-health";
 import {
   aliasMapOf,
@@ -97,6 +121,20 @@ export const INSERT_CITATION_COMMAND = "paper-notes-insert-citation";
 
 /** Command id for the focused Pandoc exporter (Task 29). */
 export const EXPORT_DOCX_COMMAND = "paper-notes-export-docx";
+
+/** Command id for the CSL style manager modal (Stage S3). */
+export const MANAGE_CSL_COMMAND = "paper-notes-manage-csl";
+
+function toNormalizedPath(path: string): string {
+  if (typeof normalizePath === "function") {
+    return normalizePath(path);
+  }
+  return path
+    .replace(/\\/g, "/")
+    .replace(/\/+/g, "/")
+    .replace(/^\.\//, "")
+    .replace(/\/$/, "");
+}
 
 /** Command id for Literature Card creation from selection. */
 export const CREATE_LITERATURE_CARD_COMMAND = "paper-notes-create-literature-card";
@@ -251,6 +289,13 @@ export default class PaperNotesPlugin extends Plugin {
       name: "Export active note as DOCX",
       callback: () => {
         void this.exportActiveNote();
+      },
+    });
+    this.addCommand({
+      id: MANAGE_CSL_COMMAND,
+      name: "Manage CSL styles",
+      callback: () => {
+        this.openCslStyleManager();
       },
     });
     // Literature Card from selection command + hotkey
@@ -462,11 +507,95 @@ export default class PaperNotesPlugin extends Plugin {
     const loaded =
       typeof this.loadData === "function" ? await this.loadData() : {};
     this.settings = normalizeSettings(loaded);
+    await this.migrateLegacyReferenceDocx();
     this.cliClient = new CliClient(this.settings.cliPath);
     this.cardCreationService = undefined;
     const probe = await this.cliClient.probe();
     this.cliReadOnlyMode = probe.readOnlyMode;
     this.initializeCaptureBridge();
+  }
+
+  /**
+   * Migrate legacy absolute referenceDocx paths to vault-managed template library (ADR 0005).
+   * - If referenceDocx contains path separators:
+   *   a. If the file exists on disk: copy into `.paper-notes/reference-docx/<basename>`
+   *      via vault adapter write (creating directory if needed via mkdir), update
+   *      settings.referenceDocx = <basename>, and save.
+   *   b. If the file does not exist: clear settings.referenceDocx = "" and save
+   *      (silently degrade to Pandoc default).
+   * - Clean filenames (no path separators) and empty strings are skipped.
+   * - Migration failures do NOT break plugin load: errors are logged and settings left as-is.
+   */
+  private async migrateLegacyReferenceDocx(): Promise<void> {
+    const raw = this.settings.referenceDocx?.trim() ?? "";
+    if (!raw) {
+      return;
+    }
+    // If it's already a clean filename (no path separators), skip migration.
+    if (!raw.includes("/") && !raw.includes("\\")) {
+      return;
+    }
+
+    try {
+      let fileExists = false;
+      try {
+        await access(raw);
+        fileExists = true;
+      } catch {
+        fileExists = false;
+      }
+
+      if (!fileExists) {
+        this.settings.referenceDocx = "";
+        await this.saveSettings();
+        return;
+      }
+
+      const fileName = basename(raw.replace(/\\/g, "/")).trim();
+      if (!fileName) {
+        return;
+      }
+
+      const adapter = this.app?.vault?.adapter as unknown as {
+        exists?: (path: string) => Promise<boolean>;
+        mkdir?: (path: string) => Promise<void>;
+        write?: (path: string, data: any) => Promise<void>;
+      } | undefined;
+
+      if (typeof adapter?.write !== "function") {
+        console.error(
+          "Paper Notes: cannot migrate reference DOCX because vault adapter write is not available.",
+        );
+        return;
+      }
+
+      const dirPath = toNormalizedPath(REFERENCE_DOCX_DIR);
+      if (typeof adapter.mkdir === "function") {
+        const dirExists =
+          typeof adapter.exists === "function"
+            ? await adapter.exists(dirPath)
+            : false;
+        if (!dirExists) {
+          try {
+            await adapter.mkdir(dirPath);
+          } catch {
+            // Directory might already exist
+          }
+        }
+      }
+
+      const content = await readFile(raw);
+      const targetVaultPath = toNormalizedPath(`${REFERENCE_DOCX_DIR}/${fileName}`);
+      await adapter.write(targetVaultPath, content as any);
+
+      this.settings.referenceDocx = fileName;
+      await this.saveSettings();
+    } catch (error) {
+      console.error(
+        "Paper Notes: failed to migrate legacy reference DOCX template",
+        error,
+      );
+    }
   }
 
   /**
@@ -826,8 +955,13 @@ export default class PaperNotesPlugin extends Plugin {
    * the raw loaded object instead of replacing it wholesale.
    */
   async saveSettings(): Promise<void> {
-    const loaded = ((await this.loadData()) as Record<string, unknown> | undefined) ?? {};
-    await this.saveData({ ...loaded, ...this.settings });
+    const loaded =
+      typeof this.loadData === "function"
+        ? (((await this.loadData()) as Record<string, unknown> | undefined) ?? {})
+        : {};
+    if (typeof this.saveData === "function") {
+      await this.saveData({ ...loaded, ...this.settings });
+    }
   }
 
   /**
@@ -1460,11 +1594,22 @@ export default class PaperNotesPlugin extends Plugin {
     }
 
     const cfg = exportConfigOf(this.settings);
+    // Resolve reference DOCX filename to absolute path
+    let resolvedReferenceDocx = "";
+    if (cfg.referenceDocx.trim().length > 0) {
+      const adapter = this.app.vault.adapter as { getFullPath?: (path: string) => string };
+      if (typeof adapter?.getFullPath === "function") {
+        resolvedReferenceDocx = adapter.getFullPath(
+          normalizePath(`${REFERENCE_DOCX_DIR}/${cfg.referenceDocx.trim()}`)
+        );
+      }
+    }
+
     const health = await checkExportHealth(defaultHealthPort(), {
       format: "docx",
       exportDirectory: cfg.exportDirectory,
       pandocPath: cfg.pandocPath,
-      referenceDocx: cfg.referenceDocx,
+      referenceDocx: resolvedReferenceDocx,
       csl: cslCheck,
     });
     if (!health.ok) {
@@ -1485,7 +1630,7 @@ export default class PaperNotesPlugin extends Plugin {
     const cslPath = adapter.getFullPath(health.cslPath);
     const engineLabel =
       health.referenceDocx.length > 0
-        ? `Reference DOCX: ${health.referenceDocx}`
+        ? `Reference DOCX: ${cfg.referenceDocx.trim()}`
         : "Reference DOCX: Pandoc default";
 
     try {
@@ -1534,18 +1679,25 @@ export default class PaperNotesPlugin extends Plugin {
    * from the vault adapter. Writes are never available from export flows.
    */
   private createCslVaultPort(): CslVaultPort {
-    const adapter = this.app.vault.adapter as unknown as {
-      list?: (path: string) => Promise<{ files: Array<{ name: string }> }>;
+    const adapter = this.app?.vault?.adapter as unknown as {
+      list?: (
+        path: string,
+      ) => Promise<{ files: Array<string | { name: string }> }>;
       read?: (path: string) => Promise<string>;
-    };
+    } | undefined;
     return {
       async listFiles(dir: string): Promise<string[]> {
         if (typeof adapter?.list !== "function") {
           return [];
         }
         try {
-          const listed = await adapter.list(dir);
-          return listed.files.map((file) => file.name);
+          const listed = await adapter.list(toNormalizedPath(dir));
+          return (listed.files ?? []).map((file) => {
+            if (typeof file === "string") {
+              return file.split("/").pop() ?? file;
+            }
+            return file.name;
+          });
         } catch {
           return [];
         }
@@ -1555,7 +1707,7 @@ export default class PaperNotesPlugin extends Plugin {
           return null;
         }
         try {
-          return await adapter.read(path);
+          return await adapter.read(toNormalizedPath(path));
         } catch {
           return null;
         }
@@ -1564,6 +1716,381 @@ export default class PaperNotesPlugin extends Plugin {
         throw new Error("CSL writes are not available from export flows.");
       },
     };
+  }
+
+  /**
+   * Vault port for CSL Style Manager supporting list, read, and write operations.
+   */
+  private createCslVaultPortWriteable(): CslVaultPort {
+    const adapter = this.app?.vault?.adapter as unknown as {
+      list?: (
+        path: string,
+      ) => Promise<{ files: Array<string | { name: string }> }>;
+      read?: (path: string) => Promise<string>;
+      write?: (path: string, data: string) => Promise<void>;
+      mkdir?: (path: string) => Promise<void>;
+      exists?: (path: string) => Promise<boolean>;
+    } | undefined;
+    return {
+      async listFiles(dir: string): Promise<string[]> {
+        if (typeof adapter?.list !== "function") {
+          return [];
+        }
+        try {
+          const listed = await adapter.list(toNormalizedPath(dir));
+          return (listed.files ?? []).map((file) => {
+            if (typeof file === "string") {
+              return file.split("/").pop() ?? file;
+            }
+            return file.name;
+          });
+        } catch {
+          return [];
+        }
+      },
+      async readText(path: string): Promise<string | null> {
+        if (typeof adapter?.read !== "function") {
+          return null;
+        }
+        try {
+          return await adapter.read(toNormalizedPath(path));
+        } catch {
+          return null;
+        }
+      },
+      async writeText(path: string, content: string): Promise<void> {
+        if (typeof adapter?.write !== "function") {
+          throw new Error("Vault adapter write is not available.");
+        }
+        const norm = toNormalizedPath(path);
+        const slashIdx = norm.lastIndexOf("/");
+        if (slashIdx > 0 && typeof adapter.mkdir === "function") {
+          const parentDir = norm.slice(0, slashIdx);
+          const exists =
+            typeof adapter.exists === "function"
+              ? await adapter.exists(parentDir)
+              : true;
+          if (!exists) {
+            await adapter.mkdir(parentDir);
+          }
+        }
+        await adapter.write(norm, content);
+      },
+    };
+  }
+
+  /**
+   * Return the title of the globally selected CSL style, or "Default (none)" when unset.
+   * If parsing the style fails, falls back to the filename.
+   */
+  async getSelectedCslTitle(): Promise<string> {
+    const selected = this.settings.selectedCsl?.trim();
+    if (!selected) {
+      return "Default (none)";
+    }
+    const port = this.createCslVaultPort();
+    try {
+      const xml = await port.readText(`${CSL_STYLE_DIR}/${selected}`);
+      if (xml !== null) {
+        const meta = parseCslStyle(xml);
+        return meta.title || selected;
+      }
+    } catch {
+      // Fall back to filename on read/parse error
+    }
+    return selected;
+  }
+
+  /**
+   * Return the filename of the globally selected reference DOCX, or "Default (none)" when unset.
+   */
+  async getSelectedReferenceDocxTitle(): Promise<string> {
+    const selected = this.settings.referenceDocx?.trim();
+    if (!selected) {
+      return "Default (none)";
+    }
+    return selected;
+  }
+
+  /**
+   * Open the CSL Style Manager modal (Stage S3).
+   * Manages imported styles under `.paper-notes/csl/`, preview generation,
+   * setting the global default, and deleting non-default styles.
+   */
+  openCslStyleManager(onClose?: () => void): void {
+    const cslVaultPort = this.createCslVaultPortWriteable();
+    const adapter = (this.app?.vault?.adapter ?? {}) as {
+      getFullPath?: (p: string) => string;
+      remove?: (p: string) => Promise<void>;
+      read?: (p: string) => Promise<string>;
+      exists?: (p: string) => Promise<boolean>;
+    };
+
+    const callbacks: CslStyleModalCallbacks = {
+      listStyles: () => listCslStyles(cslVaultPort, CSL_STYLE_DIR),
+      pickCslFile: () => this.pickCslFileViaNativePicker(),
+      importStyle: (xml: string) =>
+        importCslStyle(cslVaultPort, CSL_STYLE_DIR, xml),
+      setDefault: async (file: string) => {
+        this.settings.selectedCsl = file;
+        await this.saveSettings();
+      },
+      currentDefault: () => this.settings.selectedCsl,
+      deleteStyle: async (file: string) => {
+        if (!file || file === this.settings.selectedCsl) {
+          throw new Error("Cannot delete the current default style.");
+        }
+        const filePath = toNormalizedPath(`${CSL_STYLE_DIR}/${file}`);
+        const cachePath = toNormalizedPath(
+          `${CSL_STYLE_DIR}/.cache/${file}.html`,
+        );
+        if (typeof adapter.remove === "function") {
+          try {
+            await adapter.remove(filePath);
+          } catch (error) {
+            throw error instanceof Error
+              ? error
+              : new Error("Could not delete style.");
+          }
+          try {
+            const cacheExists =
+              typeof adapter.exists === "function"
+                ? await adapter.exists(cachePath)
+                : true;
+            if (cacheExists) {
+              await adapter.remove(cachePath);
+            }
+          } catch {
+            // cache removal failure ignored
+          }
+        }
+      },
+      readPreviewHtml: async (file: string): Promise<string | null> => {
+        const cacheRel = toNormalizedPath(
+          `${CSL_STYLE_DIR}/.cache/${file}.html`,
+        );
+        if (typeof adapter.read === "function") {
+          try {
+            return await adapter.read(cacheRel);
+          } catch {
+            // fallback
+          }
+        }
+        if (typeof adapter.getFullPath === "function") {
+          try {
+            return await readFile(adapter.getFullPath(cacheRel), "utf8");
+          } catch {
+            return null;
+          }
+        }
+        return null;
+      },
+      generatePreview: async (file: string): Promise<void> => {
+        const cslRel = toNormalizedPath(`${CSL_STYLE_DIR}/${file}`);
+        const cacheRel = toNormalizedPath(
+          `${CSL_STYLE_DIR}/.cache/${file}.html`,
+        );
+        const cslDirRel = toNormalizedPath(CSL_STYLE_DIR);
+
+        let absCslPath = cslRel;
+        let absCachePath = cacheRel;
+        if (typeof adapter.getFullPath === "function") {
+          absCslPath = adapter.getFullPath(cslRel);
+          absCachePath = adapter.getFullPath(cacheRel);
+        } else {
+          absCachePath = cslPreviewCachePath(cslDirRel, file);
+        }
+
+        const res = await generateCslPreview(defaultCslPreviewPorts(), {
+          pandocPath: this.settings.pandocPath || "pandoc",
+          cslPath: absCslPath,
+          cachePath: absCachePath,
+        });
+        if (!res.ok) {
+          throw new Error(res.error);
+        }
+      },
+    };
+
+    createCslStyleModal(this.app, callbacks, onClose).open();
+  }
+
+  private async pickCslFileViaNativePicker(): Promise<{ name: string; text: string } | null> {
+    try {
+      const electron = require("electron") as {
+        remote?: { dialog?: { showOpenDialog(opts: unknown): Promise<{ canceled: boolean; filePaths: string[] }> } };
+        dialog?: { showOpenDialog(opts: unknown): Promise<{ canceled: boolean; filePaths: string[] }> };
+      };
+      const dialog = electron.remote?.dialog ?? electron.dialog;
+      if (!dialog) {
+        new Notice("File picker is not available.");
+        return null;
+      }
+      const result = await dialog.showOpenDialog({
+        properties: ["openFile"],
+        filters: [{ name: "CSL Styles", extensions: ["csl"] }],
+      });
+      if (result.canceled || result.filePaths.length === 0) {
+        return null;
+      }
+      const absPath = result.filePaths[0];
+      const name = absPath.split("/").pop() ?? "style.csl";
+      const text = await readFile(absPath, "utf8");
+      return { name, text };
+    } catch (error) {
+      new Notice(error instanceof Error ? error.message : "Failed to read picked CSL file.");
+      return null;
+    }
+  }
+
+  /**
+   * Open the Reference DOCX Template Library manager modal (Stage R3 / ADR 0005).
+   * Manages templates under `.paper-notes/reference-docx/`, importing via native picker,
+   * setting the global default, and deleting non-default templates.
+   */
+  openReferenceDocxManager(onClose?: () => void): void {
+    const adapter = (this.app?.vault?.adapter ?? {}) as {
+      list?: (
+        path: string,
+      ) => Promise<{ files: Array<string | { name: string }> }>;
+      exists?: (path: string) => Promise<boolean>;
+      mkdir?: (path: string) => Promise<void>;
+      writeBinary?: (path: string, data: ArrayBuffer) => Promise<void>;
+      write?: (path: string, data: any) => Promise<void>;
+      remove?: (path: string) => Promise<void>;
+    };
+
+    const callbacks: ReferenceDocxModalCallbacks = {
+      listTemplates: async (): Promise<string[]> => {
+        if (typeof adapter.list !== "function") {
+          return [];
+        }
+        try {
+          const dir = toNormalizedPath(REFERENCE_DOCX_DIR);
+          const listed = await adapter.list(dir);
+          return (listed.files ?? [])
+            .map((file) => {
+              if (typeof file === "string") {
+                return file.replace(/\\/g, "/").split("/").pop() ?? file;
+              }
+              return file.name;
+            })
+            .filter((name) => name.toLowerCase().endsWith(".docx"))
+            .sort();
+        } catch {
+          return [];
+        }
+      },
+      pickTemplateFile: async (): Promise<{
+        name: string;
+        sourcePath: string;
+      } | null> => {
+        return this.pickDocxFileViaNativePicker();
+      },
+      importTemplate: async (
+        sourcePath: string,
+        fileName: string,
+      ): Promise<void> => {
+        const cleanFileName = basename(fileName.replace(/\\/g, "/")).trim();
+        if (!cleanFileName) {
+          throw new Error("Invalid template file name.");
+        }
+        const dirPath = toNormalizedPath(REFERENCE_DOCX_DIR);
+        if (typeof adapter.mkdir === "function") {
+          const dirExists =
+            typeof adapter.exists === "function"
+              ? await adapter.exists(dirPath)
+              : false;
+          if (!dirExists) {
+            try {
+              await adapter.mkdir(dirPath);
+            } catch {
+              // Directory might already exist
+            }
+          }
+        }
+        const content = await readFile(sourcePath);
+        const targetVaultPath = toNormalizedPath(
+          `${REFERENCE_DOCX_DIR}/${cleanFileName}`,
+        );
+        const arrayBuffer = content.buffer.slice(
+          content.byteOffset,
+          content.byteOffset + content.byteLength,
+        );
+        if (typeof adapter.writeBinary === "function") {
+          await adapter.writeBinary(targetVaultPath, arrayBuffer);
+        } else if (typeof adapter.write === "function") {
+          await adapter.write(targetVaultPath, content as any);
+        } else {
+          throw new Error("Vault adapter writeBinary is not available.");
+        }
+      },
+      setDefault: async (file: string): Promise<void> => {
+        this.settings.referenceDocx = file;
+        await this.saveSettings();
+      },
+      currentDefault: (): string => this.settings.referenceDocx,
+      deleteTemplate: async (file: string): Promise<void> => {
+        if (!file || file === this.settings.referenceDocx) {
+          throw new Error("Cannot delete the current default template.");
+        }
+        const filePath = toNormalizedPath(`${REFERENCE_DOCX_DIR}/${file}`);
+        if (typeof adapter.remove === "function") {
+          try {
+            await adapter.remove(filePath);
+          } catch (error) {
+            throw error instanceof Error
+              ? error
+              : new Error("Could not delete template.");
+          }
+        }
+      },
+    };
+
+    createReferenceDocxModal(this.app, callbacks, onClose).open();
+  }
+
+  private async pickDocxFileViaNativePicker(): Promise<{
+    name: string;
+    sourcePath: string;
+  } | null> {
+    try {
+      const electron = require("electron") as {
+        remote?: {
+          dialog?: {
+            showOpenDialog(
+              opts: unknown,
+            ): Promise<{ canceled: boolean; filePaths: string[] }>;
+          };
+        };
+        dialog?: {
+          showOpenDialog(
+            opts: unknown,
+          ): Promise<{ canceled: boolean; filePaths: string[] }>;
+        };
+      };
+      const dialog = electron.remote?.dialog ?? electron.dialog;
+      if (!dialog) {
+        new Notice("File picker is not available.");
+        return null;
+      }
+      const result = await dialog.showOpenDialog({
+        properties: ["openFile"],
+        filters: [{ name: "Word Documents", extensions: ["docx"] }],
+      });
+      if (result.canceled || result.filePaths.length === 0) {
+        return null;
+      }
+      const sourcePath = result.filePaths[0];
+      const name =
+        basename(sourcePath.replace(/\\/g, "/")).trim() || "template.docx";
+      return { name, sourcePath };
+    } catch (error) {
+      new Notice(
+        error instanceof Error ? error.message : "Failed to open file picker.",
+      );
+      return null;
+    }
   }
 
   /** Get or initialize the literature card creation service. */

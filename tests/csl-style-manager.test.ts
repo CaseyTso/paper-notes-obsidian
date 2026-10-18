@@ -427,31 +427,49 @@ interface FakeElOptions {
 
 interface FakeEl {
   textContent: string;
+  innerHTML: string;
   value: string;
   cls: string;
+  disabled: boolean;
   children: FakeEl[];
   listeners: Record<string, Array<(event?: unknown) => void>>;
   setText(text: string): void;
   empty(): void;
   createDiv(options?: FakeElOptions): FakeEl;
   createEl(tag: string, options?: FakeElOptions): FakeEl;
+  appendChild(child: unknown): unknown;
   addEventListener(
     name: string,
     handler: (event?: unknown) => void,
   ): void;
+  setAttr(name: string, value: string): void;
 }
 
 function makeFakeEl(): FakeEl {
   const children: FakeEl[] = [];
   const listeners: Record<string, Array<(event?: unknown) => void>> = {};
+  let text = "";
   const el: FakeEl = {
-    textContent: "",
+    get textContent() {
+      if (text) return text;
+      return children.map((c) => c.textContent).join("");
+    },
+    set textContent(v: string) {
+      text = v;
+    },
+    get innerHTML() {
+      return text;
+    },
+    set innerHTML(v: string) {
+      text = v;
+    },
     value: "",
     cls: "",
+    disabled: false,
     children,
     listeners,
-    setText(text: string): void {
-      el.textContent = text;
+    setText(t: string): void {
+      text = t;
     },
     empty(): void {
       children.length = 0;
@@ -462,11 +480,20 @@ function makeFakeEl(): FakeEl {
     createEl(_tag: string, options?: FakeElOptions): FakeEl {
       return makeChild(options);
     },
+    appendChild(child: unknown): unknown {
+      children.push(child as FakeEl);
+      return child;
+    },
     addEventListener(
       name: string,
       handler: (event?: unknown) => void,
     ): void {
       (listeners[name] ??= []).push(handler);
+    },
+    setAttr(name: string, value: string): void {
+      if (name === "disabled") {
+        el.disabled = value === "true" || value === "";
+      }
     },
   };
   function makeChild(options?: FakeElOptions): FakeEl {
@@ -505,18 +532,39 @@ const FakeModal = vi.hoisted(() => {
       (this as unknown as { onOpen?: () => void }).onOpen?.();
     }
 
-    close(): void {}
+    close(): void {
+      (this as unknown as { onClose?: () => void }).onClose?.();
+    }
   }
   return FakeModal;
 });
 
-vi.mock("obsidian", () => ({ Modal: FakeModal }));
+function fakeSanitizeHTMLToDom(html: string): DocumentFragment {
+  if (
+    typeof document !== "undefined" &&
+    typeof document.createRange === "function"
+  ) {
+    return document.createRange().createContextualFragment(html);
+  }
+  const el = makeFakeEl();
+  el.textContent = html;
+  (el as unknown as { rawHtml: string }).rawHtml = html;
+  return el as unknown as DocumentFragment;
+}
+
+vi.mock("obsidian", () => ({
+  Modal: FakeModal,
+  sanitizeHTMLToDom: (html: string) => fakeSanitizeHTMLToDom(html),
+}));
 
 function makeModalCallbacks(): {
   callbacks: CslStyleModalCallbacks;
   pickCslFile: ReturnType<typeof vi.fn>;
   importStyle: ReturnType<typeof vi.fn>;
   setDefault: ReturnType<typeof vi.fn>;
+  readPreviewHtml: ReturnType<typeof vi.fn>;
+  generatePreview: ReturnType<typeof vi.fn>;
+  deleteStyle: ReturnType<typeof vi.fn>;
   defaultFile: { current: string };
 } {
   const defaultFile = { current: "nature.csl" };
@@ -526,6 +574,11 @@ function makeModalCallbacks(): {
     defaultFile.current = file;
     return Promise.resolve();
   });
+  const readPreviewHtml = vi.fn((_file: string) =>
+    Promise.resolve(null as string | null),
+  );
+  const generatePreview = vi.fn((_file: string) => Promise.resolve());
+  const deleteStyle = vi.fn((_file: string) => Promise.resolve());
   const listStyles = vi.fn(() =>
     Promise.resolve([
       {
@@ -542,8 +595,20 @@ function makeModalCallbacks(): {
     importStyle,
     setDefault,
     currentDefault: () => defaultFile.current,
+    readPreviewHtml,
+    generatePreview,
+    deleteStyle,
   };
-  return { callbacks, pickCslFile, importStyle, setDefault, defaultFile };
+  return {
+    callbacks,
+    pickCslFile,
+    importStyle,
+    setDefault,
+    readPreviewHtml,
+    generatePreview,
+    deleteStyle,
+    defaultFile,
+  };
 }
 
 function listRows(handle: { contentEl: HTMLElement }): FakeEl[] {
@@ -573,6 +638,13 @@ function actionButtonOf(
     return undefined;
   }
   return actions.children.find((child) => child.textContent === label);
+}
+
+function previewOf(handle: { contentEl: HTMLElement }): FakeEl | undefined {
+  const content = handle.contentEl as unknown as FakeEl;
+  return content.children.find(
+    (child) => child.cls === "paper-notes-csl-preview",
+  );
 }
 
 describe("csl style modal wiring (fake DOM)", () => {
@@ -701,6 +773,233 @@ describe("csl style modal wiring (fake DOM)", () => {
     actionButtonOf(handle, "Import .csl…")?.listeners?.click?.[0]?.();
     await vi.waitFor(() => {
       expect(importStyle).not.toHaveBeenCalled();
+    });
+  });
+
+  it("selecting a row displays cached preview HTML", async () => {
+    const { callbacks, readPreviewHtml } = makeModalCallbacks();
+    readPreviewHtml.mockResolvedValue("<div id=\"refs\">AMA Ref Preview</div>");
+    const handle = createCslStyleModal({} as App, callbacks);
+
+    handle.open();
+    await vi.waitFor(() => {
+      expect(listRows(handle).length).toBe(2);
+    });
+
+    const preview = previewOf(handle);
+    expect(preview?.textContent).toContain("Select a style to preview.");
+
+    // Click AMA row
+    const amaRow = listRows(handle)[0] as FakeEl;
+    amaRow.listeners?.click?.[0]?.();
+
+    await vi.waitFor(() => {
+      expect(readPreviewHtml).toHaveBeenCalledWith(
+        "american-medical-association.csl",
+      );
+    });
+    await vi.waitFor(() => {
+      expect(preview?.textContent).toContain("AMA Ref Preview");
+    });
+    expect(listRows(handle)[0]?.cls).toContain("is-selected");
+  });
+
+  it("selecting a row without cached preview shows placeholder and triggers background generation", async () => {
+    let resolveGenerate: () => void = () => {};
+    const generatePending = new Promise<void>((resolve) => {
+      resolveGenerate = resolve;
+    });
+    const { callbacks, readPreviewHtml, generatePreview } =
+      makeModalCallbacks();
+    readPreviewHtml.mockResolvedValue(null);
+    generatePreview.mockReturnValue(generatePending);
+    const handle = createCslStyleModal({} as App, callbacks);
+
+    handle.open();
+    await vi.waitFor(() => {
+      expect(listRows(handle).length).toBe(2);
+    });
+
+    const amaRow = listRows(handle)[0] as FakeEl;
+    amaRow.listeners?.click?.[0]?.();
+
+    await vi.waitFor(() => {
+      expect(generatePreview).toHaveBeenCalledWith(
+        "american-medical-association.csl",
+      );
+    });
+    const preview = previewOf(handle);
+    expect(preview?.textContent).toContain("Preview not yet generated.");
+
+    readPreviewHtml.mockResolvedValue("<div id=\"refs\">Generated AMA</div>");
+    resolveGenerate();
+
+    await vi.waitFor(() => {
+      expect(preview?.textContent).toContain("Generated AMA");
+    });
+  });
+
+  it("triggers background preview generation upon successful import", async () => {
+    const { callbacks, pickCslFile, importStyle, generatePreview } =
+      makeModalCallbacks();
+    pickCslFile.mockResolvedValue({ name: "ama.csl", text: AMA_CSL });
+    importStyle.mockResolvedValue({
+      status: "imported",
+      meta: {
+        file: "american-medical-association.csl",
+        title: "American Medical Association",
+        id: AMA_STYLE_ID,
+      },
+    });
+    const handle = createCslStyleModal({} as App, callbacks);
+
+    handle.open();
+    await vi.waitFor(() => {
+      expect(listRows(handle).length).toBe(2);
+    });
+
+    actionButtonOf(handle, "Import .csl…")?.listeners?.click?.[0]?.();
+    await vi.waitFor(() => {
+      expect(importStyle).toHaveBeenCalledWith(AMA_CSL);
+    });
+    await vi.waitFor(() => {
+      expect(generatePreview).toHaveBeenCalledWith(
+        "american-medical-association.csl",
+      );
+    });
+  });
+
+  it("deleting a non-default style calls deleteStyle and refreshes", async () => {
+    const { callbacks, deleteStyle } = makeModalCallbacks();
+    const handle = createCslStyleModal({} as App, callbacks);
+
+    handle.open();
+    await vi.waitFor(() => {
+      expect(listRows(handle).length).toBe(2);
+    });
+
+    const amaDeleteBtn = buttonOf(listRows(handle)[0] as FakeEl, "Delete");
+    expect(amaDeleteBtn).toBeDefined();
+    expect(amaDeleteBtn?.disabled).toBe(false);
+
+    amaDeleteBtn?.listeners?.click?.[0]?.();
+    await vi.waitFor(() => {
+      expect(deleteStyle).toHaveBeenCalledWith(
+        "american-medical-association.csl",
+      );
+    });
+    await vi.waitFor(() => {
+      expect(messageOf(handle)?.textContent).toContain("Deleted style");
+    });
+  });
+
+  it("disables delete button for current default style and does not delete", async () => {
+    const { callbacks, deleteStyle } = makeModalCallbacks();
+    const handle = createCslStyleModal({} as App, callbacks);
+
+    handle.open();
+    await vi.waitFor(() => {
+      expect(listRows(handle).length).toBe(2);
+    });
+
+    // Nature is default in makeModalCallbacks
+    const natureDeleteBtn = buttonOf(listRows(handle)[1] as FakeEl, "Delete");
+    expect(natureDeleteBtn).toBeDefined();
+    expect(natureDeleteBtn?.disabled).toBe(true);
+    expect(natureDeleteBtn?.listeners?.click).toBeUndefined();
+    expect(deleteStyle).not.toHaveBeenCalled();
+  });
+
+  it("appends preview content as a DOM node via sanitizeHTMLToDom", async () => {
+    const { callbacks, readPreviewHtml } = makeModalCallbacks();
+    readPreviewHtml.mockResolvedValue("<div id=\"refs\">AMA Ref Preview</div>");
+    const handle = createCslStyleModal({} as App, callbacks);
+
+    handle.open();
+    await vi.waitFor(() => {
+      expect(listRows(handle).length).toBe(2);
+    });
+
+    const amaRow = listRows(handle)[0] as FakeEl;
+    amaRow.listeners?.click?.[0]?.();
+
+    await vi.waitFor(() => {
+      const preview = previewOf(handle);
+      const content = preview?.children.find(
+        (c) => c.cls === "paper-notes-csl-preview-content",
+      );
+      expect(content).toBeDefined();
+      expect(content?.children.length).toBe(1);
+      expect(typeof content?.children[0]).toBe("object");
+      expect(content?.children[0]?.textContent).toContain("AMA Ref Preview");
+    });
+  });
+
+  it("does not trigger duplicate background preview generation when selecting the same uncached row twice while in flight", async () => {
+    let resolveGenerate: () => void = () => {};
+    const generatePending = new Promise<void>((resolve) => {
+      resolveGenerate = resolve;
+    });
+    const { callbacks, readPreviewHtml, generatePreview } =
+      makeModalCallbacks();
+    readPreviewHtml.mockResolvedValue(null);
+    generatePreview.mockReturnValue(generatePending);
+    const handle = createCslStyleModal({} as App, callbacks);
+
+    handle.open();
+    await vi.waitFor(() => {
+      expect(listRows(handle).length).toBe(2);
+    });
+
+    const amaRow = listRows(handle)[0] as FakeEl;
+    // First click
+    amaRow.listeners?.click?.[0]?.();
+
+    await vi.waitFor(() => {
+      expect(generatePreview).toHaveBeenCalledTimes(1);
+    });
+
+    // Second click on the same uncached row while in-flight
+    amaRow.listeners?.click?.[0]?.();
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    // Must still be called only once
+    expect(generatePreview).toHaveBeenCalledTimes(1);
+
+    // Resolve in flight
+    readPreviewHtml.mockResolvedValue("<div>Generated AMA</div>");
+    resolveGenerate();
+
+    await vi.waitFor(() => {
+      expect(previewOf(handle)?.textContent).toContain("Generated AMA");
+    });
+  });
+
+  it("invokes onCloseCallback when the modal is closed", () => {
+    const onClose = vi.fn();
+    const { callbacks } = makeModalCallbacks();
+    const handle = createCslStyleModal({} as App, callbacks, onClose);
+    handle.open();
+    expect(onClose).not.toHaveBeenCalled();
+    handle.close();
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it("displays error message when deleteStyle rejects", async () => {
+    const { callbacks, deleteStyle } = makeModalCallbacks();
+    deleteStyle.mockRejectedValue(new Error("File is read-only"));
+    const handle = createCslStyleModal({} as App, callbacks);
+
+    handle.open();
+    await vi.waitFor(() => {
+      expect(listRows(handle).length).toBe(2);
+    });
+
+    const amaDeleteBtn = buttonOf(listRows(handle)[0] as FakeEl, "Delete");
+    amaDeleteBtn?.listeners?.click?.[0]?.();
+
+    await vi.waitFor(() => {
+      expect(messageOf(handle)?.textContent).toBe("File is read-only");
     });
   });
 });

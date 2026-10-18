@@ -10,7 +10,7 @@
  */
 import { App, Notice, PluginSettingTab, Setting, type TextComponent } from "obsidian";
 
-import { CSL_STYLE_DIR, browserConnectorEnabledOf, metricsEnabledOf } from "./settings";
+import { browserConnectorEnabledOf, metricsEnabledOf } from "./settings";
 import type PaperNotesPlugin from "./main";
 
 export class PaperNotesSettingTab extends PluginSettingTab {
@@ -126,35 +126,45 @@ export class PaperNotesSettingTab extends PluginSettingTab {
           }),
       );
 
-    new Setting(containerEl)
+    const refDocxSetting = new Setting(containerEl)
       .setName("Reference DOCX")
-      .setDesc("Reference DOCX used for export styling (empty when unset).")
-      .addText((text) =>
-        text
-          .setValue(this.plugin.settings.referenceDocx)
-          .onChange(async (value) => {
-            this.plugin.settings.referenceDocx = value.trim();
-            await this.plugin.saveSettings();
-          }),
-      );
+      .setDesc("Reference DOCX template for export styling: loading…");
 
-    const cslStyles = this.listCslStyles();
-    new Setting(containerEl)
-      .setName("CSL style")
-      .setDesc(
-        "Globally selected citation style for export, picked from the vault's .paper-notes/csl/ directory.",
-      )
-      .addDropdown((dropdown) => {
-        dropdown.addOption("", "Default (none)");
-        for (const name of cslStyles) {
-          dropdown.addOption(name, name);
-        }
-        dropdown.setValue(this.plugin.settings.selectedCsl);
-        dropdown.onChange(async (value) => {
-          this.plugin.settings.selectedCsl = value;
-          await this.plugin.saveSettings();
+    const updateRefDocxDesc = async () => {
+      const title = await this.plugin.getSelectedReferenceDocxTitle();
+      refDocxSetting.setDesc(
+        `Reference DOCX template for export styling: ${title}.`,
+      );
+    };
+    void updateRefDocxDesc();
+
+    refDocxSetting.addButton((button) =>
+      button.setButtonText("Manage templates…").onClick(() => {
+        this.plugin.openReferenceDocxManager(() => {
+          void updateRefDocxDesc();
         });
-      });
+      }),
+    );
+
+    const cslSetting = new Setting(containerEl)
+      .setName("CSL style")
+      .setDesc("Globally selected citation style for export: loading…");
+
+    const updateCslDesc = async () => {
+      const title = await this.plugin.getSelectedCslTitle();
+      cslSetting.setDesc(
+        `Globally selected citation style for export: ${title}.`,
+      );
+    };
+    void updateCslDesc();
+
+    cslSetting.addButton((button) =>
+      button.setButtonText("Manage styles…").onClick(() => {
+        this.plugin.openCslStyleManager(() => {
+          void updateCslDesc();
+        });
+      }),
+    );
   }
 
   private renderMetrics(containerEl: HTMLElement): void {
@@ -371,19 +381,6 @@ export class PaperNotesSettingTab extends PluginSettingTab {
         .setButtonText("Open ableSci login")
         .onClick(() => this.plugin.openExternal("https://www.ablesci.com")),
     );
-  }
-
-  /** CSL styles present under the vault .paper-notes/csl/ directory. */
-  private listCslStyles(): string[] {
-    return this.app.vault
-      .getFiles()
-      .filter(
-        (file) =>
-          file.path.startsWith(`${CSL_STYLE_DIR}/`) &&
-          file.extension === "csl",
-      )
-      .map((file) => file.name)
-      .sort();
   }
 }
 
