@@ -20,7 +20,7 @@ import {
   bibliographyIndentForDigits,
 } from "../src/services/docx-bibliography";
 import { defaultExportPorts, exportPandoc } from "../src/services/pandoc-export";
-import type { PaperRecord } from "../src/types/paper";
+import type { PaperRecord } from "../src/shared/paper";
 
 const W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
 

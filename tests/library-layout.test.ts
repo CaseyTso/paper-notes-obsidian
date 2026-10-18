@@ -11,7 +11,7 @@ import {
   countActiveAdvancedFilters,
   hasActiveAdvancedFilters,
   type LibraryFilters,
-} from "../src/components/library-filters";
+} from "../src/shared/library-filters";
 import {
   DEFAULT_SETTINGS,
   normalizeSettings,

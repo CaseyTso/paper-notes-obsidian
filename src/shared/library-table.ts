@@ -12,11 +12,13 @@
  * itself stays untouched.
  */
 
-import type { PaperRecord } from "../types/paper";
-import { matchesAllTokens, tokenizeQuery } from "../services/search-tokens";
+import type { PaperRecord } from "./paper";
+import { matchesAllTokens, tokenizeQuery } from "./search-tokens";
 
 /** Approved reading-status vocabulary (design spec §6.1). */
 export type ReadingStatus = "unread" | "reading" | "read";
+
+const READING_CYCLE: ReadingStatus[] = ["unread", "reading", "read"];
 
 /** Actual file presence inside the paper directory (`<key>/`). */
 export interface ArtifactAvailability {
@@ -192,6 +194,25 @@ export function readingStatusOf(
     return undefined;
   }
   return value as ReadingStatus;
+}
+
+/**
+ * Next reading status in the chip cycle.
+ * Missing frontmatter displays as `unread` in the UI, so `undefined` is
+ * treated the same as `unread` and advances to `reading` (CONSENSUS:
+ * unread → reading → read → unread). Never no-ops on the first click.
+ *
+ * Lives in the shared layer because both the desktop plugin (routed through
+ * the CLI) and the mobile plugin (direct vault writes) must cycle the exact
+ * same vocabulary.
+ */
+export function nextReadingStatus(current?: ReadingStatus): ReadingStatus {
+  const effective: ReadingStatus =
+    current !== undefined && READING_CYCLE.includes(current)
+      ? current
+      : "unread";
+  const index = READING_CYCLE.indexOf(effective);
+  return READING_CYCLE[(index + 1) % READING_CYCLE.length];
 }
 
 /** Detect PDF/MinerU/Figure presence from the paper directory basenames. */

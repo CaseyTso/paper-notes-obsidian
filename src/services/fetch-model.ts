@@ -6,7 +6,7 @@
  * verification, failure status normalization, and Notice plan mapping.
  */
 
-import type { PaperRecord } from "../types/paper";
+import type { PaperRecord } from "../shared/paper";
 import type {
   FetchAttemptJson,
   FetchFailureStatus,

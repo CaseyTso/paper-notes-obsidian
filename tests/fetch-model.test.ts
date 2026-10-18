@@ -4,7 +4,7 @@
  */
 
 import { describe, expect, it } from "vitest";
-import type { PaperRecord } from "../src/types/paper";
+import type { PaperRecord } from "../src/shared/paper";
 import type { FetchResultJson } from "../src/types/fetch";
 import {
   extractFirstHttpUrl,

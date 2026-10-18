@@ -12,7 +12,7 @@
 import {
   clampColumnWidth,
   type LibraryColumnId,
-} from "./components/library-table";
+} from "./shared/library-table";
 
 /** Known column ids accepted in persisted `columnWidths` (Batch 2 D). */
 const COLUMN_IDS: readonly LibraryColumnId[] = [

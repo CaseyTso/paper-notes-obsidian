@@ -46,7 +46,7 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 
 import { alignDocxBibliography } from "./docx-bibliography";
-import type { PaperRecord } from "../types/paper";
+import type { PaperRecord } from "../shared/paper";
 
 /** Supported output format (focused academic DOCX export). */
 export type ExportFormat = "docx";

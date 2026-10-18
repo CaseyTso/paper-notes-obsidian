@@ -32,7 +32,7 @@ import { readFileSync } from "node:fs";
 
 import { MarkdownView, type App, type PluginManifest } from "obsidian";
 
-import type { PaperRecord } from "../src/types/paper";
+import type { PaperRecord } from "../src/shared/paper";
 import {
   buildCitationText,
   citationLabelOf,

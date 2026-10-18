@@ -32,7 +32,7 @@ import { join } from "node:path";
 
 import { afterAll, describe, expect, it } from "vitest";
 
-import type { PaperRecord } from "../src/types/paper";
+import type { PaperRecord } from "../src/shared/paper";
 import { defaultExportPorts } from "../src/services/pandoc-export";
 import { exportPandoc } from "../src/services/pandoc-export";
 

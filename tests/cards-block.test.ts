@@ -22,7 +22,7 @@ import {
   PaperNotesLibraryView,
   type LibraryViewSource,
 } from "../src/views/literature-library-view";
-import type { PaperRecord } from "../src/types/paper";
+import type { PaperRecord } from "../src/shared/paper";
 
 const state = vi.hoisted(() => ({
   opened: [] as string[],

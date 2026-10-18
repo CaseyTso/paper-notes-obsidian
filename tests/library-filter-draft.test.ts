@@ -29,13 +29,13 @@ import {
   validateLibraryFilterDraft,
   type LibraryFilterDraft,
   type NumericFilterField,
-} from "../src/components/library-filter-draft";
+} from "../src/shared/library-filter-draft";
 import {
   EMPTY_LIBRARY_FILTERS,
   applyLibraryFilters,
   type LibraryFilters,
-} from "../src/components/library-filters";
-import type { LibraryItem } from "../src/components/library-table";
+} from "../src/shared/library-filters";
+import type { LibraryItem } from "../src/shared/library-table";
 
 const UUID_A = "550e8400-e29b-41d4-a716-446655440000";
 const UUID_B = "6ba7b810-9dad-11d1-80b4-00c04fd430c8";

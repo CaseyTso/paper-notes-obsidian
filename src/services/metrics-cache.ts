@@ -16,7 +16,7 @@
  * - Nothing here touches the filesystem or Markdown directly.
  */
 
-import type { PaperMetrics } from "../components/library-table";
+import type { PaperMetrics } from "../shared/library-table";
 import type { CliClient } from "./cli-client";
 import type { ProtocolEnvelope } from "../types/protocol";
 

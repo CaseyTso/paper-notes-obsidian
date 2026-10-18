@@ -24,7 +24,7 @@ import {
   verifyFetchedIdentity,
   type FetchOutcome,
 } from "./fetch-model";
-import type { PaperRecord } from "../types/paper";
+import type { PaperRecord } from "../shared/paper";
 import type { ActionOutcome } from "./item-actions";
 
 export interface PdfFetcherConfig {

@@ -68,7 +68,7 @@ import {
   type RecentImportEntry,
   type RecentReadEntry,
 } from "./services/recent-activity";
-import type { PaperRecord } from "./types/paper";
+import type { PaperRecord } from "./shared/paper";
 import {
   PaperNotesLibraryView,
   VIEW_TYPE_PAPER_NOTES,

@@ -28,9 +28,9 @@ import type {
   PaperIdentifiers,
   PaperRecord,
   ReadOnlyError,
-} from "../types/paper";
-import { PAPER_SCHEMA_VERSION } from "../types/paper";
-import { matchesAllTokens, tokenizeQuery } from "./search-tokens";
+} from "../shared/paper";
+import { PAPER_SCHEMA_VERSION } from "../shared/paper";
+import { matchesAllTokens, tokenizeQuery } from "../shared/search-tokens";
 
 /** Read-only contract over the Obsidian vault (implemented in main.ts). */
 export interface LiteratureVaultAdapter {

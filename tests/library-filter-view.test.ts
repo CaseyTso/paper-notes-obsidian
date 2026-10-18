@@ -39,7 +39,7 @@ import {
   PaperNotesLibraryView,
   type LibraryViewSource,
 } from "../src/views/literature-library-view";
-import type { PaperRecord } from "../src/types/paper";
+import type { PaperRecord } from "../src/shared/paper";
 import type { CliRunResult } from "../src/services/cli-client";
 import { MetricsCache } from "../src/services/metrics-cache";
 import {

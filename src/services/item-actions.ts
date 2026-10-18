@@ -30,7 +30,13 @@ import { dirname, join } from "node:path";
 
 import { CliClient, CliError } from "./cli-client";
 import type { ProtocolEnvelope } from "../types/protocol";
-import type { ReadingStatus } from "../components/library-table";
+import { nextReadingStatus, type ReadingStatus } from "../shared/library-table";
+
+// The reading-status cycle is a pure function owned by the shared layer, so the
+// mobile plugin can reuse the exact same vocabulary. It is re-exported here
+// because desktop callers (e.g. the Literature Library view) import it from
+// this module.
+export { nextReadingStatus };
 
 /** Sources accepted by `item create` (spec §7.1). */
 export interface CreateItemInput {
@@ -500,23 +506,6 @@ export function openCard(notePath: string, cardName: string): OpenTarget | undef
     return undefined;
   }
   return { kind: "cards", path: `${assetPathOf("cards", notePath)}/${cardName}` };
-}
-
-const READING_CYCLE: ReadingStatus[] = ["unread", "reading", "read"];
-
-/**
- * Next reading status in the chip cycle.
- * Missing frontmatter displays as `unread` in the UI, so `undefined` is
- * treated the same as `unread` and advances to `reading` (CONSENSUS:
- * unread → reading → read → unread). Never no-ops on the first click.
- */
-export function nextReadingStatus(current?: ReadingStatus): ReadingStatus {
-  const effective: ReadingStatus =
-    current !== undefined && READING_CYCLE.includes(current)
-      ? current
-      : "unread";
-  const index = READING_CYCLE.indexOf(effective);
-  return READING_CYCLE[(index + 1) % READING_CYCLE.length];
 }
 
 /**

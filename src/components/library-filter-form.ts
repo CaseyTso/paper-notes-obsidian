@@ -38,8 +38,8 @@ import {
   type LibraryFilterBadInput,
   type LibraryFilterDraft,
   type NumericFilterField,
-} from "./library-filter-draft";
-import type { ArtifactPart, LibraryFilters } from "./library-filters";
+} from "../shared/library-filter-draft";
+import type { ArtifactPart, LibraryFilters } from "../shared/library-filters";
 
 type ReadingStatus = NonNullable<LibraryFilters["readingStatus"]>;
 

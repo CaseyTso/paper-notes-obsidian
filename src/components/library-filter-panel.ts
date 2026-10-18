@@ -29,7 +29,7 @@
  */
 
 import { LibraryFilterForm } from "./library-filter-form";
-import type { LibraryFilters } from "./library-filters";
+import type { LibraryFilters } from "../shared/library-filters";
 
 /** Root class of the overlay shell (append-only CSS namespace). */
 const PANEL_CLASS = "paper-notes-library-filter-panel";

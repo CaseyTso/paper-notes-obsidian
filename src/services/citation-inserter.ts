@@ -17,8 +17,8 @@
  *   (`replaceSelection` inserts at the cursor or replaces the selection,
  *   per the Obsidian editor contract).
  */
-import type { PaperRecord } from "../types/paper";
-import { matchesAllTokens, tokenizeQuery } from "./search-tokens";
+import type { PaperRecord } from "../shared/paper";
+import { matchesAllTokens, tokenizeQuery } from "../shared/search-tokens";
 
 /** Minimal editor surface needed to insert citations. */
 export interface CitationEditorPort {

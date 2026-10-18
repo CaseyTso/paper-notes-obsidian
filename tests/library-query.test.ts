@@ -26,10 +26,10 @@ import {
   type ColumnCustomizations,
   type LibraryItem,
   type PaperMetrics,
-} from "../src/components/library-table";
-import { EMPTY_LIBRARY_FILTERS, applyLibraryFilters } from "../src/components/library-filters";
+} from "../src/shared/library-table";
+import { EMPTY_LIBRARY_FILTERS, applyLibraryFilters } from "../src/shared/library-filters";
 import { buildPaperDetail, formatAuthors } from "../src/components/paper-detail";
-import type { InvalidRecord, PaperRecord } from "../src/types/paper";
+import type { InvalidRecord, PaperRecord } from "../src/shared/paper";
 
 const UUID_A = "550e8400-e29b-41d4-a716-446655440000";
 const UUID_B = "6ba7b810-9dad-11d1-80b4-00c04fd430c8";

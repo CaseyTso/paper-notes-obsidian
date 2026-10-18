@@ -16,7 +16,7 @@ import {
   serializeCache,
   type CachedMetricsEntry,
 } from "../src/services/metrics-cache";
-import type { PaperRecord } from "../src/types/paper";
+import type { PaperRecord } from "../src/shared/paper";
 import type { ProtocolEnvelope } from "../src/types/protocol";
 import type { CliClient, CliRunResult } from "../src/services/cli-client";
 

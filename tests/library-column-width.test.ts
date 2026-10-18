@@ -11,7 +11,7 @@ import {
   clampColumnWidth,
   resolveColumns,
   type ColumnCustomizations,
-} from "../src/components/library-table";
+} from "../src/shared/library-table";
 import { normalizeSettings } from "../src/settings";
 
 describe("default column widths (Batch 2 D)", () => {

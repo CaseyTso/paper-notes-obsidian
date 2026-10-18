@@ -27,7 +27,7 @@ import {
   type ViewStateResult,
 } from "obsidian";
 
-import type { InvalidRecord, PaperRecord } from "../types/paper";
+import type { InvalidRecord, PaperRecord } from "../shared/paper";
 import type {
   RecentImportEntry,
   RecentReadEntry,
@@ -93,18 +93,18 @@ import {
   type LibraryItem,
   type LibrarySort,
   type PaperMetrics,
-} from "../components/library-table";
+} from "../shared/library-table";
 import {
   EMPTY_LIBRARY_FILTERS,
   applyLibraryFilters,
   type LibraryFilters,
-} from "../components/library-filters";
+} from "../shared/library-filters";
 import { LibraryFilterPanel } from "../components/library-filter-panel";
 import {
   collectJournalOptions,
   countActiveLibraryFilterGroups,
   describeLibraryFilters,
-} from "../components/library-filter-draft";
+} from "../shared/library-filter-draft";
 import { buildPaperDetail } from "../components/paper-detail";
 import { MocDirectory, type MocDirectorySource } from "../components/moc-directory";
 import {

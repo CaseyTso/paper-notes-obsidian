@@ -11,7 +11,7 @@ import {
   PaperNotesLibraryView,
   type LibraryViewSource,
 } from "../src/views/literature-library-view";
-import type { PaperRecord } from "../src/types/paper";
+import type { PaperRecord } from "../src/shared/paper";
 
 const mockNotices: string[] = [];
 /** Last-shown Item Context Menus (pushed by the Menu stub at show time). */

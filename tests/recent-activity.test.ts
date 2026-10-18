@@ -6,7 +6,7 @@ import { registeredEvents, resetRegistries } from "./obsidian.mock";
 
 import PaperNotesPlugin from "../src/main";
 import { DEFAULT_SETTINGS } from "../src/settings";
-import type { PaperRecord } from "../src/types/paper";
+import type { PaperRecord } from "../src/shared/paper";
 import {
   classifyOpenedFile,
   deserializeRecentActivity,

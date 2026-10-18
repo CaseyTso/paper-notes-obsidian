@@ -25,7 +25,7 @@ import {
   type RecentImportEntry,
   type RecentReadEntry,
 } from "../src/services/recent-activity";
-import type { PaperRecord } from "../src/types/paper";
+import type { PaperRecord } from "../src/shared/paper";
 
 const mockNotices: string[] = [];
 const mockOpenedFiles: unknown[] = [];

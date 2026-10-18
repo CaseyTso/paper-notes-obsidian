@@ -27,7 +27,7 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
 import { LibraryFilterPanel } from "../src/components/library-filter-panel";
-import type { LibraryFilters } from "../src/components/library-filters";
+import type { LibraryFilters } from "../src/shared/library-filters";
 import {
   createMockDocument,
   createMockPanelEvent,

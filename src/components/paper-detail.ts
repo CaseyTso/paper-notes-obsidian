@@ -18,9 +18,9 @@ import type {
   LibraryItem,
   PaperMetrics,
   ReadingStatus,
-} from "./library-table";
-import { INVALID_METADATA_TITLE } from "./library-table";
-import type { PaperAuthor } from "../types/paper";
+} from "../shared/library-table";
+import { INVALID_METADATA_TITLE } from "../shared/library-table";
+import type { PaperAuthor } from "../shared/paper";
 
 export interface PaperDetailField {
   label: string;

@@ -23,7 +23,7 @@
  */
 import { Modal, type App } from "obsidian";
 
-import type { PaperRecord } from "../types/paper";
+import type { PaperRecord } from "../shared/paper";
 import {
   citationLabelOf,
   toggleCitationSelection,

@@ -30,7 +30,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { strToU8, zipSync } from "fflate";
 import type { App } from "obsidian";
 
-import type { PaperRecord } from "../src/types/paper";
+import type { PaperRecord } from "../src/shared/paper";
 import {
   aliasMapOf,
   buildAliasLuaFilter,

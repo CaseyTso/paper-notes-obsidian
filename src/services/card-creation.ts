@@ -27,51 +27,26 @@ import * as path from "node:path";
 import type { CliClient } from "./cli-client";
 import type { ProtocolEnvelope } from "../types/protocol";
 
-export const CITATION_KEY_RE = /^[A-Za-z][A-Za-z0-9+_.-]*$/;
+// The pure format primitives live in `src/shared/card-format.ts` so the mobile
+// companion plugin can reuse them without importing this Node-dependent
+// service (ADR 0006 / 0007). They are re-exported here so every existing
+// importer of `card-creation` keeps working unchanged.
+import {
+  CITATION_KEY_RE,
+  computeSelectionByteOffsets,
+  findPositionAfterHeading,
+  parseFigureSource,
+  type SelectionRangeResult,
+} from "../shared/card-format";
 
-export interface FigureSourceInfo {
-  key: string;
-  sourceNote: string;
-}
-
-/**
- * Strict check for Figure Interpretation Note.
- * Path must match `${literatureRoot}/<key>/Figure解读_<key>.md`.
- */
-export function parseFigureSource(
-  filePath: string,
-  literatureRoot: string = "05 Literature",
-): FigureSourceInfo | null {
-  if (typeof filePath !== "string" || filePath.length === 0) {
-    return null;
-  }
-  const cleanPath = filePath.replace(/^\/+|\/+$/g, "");
-  const cleanRoot = literatureRoot.replace(/^\/+|\/+$/g, "");
-  const prefix = cleanRoot.length > 0 ? `${cleanRoot}/` : "";
-  if (prefix.length > 0 && !cleanPath.startsWith(prefix)) {
-    return null;
-  }
-  const rel = cleanPath.slice(prefix.length);
-  const parts = rel.split("/");
-  if (parts.length !== 2) {
-    return null;
-  }
-  const [dir, file] = parts;
-  if (!dir || !file) {
-    return null;
-  }
-  if (!CITATION_KEY_RE.test(dir) || dir.includes("..")) {
-    return null;
-  }
-  const expectedName = `Figure解读_${dir}.md`;
-  if (file !== expectedName) {
-    return null;
-  }
-  return {
-    key: dir,
-    sourceNote: `Figure解读_${dir}`,
-  };
-}
+export {
+  CITATION_KEY_RE,
+  computeSelectionByteOffsets,
+  findPositionAfterHeading,
+  parseFigureSource,
+};
+export type { SelectionRangeResult };
+export type { FigureSourceInfo } from "../shared/card-format";
 
 /**
  * Check if the active view is in Source Mode or Live Preview.
@@ -103,111 +78,6 @@ export function isSourceOrLivePreview(view: {
     }
   }
   return false;
-}
-
-export interface SelectionRangeResult {
-  startByte: number;
-  endByte: number;
-  selectionText: string;
-  selectionBytes: Uint8Array;
-}
-
-function isSurrogateHalf(text: string, index: number): boolean {
-  if (index <= 0 || index >= text.length) return false;
-  const prev = text.charCodeAt(index - 1);
-  const curr = text.charCodeAt(index);
-  return prev >= 0xd800 && prev <= 0xdbff && curr >= 0xdc00 && curr <= 0xdfff;
-}
-
-/**
- * Compute the 0-indexed half-open UTF-8 byte range [startByte, endByte)
- * corresponding to editor selection coordinates in the saved file text.
- */
-export function computeSelectionByteOffsets(
-  savedText: string,
-  from: { line: number; ch: number },
-  to: { line: number; ch: number },
-  expectedSelectedText?: string,
-): SelectionRangeResult {
-  let startPos = from;
-  let endPos = to;
-  if (
-    from.line > to.line ||
-    (from.line === to.line && from.ch > to.ch)
-  ) {
-    startPos = to;
-    endPos = from;
-  }
-
-  const lineStarts: number[] = [0];
-  for (let i = 0; i < savedText.length; i++) {
-    if (savedText[i] === "\n") {
-      lineStarts.push(i + 1);
-    }
-  }
-
-  if (
-    startPos.line < 0 ||
-    startPos.line >= lineStarts.length ||
-    endPos.line < 0 ||
-    endPos.line >= lineStarts.length
-  ) {
-    throw new Error("选区行号超出文件行数范围。");
-  }
-
-  const charStart = lineStarts[startPos.line] + startPos.ch;
-  const charEnd = lineStarts[endPos.line] + endPos.ch;
-
-  if (charStart < 0 || charEnd > savedText.length || charStart >= charEnd) {
-    throw new Error("选区范围无效或为空。");
-  }
-
-  if (isSurrogateHalf(savedText, charStart) || isSurrogateHalf(savedText, charEnd)) {
-    throw new Error("选区边界不能位于 Unicode 代理对内部。");
-  }
-
-  const rawSlice = savedText.slice(charStart, charEnd);
-  if (expectedSelectedText !== undefined) {
-    const normExpected = expectedSelectedText.replace(/\r\n/g, "\n");
-    const normSlice = rawSlice.replace(/\r\n/g, "\n");
-    if (normExpected !== normSlice) {
-      throw new Error("保存后的文件内容与编辑器选区不一致。");
-    }
-  }
-
-  const encoder = new TextEncoder();
-  const startByte = encoder.encode(savedText.slice(0, charStart)).length;
-  const endByte = encoder.encode(savedText.slice(0, charEnd)).length;
-
-  const fullBytes = encoder.encode(savedText);
-  const selectionBytes = fullBytes.subarray(startByte, endByte);
-  const selectionText = new TextDecoder("utf-8").decode(selectionBytes);
-
-  return {
-    startByte,
-    endByte,
-    selectionText,
-    selectionBytes,
-  };
-}
-
-/**
- * Locate the position immediately following the `## 扩展` heading in card content.
- */
-export function findPositionAfterHeading(
-  content: string,
-  heading: string = "## 扩展",
-): { line: number; ch: number } | null {
-  const lines = content.split(/\r?\n/);
-  for (let i = 0; i < lines.length; i++) {
-    if (lines[i].trim() === heading) {
-      if (i + 1 < lines.length) {
-        return { line: i + 1, ch: 0 };
-      }
-      return { line: i, ch: lines[i].length };
-    }
-  }
-  return null;
 }
 
 /**
@@ -418,7 +288,14 @@ export class CardCreationService {
       try {
         const arrayBuffer = await this.ports.readBinary(file.path);
         const savedBytes = new Uint8Array(arrayBuffer);
-        const savedText = new TextDecoder("utf-8", { fatal: true }).decode(savedBytes);
+        // `ignoreBOM: true` keeps a leading BOM in the decoded text. The CLI
+        // reads the note as raw bytes and keeps it too, so stripping it here
+        // would shift every computed byte offset by three and make the CLI
+        // reject the range as "does not match selection". `fatal` is retained:
+        // it still rejects invalid UTF-8, which is a different, wanted error.
+        const savedText = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(
+          savedBytes,
+        );
         range = computeSelectionByteOffsets(savedText, from, to, editorSelection);
       } catch (error) {
         const msg = `选区映射失败，未调用核心命令：${error instanceof Error ? error.message : String(error)}`;

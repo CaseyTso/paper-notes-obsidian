@@ -55,6 +55,14 @@ import {
   buildCitationText,
   insertCitation,
 } from "../src/services/citation-inserter";
+import {
+  applyAnchorInsertion,
+  buildAnchorInsertion,
+  cardAnchorLink,
+  cardAnchorName,
+  cardRelativePath,
+  formatCardContent,
+} from "../src/shared/card-format";
 import { CliClient, type CliRunResult } from "../src/services/cli-client";
 import {
   LibraryIndex,
@@ -1581,5 +1589,262 @@ describe.skipIf(!hasManagedCore)(
       },
       180_000,
     );
+  },
+);
+
+/**
+ * Finding 6 — the "CLI vs TS differential" gatekeeper (ADR 0007).
+ *
+ * The mobile plugin writes the vault directly, so its output must be
+ * byte-identical to the CLI's. This table-driven case runs BOTH writers over
+ * the same (source-note bytes, selection byte range, title) and asserts four
+ * things are equal:
+ *
+ *   1. the card note's bytes,
+ *   2. the card note's vault-relative path,
+ *   3. the anchor status (`inserted` / `existing` / `failed`),
+ *   4. the source note's bytes after the write.
+ *
+ * The TS side deliberately uses only the pure functions the mobile plugin
+ * uses (`cardRelativePath` + `cardAnchorName` + `buildAnchorInsertion` +
+ * `applyAnchorInsertion` + `formatCardContent`), so this is a real end-to-end
+ * comparison of the two writers rather than a unit test in disguise.
+ *
+ * The rows below are the adversarial cases that previously diverged: NBSP /
+ * exotic-whitespace indented blockquotes, fullwidth and Arabic-Indic digit
+ * list markers, BOM-prefixed notes, and U+0085 / U+FEFF titles.
+ */
+describe.skipIf(!hasManagedCore)(
+  "CLI vs TS differential: byte-identical card creation (ADR 0007)",
+  () => {
+    const managedClient = new CliClient(managedCliPath);
+
+    interface DiffRow {
+      name: string;
+      /** Source note bytes, written verbatim (CRLF / BOM included). */
+      source: Uint8Array;
+      /** Selection as a substring of the decoded source. */
+      selection: string;
+      title: string;
+    }
+
+    const CRLF = "\r\n";
+    const KEY = "smithStandardOnePdf2024";
+
+    function makeRow(name: string, source: string, selection: string, title: string): DiffRow {
+      return { name, source: new TextEncoder().encode(source), selection, title };
+    }
+
+    const ROWS: DiffRow[] = [
+      // Baseline: the case the existing contract test already pins.
+      makeRow(
+        "cjk + emoji + CRLF",
+        [
+          "# Figure \u5b9e\u9a8c\u7ed3\u679c\u89e3\u8bfb \U0001f9ec",
+          "",
+          "\u524d\u7f6e\u80cc\u666f\u8bf4\u660e \U0001f9ec\uff1a\u5b9e\u9a8c\u7ec4\u4e0e\u5bf9\u7167\u7ec4\u5bf9\u9f50\u3002",
+          "",
+          "Figure 2 \u6838\u5fc3\u7ed3\u8bba\uff1a\u8d85\u8d8a\u57fa\u7ebf 42.5% \U0001f680",
+          "",
+          "## \u8ba8\u8bba\u4e0e\u5c55\u671b \U0001f4a1",
+          "",
+        ].join(CRLF),
+        "Figure 2 \u6838\u5fc3\u7ed3\u8bba\uff1a\u8d85\u8d8a\u57fa\u7ebf 42.5% \U0001f680",
+        "\u591a\u6a21\u6001\u57fa\u51c6\u7a81\u7834",
+      ),
+
+      // Finding 2 — fullwidth / Arabic-Indic digits are list markers under
+      // Python's `\d`, so the selection lives inside a LIST block (whose
+      // anchor goes on a standalone line), not a paragraph.
+      makeRow(
+        "fullwidth digit list",
+        [
+          "\uff11. \u5168\u89d2\u6570\u5b57\u5217\u8868\u9879",
+          "\uff12. \u7b2c\u4e8c\u9879",
+          "",
+          "\u540e\u7eed\u6bb5\u843d",
+        ].join(CRLF),
+        "\uff11. \u5168\u89d2\u6570\u5b57\u5217\u8868\u9879",
+        "\u5168\u89d2\u6570\u5b57\u5361\u7247",
+      ),
+      makeRow(
+        "arabic-indic digit list",
+        [
+          "\u0663. \u963f\u62c9\u4f2f\u6570\u5b57\u9879",
+          "\u0664. \u7b2c\u4e8c\u9879",
+          "",
+          "\u540e\u7eed\u6bb5\u843d",
+        ].join(CRLF),
+        "\u0663. \u963f\u62c9\u4f2f\u6570\u5b57\u9879",
+        "\u963f\u62c9\u4f2f\u6570\u5b57\u5361\u7247",
+      ),
+
+      // Finding 2 — a blockquote indented with NBSP / ideographic space. Python's
+      // `lstrip()` removes them, so the line IS a blockquote.
+      makeRow(
+        "nbsp indented blockquote",
+        ["\u00a0> \u5f15\u7528\u6bb5\u843d", "\u00a0> \u7b2c\u4e8c\u884c", "", "\u540e\u7eed\u6bb5\u843d"].join(CRLF),
+        "\u00a0> \u5f15\u7528\u6bb5\u843d",
+        "NBSP \u5f15\u7528\u5361\u7247",
+      ),
+      makeRow(
+        "ideographic space indented blockquote",
+        ["\u3000> \u5f15\u7528\u6bb5\u843d", "\u3000> \u7b2c\u4e8c\u884c", "", "\u540e\u7eed\u6bb5\u843d"].join(CRLF),
+        "\u3000> \u5f15\u7528\u6bb5\u843d",
+        "\u5168\u89d2\u7a7a\u683c\u5f15\u7528\u5361\u7247",
+      ),
+
+      // Finding 4 — a BOM-prefixed note. The CLI keeps it, so the TS writer
+      // must too, and the write-back must preserve it byte-for-byte.
+      makeRow(
+        "BOM prefixed paragraph",
+        "\ufeff\u5e26 BOM \u7684\u6bb5\u843d\u4e00\n\n\u6bb5\u843d\u4e8c\n",
+        "\u5e26 BOM \u7684\u6bb5\u843d\u4e00",
+        "BOM \u5361\u7247",
+      ),
+      makeRow(
+        "BOM prefixed CRLF paragraph",
+        "\ufeff# Figure \U0001f9ec\r\n\r\n\u5e26 BOM \u7684\u6bb5\u843d\r\n\r\n## \u8ba8\u8bba\r\n",
+        "\u5e26 BOM \u7684\u6bb5\u843d",
+        "BOM CRLF \u5361\u7247",
+      ),
+
+      // Finding 3 — titles whose leading/trailing characters are exotic
+      // whitespace. Python's `str.strip()` keeps a BOM but strips U+0085.
+      makeRow(
+        "title with NBSP",
+        "# Figure \U0001f9ec\n\n\u9009\u4e2d\u6587\u672c\n",
+        "\u9009\u4e2d\u6587\u672c",
+        "\u00a0\u5361\u7247\u6807\u9898\u00a0",
+      ),
+      makeRow(
+        "title with U+0085",
+        "# Figure \U0001f9ec\n\n\u9009\u4e2d\u6587\u672c\n",
+        "\u9009\u4e2d\u6587\u672c",
+        "\u0085\u5361\u7247\u6807\u9898\u0085",
+      ),
+      makeRow(
+        "title with U+FEFF (BOM kept)",
+        "# Figure \U0001f9ec\n\n\u9009\u4e2d\u6587\u672c\n",
+        "\u9009\u4e2d\u6587\u672c",
+        "\ufeff\u5361\u7247\u6807\u9898\ufeff",
+      ),
+
+      // Finding 3 — the `\s` set also covers U+001C-1F and U+2028.
+      makeRow(
+        "title with U+001C and U+2028",
+        "# Figure \U0001f9ec\n\n\u9009\u4e2d\u6587\u672c\n",
+        "\u9009\u4e2d\u6587\u672c",
+        "\u001c\u5361\u7247\u6807\u9898\u2028",
+      ),
+    ];
+
+    for (const row of ROWS) {
+      it(`matches the CLI byte-for-byte: ${row.name}`, async () => {
+        const { vault, state } = makeManagedVault();
+
+        // Bring the fixture vault to a migrated state with a usable key.
+        const dry = await managedClient.run([
+          "migrate",
+          "legacy-obsidian",
+          "--vault",
+          vault,
+          "--state-root",
+          state,
+          "--dry-run",
+        ]);
+        expect(dry.envelope.status).toBe("needs_confirmation");
+        const dryData = dataOf(dry.envelope);
+        const applied = await managedClient.run([
+          "migrate",
+          "legacy-obsidian",
+          "--apply",
+          str(dryData, "run_id"),
+          "--confirm-token",
+          str(dryData, "confirmation_token"),
+          "--vault",
+          vault,
+          "--state-root",
+          state,
+        ]);
+        expect(applied.envelope.status).toBe("success");
+
+        const paperDir = join(vault, LIT, KEY);
+        const figPath = join(paperDir, `Figure\u89e3\u8bfb_${KEY}.md`);
+        // Overwrite the fixture Figure note with this row's adversarial bytes.
+        writeFileSync(figPath, Buffer.from(row.source));
+
+        // The selection must be present, and its byte range computed the same
+        // way the plugin does: from the raw note bytes.
+        const sourceBytes = readFileSync(figPath);
+        const selBytes = Buffer.from(row.selection, "utf8");
+        const startByte = sourceBytes.indexOf(selBytes);
+        expect(startByte).toBeGreaterThan(-1);
+        const endByte = startByte + selBytes.length;
+
+        const selectionFile = join(vault, "diff-selection.md");
+        writeFileSync(selectionFile, selBytes);
+
+        // --- Run the real CLI ---
+        const cli = await managedClient.run([
+          "card",
+          "create",
+          "--vault",
+          vault,
+          "--key",
+          KEY,
+          "--title",
+          row.title,
+          "--selection-file",
+          selectionFile,
+          "--source-note",
+          `Figure\u89e3\u8bfb_${KEY}`,
+          "--source-start-byte",
+          String(startByte),
+          "--source-end-byte",
+          String(endByte),
+        ]);
+        expect(cli.envelope.status).toBe("success");
+        const cliData = dataOf(cli.envelope);
+        const cliCardRelPath = str(cliData, "path");
+        const cliCardBytes = readFileSync(join(vault, cliCardRelPath));
+        const cliSourceAfter = readFileSync(figPath);
+        const cliStatus = str(cliData, "anchor_status");
+
+        // --- Run the TS writer's pure function chain ---
+        // paper_id comes from the canonical note's frontmatter, exactly as the
+        // mobile plugin reads it.
+        const mainNote = readFileSync(join(paperDir, `${KEY}.md`), "utf8");
+        const paperIdMatch = /^paper_id:\s*(.+)$/m.exec(mainNote);
+        expect(paperIdMatch).not.toBeNull();
+        const paperId = paperIdMatch![1].trim().toLowerCase();
+
+        const stem = cardRelativePath(KEY, row.title)
+          .replace(/^.*\//, "")
+          .replace(/\.md$/, "");
+        const anchorName = await cardAnchorName(stem);
+        const plan = buildAnchorInsertion(row.source, startByte, endByte, anchorName);
+        const anchorLink = plan.status === "failed" ? null : cardAnchorLink(KEY, anchorName);
+        const tsCard = formatCardContent({
+          paperId,
+          citationKey: KEY,
+          selection: row.selection,
+          anchorLink,
+        });
+        const tsSourceAfter =
+          plan.status === "inserted" && plan.insertByte !== null && plan.insertBytes
+            ? Buffer.from(
+                applyAnchorInsertion(row.source, plan.insertByte, plan.insertBytes),
+              )
+            : Buffer.from(row.source);
+
+        // --- Assert all four are equal ---
+        expect(str(cliData, "anchor_name")).toBe(anchorName);
+        expect(cardRelativePath(KEY, row.title)).toBe(cliCardRelPath);
+        expect(Buffer.from(tsCard, "utf8").equals(cliCardBytes)).toBe(true);
+        expect(plan.status).toBe(cliStatus);
+        expect(tsSourceAfter.equals(cliSourceAfter)).toBe(true);
+      }, 180_000);
+    }
   },
 );

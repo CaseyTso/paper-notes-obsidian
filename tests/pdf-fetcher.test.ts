@@ -19,7 +19,7 @@ vi.mock("node:fs", async (importOriginal) => {
 
 import { FetchClient, FetchClientError } from "../src/services/fetch-client";
 import { PdfFetcher } from "../src/services/pdf-fetcher";
-import type { PaperRecord } from "../src/types/paper";
+import type { PaperRecord } from "../src/shared/paper";
 import type { ActionOutcome } from "../src/services/item-actions";
 
 const mkdtempMock = vi.mocked(fs.mkdtempSync);

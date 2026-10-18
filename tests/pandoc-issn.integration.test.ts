@@ -8,7 +8,7 @@ import { afterAll, describe, expect, it } from "vitest";
 import {
   aliasMapOf, buildAliasLuaFilter, defaultExportPorts, exportPandoc, generateCslJson,
 } from "../src/services/pandoc-export";
-import type { PaperRecord } from "../src/types/paper";
+import type { PaperRecord } from "../src/shared/paper";
 
 const available = (binary: string): boolean => spawnSync(binary, ["--version"], { stdio: "ignore" }).status === 0;
 const hasPandoc = available("pandoc");

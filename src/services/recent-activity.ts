@@ -15,7 +15,7 @@
  * - Writes are serialized through an internal promise chain to prevent race conditions.
  */
 
-import type { PaperRecord } from "../types/paper";
+import type { PaperRecord } from "../shared/paper";
 
 export const RECENT_ACTIVITY_STORAGE_KEY = "recentActivity";
 export const RECENT_ACTIVITY_VERSION = 1;

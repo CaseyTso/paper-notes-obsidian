@@ -30,7 +30,7 @@ import {
   VaultFileNotFoundError,
   type LiteratureVaultAdapter,
 } from "../src/services/library-index";
-import type { PaperRecord } from "../src/types/paper";
+import type { PaperRecord } from "../src/shared/paper";
 
 const ROOT = "05 Literature";
 
