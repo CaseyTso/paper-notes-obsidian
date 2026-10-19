@@ -76,6 +76,10 @@ _Avoid_: 状态, read flag, progress
 Clicking a Reading Status control advances `unread → reading → read → unread` through the CLI `item update`.
 _Avoid_: Reading shortcut button, unread→reading one-shot
 
+**Figure Reading Status Button**:
+The view-header action on a Figure Interpretation Note that shows the paper's current Reading Status as a circular progress icon (unread ○, reading ◐, read ●) and cycles it on click. It is the same Reading Status Cycle as the Library table chip, rendered in the editor chrome rather than the Library row.
+_Avoid_: toolbar status text, ribbon button, inline note widget
+
 **Primary PDF**:
 The main PDF at `<citation_key>/<citation_key>.pdf` inside the Canonical Paper Directory.
 _Avoid_: attachment, fulltext, Zotero PDF

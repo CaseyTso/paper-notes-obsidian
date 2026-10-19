@@ -70,6 +70,11 @@ import {
 } from "./services/recent-activity";
 import type { PaperRecord } from "./shared/paper";
 import {
+  nextReadingStatus,
+  readingStatusOf,
+  type ReadingStatus,
+} from "./shared/library-table";
+import {
   PaperNotesLibraryView,
   VIEW_TYPE_PAPER_NOTES,
   type LibraryViewSource,
@@ -139,6 +144,37 @@ function toNormalizedPath(path: string): string {
 /** Command id for Literature Card creation from selection. */
 export const CREATE_LITERATURE_CARD_COMMAND = "paper-notes-create-literature-card";
 
+/** Command id for the Figure Reading Status cycle (Stage S1). */
+export const CYCLE_READING_STATUS_COMMAND = "paper-notes-cycle-reading-status";
+
+/**
+ * Icons for the Figure Reading Status Button. `circle` is the empty ring (○)
+ * and `contrast` is a ring with a half-disc (◐), both shipped with Obsidian's
+ * bundled Lucide set. The read state (●) reuses the ring and fills it in
+ * `paintFigureReadingStatusGlyph`, because the bundled set has no filled
+ * circle.
+ */
+const FIGURE_READING_STATUS_ICONS: Record<ReadingStatus, string> = {
+  unread: "circle",
+  reading: "contrast",
+  read: "circle",
+};
+
+/** Tooltip label per status; the persisted vocabulary stays ASCII. */
+const FIGURE_READING_STATUS_LABELS: Record<ReadingStatus, string> = {
+  unread: "未读",
+  reading: "在读",
+  read: "已读",
+};
+
+/**
+ * How long an optimistic Reading Status outranks the metadata cache after a
+ * successful CLI write. The CLI rewrites the main note out-of-process and
+ * Obsidian parses it asynchronously, so the cache briefly still reports the
+ * previous value; this window keeps the icon from flickering back.
+ */
+const FIGURE_READING_STATUS_GRACE_MS = 5000;
+
 /**
  * Debounce window for the metadata-cache readiness rescan (Gate D R2).
  * Obsidian fires a burst of `resolved` events while it builds the cache at
@@ -186,6 +222,30 @@ class ObsidianVaultAdapter implements LiteratureVaultAdapter {
   }
 }
 
+/**
+ * Minimal Markdown-view surface the Figure Reading Status Button needs.
+ * Native Obsidian views satisfy it structurally; the headless test doubles
+ * used across the suite do not have to implement it.
+ */
+interface FigureReadingStatusView {
+  readonly file?: TFile | null;
+  /** TextFileView's unsaved-buffer flag (not part of the public typings). */
+  readonly dirty?: boolean;
+  save?(): Promise<void>;
+  addAction?(
+    icon: string,
+    title: string,
+    callback: (event: MouseEvent) => unknown,
+  ): HTMLElement;
+}
+
+/** One view-header action plus the note/status it currently renders. */
+interface FigureReadingStatusAction {
+  element: HTMLElement;
+  path: string;
+  status: ReadingStatus;
+}
+
 export default class PaperNotesPlugin extends Plugin {
   isDesktopOnly = true;
 
@@ -218,6 +278,27 @@ export default class PaperNotesPlugin extends Plugin {
   /** Abort controllers of in-flight Literature Card creations, cancelled on unload. */
   private runningCardCreations = new Set<AbortController>();
   private cardCreationService: CardCreationService | undefined;
+
+  /**
+   * Figure Reading Status Buttons currently mounted in view headers, keyed by
+   * the Markdown view that owns the header action (Stage S1). A view can show
+   * a different file at any time, so the entry also records the path/status it
+   * renders; a WeakMap keeps closed views collectable.
+   */
+  private readonly figureReadingStatusActions = new WeakMap<
+    FigureReadingStatusView,
+    FigureReadingStatusAction
+  >();
+  /** Citation keys with an in-flight `item update`, so a click cannot double-step. */
+  private readonly figureReadingStatusPending = new Set<string>();
+  /**
+   * Optimistic status of the last successful write per citation key, with the
+   * timestamp that bounds how long it outranks the metadata cache.
+   */
+  private readonly figureReadingStatusOverrides = new Map<
+    string,
+    { status: ReadingStatus; writtenAt: number }
+  >();
 
   /** Pending metadata-cache readiness rescan (Gate D R2), cancelled on unload. */
   private metadataRescanTimer: ReturnType<typeof setTimeout> | undefined;
@@ -340,6 +421,33 @@ export default class PaperNotesPlugin extends Plugin {
         return true;
       },
     });
+    // Figure Reading Status cycle (Stage S1): the command and the view-header
+    // action on a Figure Interpretation Note are two triggers for the same
+    // Reading Status Cycle as the Library chip. Both write through the CLI.
+    this.addCommand({
+      id: CYCLE_READING_STATUS_COMMAND,
+      name: "切换当前文献阅读状态",
+      editorCheckCallback: (
+        checking: boolean,
+        _editor: Editor,
+        ctx: MarkdownView | MarkdownFileInfo,
+      ) => {
+        if (!(ctx instanceof MarkdownView)) {
+          return false;
+        }
+        const file = ctx.file;
+        if (!file) {
+          return false;
+        }
+        if (!parseFigureSource(file.path, this.settings.literatureRoot)) {
+          return false;
+        }
+        if (!checking) {
+          void this.cycleFigureReadingStatus(ctx);
+        }
+        return true;
+      },
+    });
     if (
       typeof this.registerEvent === "function" &&
       typeof this.app?.workspace?.on === "function"
@@ -380,6 +488,7 @@ export default class PaperNotesPlugin extends Plugin {
         ),
       );
     }
+    this.registerFigureReadingStatusButton();
     await this.initializeCliBridge();
     await this.initializeFetchBridge();
     this.initializeLibraryIndex();
@@ -2278,5 +2387,394 @@ export default class PaperNotesPlugin extends Plugin {
       },
     });
     modal.open();
+  }
+
+  // -------------------------------------------------------------------------
+  // Figure Reading Status Button (Stage S1)
+  // -------------------------------------------------------------------------
+
+  /**
+   * Mount the Figure Reading Status Button in the Markdown view header and
+   * keep it in sync. A view can show a different note at any time, and the
+   * frontmatter the icon mirrors is rewritten out-of-process by the CLI, so
+   * the action is reconciled on navigation and on every metadata change
+   * rather than mounted once at load.
+   *
+   * Only Figure Interpretation Notes get a button; every other note leaves
+   * the view-header chrome untouched.
+   */
+  private registerFigureReadingStatusButton(): void {
+    const workspace = this.app?.workspace;
+    if (workspace === undefined || typeof workspace.on !== "function") {
+      return;
+    }
+    // Views restored with the layout never emit `active-leaf-change`, so seed
+    // them once the layout settles (same pattern as file-open tracking).
+    if (typeof workspace.onLayoutReady === "function") {
+      workspace.onLayoutReady(() => this.refreshAllFigureReadingStatusButtons());
+    }
+    this.registerEvent(
+      workspace.on("active-leaf-change", (leaf: WorkspaceLeaf | null) => {
+        this.refreshFigureReadingStatusButton(
+          leaf?.view as unknown as FigureReadingStatusView | undefined,
+        );
+      }),
+    );
+    this.registerEvent(
+      workspace.on("file-open", () => this.refreshAllFigureReadingStatusButtons()),
+    );
+    // A layout change can rebuild view headers, which drops the action
+    // element; the reconcile re-mounts it only when it is actually gone.
+    this.registerEvent(
+      workspace.on("layout-change", () => this.refreshAllFigureReadingStatusButtons()),
+    );
+    const metadataCache = this.app?.metadataCache;
+    if (metadataCache !== undefined && typeof metadataCache.on === "function") {
+      // `reading_status` lives on the main note while the button lives on the
+      // Figure note, so a path-filtered refresh would miss every write. Only
+      // views that already carry a button can change state here, so the walk
+      // stays proportional to open Figure notes, not to every open note.
+      this.registerEvent(
+        metadataCache.on("changed", () =>
+          this.refreshMountedFigureReadingStatusButtons(),
+        ),
+      );
+    }
+  }
+
+  /** Reconcile the button in every open Markdown view. */
+  private refreshAllFigureReadingStatusButtons(): void {
+    for (const leaf of this.markdownLeaves()) {
+      this.refreshFigureReadingStatusButton(
+        leaf.view as unknown as FigureReadingStatusView | undefined,
+      );
+    }
+  }
+
+  /** Reconcile only the views that currently carry a button. */
+  private refreshMountedFigureReadingStatusButtons(): void {
+    for (const leaf of this.markdownLeaves()) {
+      const view = leaf.view as unknown as FigureReadingStatusView | undefined;
+      if (
+        view === undefined ||
+        this.figureReadingStatusActions.get(view) === undefined
+      ) {
+        continue;
+      }
+      this.refreshFigureReadingStatusButton(view);
+    }
+  }
+
+  /**
+   * Leaves whose view is a Markdown view. `getLeavesOfType` is the public API;
+   * the minimal headless doubles used by the suite do not have to provide it.
+   */
+  private markdownLeaves(): WorkspaceLeaf[] {
+    const workspace = this.app?.workspace as
+      | { getLeavesOfType?: (type: string) => WorkspaceLeaf[] }
+      | undefined;
+    if (typeof workspace?.getLeavesOfType !== "function") {
+      return [];
+    }
+    const leaves = workspace.getLeavesOfType("markdown");
+    return Array.isArray(leaves) ? leaves : [];
+  }
+
+  /**
+   * Add, update or remove the view-header action for one view.
+   *
+   * The status comes from the authoritative main note (`<key>/<key>.md`), not
+   * from the Figure note: the canonical frontmatter contract keeps
+   * `reading_status` on the main note only and derived notes never repeat it.
+   * Reading the main note is also what makes this exactly the value the
+   * Library table chip shows and cycles.
+   */
+  private refreshFigureReadingStatusButton(
+    view: FigureReadingStatusView | undefined,
+  ): void {
+    if (view === undefined || view === null) {
+      return;
+    }
+    const path = view.file?.path;
+    const figureInfo =
+      path === undefined
+        ? null
+        : parseFigureSource(path, this.settings.literatureRoot);
+    if (figureInfo === null || path === undefined) {
+      this.removeFigureReadingStatusButton(view);
+      return;
+    }
+
+    const existing = this.figureReadingStatusActions.get(view);
+    // While a write is in flight its optimistic value is the truth; the
+    // metadata cache still reports the previous status until the CLI lands.
+    if (
+      existing !== undefined &&
+      existing.path === path &&
+      this.figureReadingStatusPending.has(figureInfo.key)
+    ) {
+      return;
+    }
+    const status = this.figureReadingStatusOf(figureInfo.key, path);
+    if (
+      existing !== undefined &&
+      existing.path === path &&
+      existing.status === status &&
+      // `isConnected` is only false once Obsidian detached the element; keep
+      // the action in place otherwise so normal cache churn never re-mounts.
+      this.figureReadingStatusElementAlive(existing)
+    ) {
+      return;
+    }
+    this.mountFigureReadingStatusButton(view, path, status);
+  }
+
+  /**
+   * (Re)mount the header action with `status`. `ItemView.addAction` has no
+   * matching remove API, so the previous element is detached first; the
+   * replacement lands in the same view-actions slot as the edit/preview
+   * toggle. Re-mounting is also how the glyph is swapped, which keeps this
+   * independent of `setIcon` (absent from some headless hosts).
+   */
+  private mountFigureReadingStatusButton(
+    view: FigureReadingStatusView,
+    path: string,
+    status: ReadingStatus,
+  ): void {
+    this.removeFigureReadingStatusButton(view);
+    const addAction = view.addAction;
+    if (addAction === undefined) {
+      return;
+    }
+    const element = addAction.call(
+      view,
+      FIGURE_READING_STATUS_ICONS[status],
+      this.figureReadingStatusTooltip(status),
+      (event: MouseEvent) => {
+        // A header action must never steal focus from the editor.
+        event?.preventDefault?.();
+        void this.cycleFigureReadingStatus(view);
+      },
+    );
+    if (element !== undefined && element !== null) {
+      element.addClass?.("paper-notes-figure-reading-status");
+      element.setAttribute?.("data-reading-status", status);
+      this.paintFigureReadingStatusGlyph(element, status);
+    }
+    this.figureReadingStatusActions.set(view, { element, path, status });
+  }
+
+  /**
+   * Complete the circular-progress glyph: ○ unread, ◐ reading, ● read.
+   *
+   * `circle` is a bare ring and `contrast` is a ring plus a half-disc path
+   * that Lucide only *strokes*, so neither the half nor the solid state is
+   * filled out of the box. Both are completed here:
+   * - `reading` fills the half-disc path, so the circle reads as half filled
+   *   (◐) while the ring stays an outline;
+   * - `read` fills the ring itself, producing a solid disc (●).
+   *
+   * A `fill` attribute on the shape wins over the `fill="none"` the icon
+   * inherits from its root, and mutating the mounted SVG is safe: `setIcon`
+   * hands out a fresh clone of the cached icon node and the button is
+   * re-mounted on every status change.
+   */
+  private paintFigureReadingStatusGlyph(
+    element: HTMLElement,
+    status: ReadingStatus,
+  ): void {
+    if (status === "unread") {
+      return;
+    }
+    const glyph = element.firstElementChild as Element | null | undefined;
+    if (glyph === null || glyph === undefined) {
+      return;
+    }
+    for (const shape of Array.from(glyph.children ?? [])) {
+      const tag = shape.tagName?.toLowerCase();
+      if (status === "read" ? tag === "circle" : tag === "path") {
+        shape.setAttribute?.("fill", "currentColor");
+      }
+    }
+  }
+
+  /** True when a recorded action still owns a live, attached element. */
+  private figureReadingStatusElementAlive(
+    action: FigureReadingStatusAction,
+  ): boolean {
+    const element = action.element;
+    if (element === undefined || element === null) {
+      return false;
+    }
+    return element.isConnected !== false;
+  }
+
+  /** Detach a mounted action; a no-op for views that never had one. */
+  private removeFigureReadingStatusButton(
+    view: FigureReadingStatusView,
+  ): void {
+    const existing = this.figureReadingStatusActions.get(view);
+    if (existing === undefined) {
+      return;
+    }
+    this.figureReadingStatusActions.delete(view);
+    existing.element.remove?.();
+  }
+
+  /** Tooltip text: the current status plus the affordance. */
+  private figureReadingStatusTooltip(status: ReadingStatus): string {
+    return `阅读状态：${FIGURE_READING_STATUS_LABELS[status]}（点击切换）`;
+  }
+
+  /**
+   * Reading Status of one paper.
+   *
+   * `reading_status` is authoritative on the main note (`<key>/<key>.md`) and
+   * the canonical frontmatter contract forbids duplicating it on derived
+   * notes, so the main note is read first. The Figure note itself is only a
+   * fallback, for vaults that still carry a legacy duplicate. A missing or
+   * unknown value falls back to `unread`, exactly as the Library table does
+   * (`nextReadingStatus` owns the same fallback).
+   *
+   * A just-written value wins for a short grace window because Obsidian parses
+   * the rewritten frontmatter asynchronously; without it the icon would
+   * flicker back to the previous status between the CLI write and the cache
+   * update.
+   */
+  private figureReadingStatusOf(
+    key: string,
+    figureNotePath?: string,
+  ): ReadingStatus {
+    const root = this.settings.literatureRoot.replace(/\/+$/, "");
+    const mainFrontmatter = this.frontmatterOf(`${root}/${key}/${key}.md`);
+    const observed =
+      readingStatusOf(mainFrontmatter) ??
+      (figureNotePath === undefined
+        ? undefined
+        : readingStatusOf(this.frontmatterOf(figureNotePath))) ??
+      "unread";
+    const override = this.figureReadingStatusOverrides.get(key);
+    if (override === undefined) {
+      return observed;
+    }
+    if (observed === override.status) {
+      this.figureReadingStatusOverrides.delete(key);
+      return observed;
+    }
+    if (Date.now() - override.writtenAt < FIGURE_READING_STATUS_GRACE_MS) {
+      return override.status;
+    }
+    this.figureReadingStatusOverrides.delete(key);
+    return observed;
+  }
+
+  /** Raw frontmatter for a vault path, via the index adapter or metadata cache. */
+  private frontmatterOf(path: string): Record<string, unknown> | undefined {
+    const fromAdapter = this.vaultAdapter?.getFrontmatter(path);
+    if (fromAdapter !== undefined) {
+      return fromAdapter;
+    }
+    const vault = this.app?.vault;
+    const metadataCache = this.app?.metadataCache;
+    if (vault === undefined || metadataCache === undefined) {
+      return undefined;
+    }
+    const file = vault.getAbstractFileByPath(path);
+    if (file === null || typeof file !== "object") {
+      return undefined;
+    }
+    return metadataCache.getFileCache?.(file as TFile)?.frontmatter ?? undefined;
+  }
+
+  /**
+   * Advance one paper around the shared Reading Status Cycle
+   * (unread → reading → read → unread).
+   *
+   * Desktop keeps the CLI as the sole writer (ADR 0002): this is the same
+   * `item update --patch {"reading_status": …}` call the Library table chip
+   * makes, so both surfaces share one write path. The icon moves
+   * optimistically and rolls back when the CLI rejects the write.
+   */
+  private async cycleFigureReadingStatus(
+    view: FigureReadingStatusView,
+  ): Promise<void> {
+    const path = view.file?.path;
+    if (path === undefined) {
+      return;
+    }
+    const figureInfo = parseFigureSource(path, this.settings.literatureRoot);
+    if (figureInfo === null) {
+      return;
+    }
+    const key = figureInfo.key;
+    // Ignore a click while this paper's write is in flight: the next step must
+    // be computed from the value that write is about to store.
+    if (this.figureReadingStatusPending.has(key)) {
+      return;
+    }
+
+    const client = this.getCliClient();
+    const adapter = this.app?.vault?.adapter as { getBasePath?(): string } | undefined;
+    const vaultRoot =
+      typeof adapter?.getBasePath === "function" ? adapter.getBasePath() : undefined;
+    if (client === undefined || vaultRoot === undefined) {
+      new Notice("paper-notes CLI 不可用，无法更新阅读状态。");
+      return;
+    }
+
+    // Flush the editor buffer first: the CLI rewrites the note on disk, and an
+    // unsaved buffer would make Obsidian report a file conflict. `dirty` is
+    // TextFileView's internal flag (absent from the public typings); save only
+    // when the buffer is dirty or its state is unknown. `save()` itself is a
+    // no-op when nothing changed.
+    if (view.dirty !== false && typeof view.save === "function") {
+      try {
+        await view.save();
+      } catch (error) {
+        new Notice(
+          `保存笔记失败，阅读状态未更新：${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+        return;
+      }
+    }
+
+    const current = this.figureReadingStatusOf(key, path);
+    const next = nextReadingStatus(current);
+
+    this.figureReadingStatusPending.add(key);
+    this.mountFigureReadingStatusButton(view, path, next);
+    try {
+      const outcome = await new ItemActions({ client, vaultRoot }).updateReadingStatus(
+        key,
+        next,
+      );
+      if (outcome.status === "success") {
+        this.figureReadingStatusOverrides.set(key, {
+          status: next,
+          writtenAt: Date.now(),
+        });
+        // The CLI rewrite reaches the vault as a modify event, which already
+        // refreshes the Library row; no extra scan/render is needed here.
+        new Notice(`阅读状态：${FIGURE_READING_STATUS_LABELS[next]}`);
+        return;
+      }
+      this.mountFigureReadingStatusButton(view, path, current);
+      new Notice(
+        `阅读状态更新失败：${
+          outcome.status === "error" ? outcome.message : "仍需确认"
+        }`,
+      );
+    } catch (error) {
+      this.mountFigureReadingStatusButton(view, path, current);
+      new Notice(
+        `阅读状态更新失败：${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    } finally {
+      this.figureReadingStatusPending.delete(key);
+    }
   }
 }
