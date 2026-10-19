@@ -97,22 +97,27 @@ function currentReadingStatusOf(file: TFile, cache: MetadataCache): ReadingStatu
 
 export default class PaperNotesMobilePlugin extends Plugin {
   async onload(): Promise<void> {
+    // Reading Status cycle. The `icon` lets mobile users pin this command to the
+    // editor toolbar (Settings → Mobile → Manage toolbar), giving a one-tap
+    // trigger without opening the command palette. `editorCallback` gates the
+    // command on there being an active Markdown note and gives us its file.
     this.addCommand({
       id: CYCLE_READING_STATUS_COMMAND,
       name: "Cycle reading status (unread → reading → read)",
-      // `editorCallback` (rather than a bare `callback`) gates the command on
-      // there being an active Markdown note and gives us its file.
+      icon: "book-open-check",
       editorCallback: (_editor: Editor, ctx: MarkdownFileInfo) => {
         void this.cycleReadingStatus(ctx.file);
       },
     });
 
+    // Create Literature Card from selection. Same toolbar story: the `icon`
+    // makes it pinnable on mobile. `editorCheckCallback` hides the command
+    // unless the active note is a Figure Interpretation Note with a non-empty
+    // selection, mirroring the desktop plugin's gating.
     this.addCommand({
       id: CREATE_LITERATURE_CARD_COMMAND,
       name: "Create Literature Card from selection",
-      // `editorCheckCallback` hides the command unless the active note is a
-      // Figure Interpretation Note with a non-empty selection, mirroring the
-      // desktop plugin's gating.
+      icon: "scissors",
       editorCheckCallback: (checking: boolean, editor: Editor, ctx: MarkdownFileInfo) => {
         const file = ctx.file;
         if (!file) {
@@ -132,6 +137,53 @@ export default class PaperNotesMobilePlugin extends Plugin {
         return true;
       },
     });
+
+    // Ribbon (left-sidebar) entries as a second, always-visible trigger. On
+    // mobile the ribbon lives behind the left drawer; the toolbar-pinned command
+    // icons above are the primary one-tap path.
+    this.addRibbonIcon("book-open-check", "Cycle reading status", () => {
+      void this.runCommandOnActiveEditor(CYCLE_READING_STATUS_COMMAND);
+    });
+    this.addRibbonIcon("scissors", "Create Literature Card from selection", () => {
+      void this.runCommandOnActiveEditor(CREATE_LITERATURE_CARD_COMMAND);
+    });
+  }
+
+  /**
+   * Re-dispatch a registered editor command against the active editor, so the
+   * ribbon icon behaves exactly like the toolbar/command-palette entry. Returns
+   * without notice when no Markdown editor is active (the command's own gating
+   * still applies for the card command).
+   */
+  private runCommandOnActiveEditor(commandId: string): void {
+    const info = this.app.workspace.activeEditor;
+    const file = info?.file;
+    const editor = info?.editor;
+    if (!file || !editor) {
+      new Notice("请先打开一篇 Markdown 笔记。");
+      return;
+    }
+    if (commandId === CYCLE_READING_STATUS_COMMAND) {
+      void this.cycleReadingStatus(file);
+      return;
+    }
+    // Card command: apply the same gating as the editorCheckCallback.
+    const figureInfo = parseFigureSource(file.path, LITERATURE_ROOT);
+    const selection = editor.getSelection();
+    if (!figureInfo) {
+      new Notice("当前笔记不是 Figure 解读笔记（路径不匹配）。");
+      return;
+    }
+    if (!selection || selection.trim().length === 0) {
+      new Notice("请先选择需要创建卡片的文本。");
+      return;
+    }
+    void this.createLiteratureCardFromSelection(
+      { file } as MarkdownFileInfo,
+      editor,
+      figureInfo,
+      selection,
+    );
   }
 
   /**
